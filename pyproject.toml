@@ -1,0 +1,18 @@
+[project]
+name = "money-forward-analyzer"
+version = "0.1.0"
+description = "マネーフォワード資産取得・分析ツール"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+mf-fetch = "src.scraper.fetch:main"
+mf-report = "src.cli.report:main"

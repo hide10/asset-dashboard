@@ -1,0 +1,29 @@
+# Raw data (contains personal financial data)
+raw/
+
+# SQLite database
+data/*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+
+# Auth (session cookies - NEVER commit)
+.auth/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
