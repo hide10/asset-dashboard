@@ -3,7 +3,9 @@
 フェーズ1: 追加投資なし（過去リターンからレンジ推定）
 フェーズ2: 積立込み（月次入金パラメータ付き）
 
-データが少ない場合（30日未満）は保守的なデフォルトパラメータを使用する。
+リスク資産（株式・投信）のみシミュレーション対象とし、
+安全資産（預金・不動産・年金）は固定値として加算する。
+データが少ない場合（5日未満）は保守的なデフォルトパラメータを使用する。
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ DEFAULT_ANNUAL_RETURN = 0.05  # 5%
 DEFAULT_ANNUAL_VOLATILITY = 0.15  # 15%
 
 TRADING_DAYS_PER_YEAR = 252
+
+# リスク資産とみなす資産クラス
+RISK_CLASSES = {"株式（現物）", "投資信託"}
 
 
 @dataclass
@@ -78,7 +83,8 @@ def _estimate_params(totals: list[tuple[str, float]]) -> tuple[float, float, boo
 
 
 def _run_simulation(
-    current_value: float,
+    risk_value: float,
+    safe_value: float,
     annual_return: float,
     annual_volatility: float,
     years: int,
@@ -88,6 +94,8 @@ def _run_simulation(
 ) -> PredictionRange:
     """モンテカルロシミュレーションを実行し、PredictionRangeを返す。
 
+    risk_value のみ市場変動の対象。safe_value は固定で最終結果に加算する。
+    monthly_contribution はリスク資産側に積み立てる。
     月次ステップで計算する（年12ステップ）。
     """
     import random
@@ -104,7 +112,7 @@ def _run_simulation(
     results = []
 
     for _ in range(simulations):
-        value = current_value
+        value = risk_value
         for _ in range(total_months):
             # 幾何ブラウン運動（対数正規）
             z = rng.gauss(0, 1)
@@ -112,7 +120,8 @@ def _run_simulation(
                 (monthly_return - 0.5 * monthly_vol ** 2) + monthly_vol * z
             )
             value = value * monthly_growth + monthly_contribution
-        results.append(value)
+        # 安全資産を固定で加算
+        results.append(value + safe_value)
 
     results.sort()
     n = len(results)
@@ -125,10 +134,16 @@ def _run_simulation(
 
 def predict_no_contribution(
     db_path: str,
+    risk_value: float,
+    safe_value: float,
     years_list: list[int] | None = None,
     simulations: int = 10000,
 ) -> tuple[list[PredictionRange], dict]:
     """追加投資なしの成長予測（フェーズ1）。
+
+    Args:
+        risk_value: リスク資産額（株式+投信）。シミュレーション対象。
+        safe_value: 安全資産額（預金・不動産・年金）。固定値として加算。
 
     Returns:
         (predictions, params) where params contains estimation details.
@@ -140,11 +155,12 @@ def predict_no_contribution(
     if not totals:
         return [], {"error": "データがありません"}
 
-    current_value = totals[-1][1]
     annual_return, annual_vol, is_estimated = _estimate_params(totals)
 
     params = {
-        "current_value": current_value,
+        "risk_value": risk_value,
+        "safe_value": safe_value,
+        "total_value": risk_value + safe_value,
         "annual_return": annual_return,
         "annual_volatility": annual_vol,
         "is_estimated": is_estimated,
@@ -154,7 +170,8 @@ def predict_no_contribution(
     predictions = []
     for years in years_list:
         pred = _run_simulation(
-            current_value=current_value,
+            risk_value=risk_value,
+            safe_value=safe_value,
             annual_return=annual_return,
             annual_volatility=annual_vol,
             years=years,
@@ -168,11 +185,18 @@ def predict_no_contribution(
 
 def predict_with_contribution(
     db_path: str,
+    risk_value: float,
+    safe_value: float,
     monthly_contribution: float,
     years_list: list[int] | None = None,
     simulations: int = 10000,
 ) -> tuple[list[PredictionRange], dict]:
     """積立込みの成長予測（フェーズ2）。
+
+    Args:
+        risk_value: リスク資産額（株式+投信）。シミュレーション対象。
+        safe_value: 安全資産額（預金・不動産・年金）。固定値として加算。
+        monthly_contribution: 月次積立額（リスク資産側に投入）。
 
     Returns:
         (predictions, params) where params contains estimation details.
@@ -184,11 +208,12 @@ def predict_with_contribution(
     if not totals:
         return [], {"error": "データがありません"}
 
-    current_value = totals[-1][1]
     annual_return, annual_vol, is_estimated = _estimate_params(totals)
 
     params = {
-        "current_value": current_value,
+        "risk_value": risk_value,
+        "safe_value": safe_value,
+        "total_value": risk_value + safe_value,
         "annual_return": annual_return,
         "annual_volatility": annual_vol,
         "is_estimated": is_estimated,
@@ -199,7 +224,8 @@ def predict_with_contribution(
     predictions = []
     for years in years_list:
         pred = _run_simulation(
-            current_value=current_value,
+            risk_value=risk_value,
+            safe_value=safe_value,
             annual_return=annual_return,
             annual_volatility=annual_vol,
             years=years,

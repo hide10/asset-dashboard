@@ -15,7 +15,7 @@ from urllib.parse import urlparse, parse_qs
 
 from src.data.stock_master import get_sector, get_dividend
 from src.analysis.compare import get_all_comparisons, ComparisonResult
-from src.prediction.montecarlo import predict_no_contribution, predict_with_contribution
+from src.prediction.montecarlo import predict_no_contribution, predict_with_contribution, RISK_CLASSES
 
 DB_DEFAULT = Path(__file__).resolve().parents[2] / "data" / "assets.db"
 
@@ -95,15 +95,19 @@ def _get_data(db_path: str, date: str | None = None, monthly_contribution: float
     # 比較データ
     comparisons = get_all_comparisons(db_path, date)
 
+    # リスク資産 / 安全資産の分離
+    risk_value = sum(v for cls, v in by_class.items() if cls in RISK_CLASSES)
+    safe_value = total_asset - risk_value
+
     # 成長予測（追加投資なし）
     try:
-        predictions, pred_params = predict_no_contribution(db_path)
+        predictions, pred_params = predict_no_contribution(db_path, risk_value, safe_value)
     except Exception:
         predictions, pred_params = [], {}
 
     # 成長予測（積立込み）
     try:
-        predictions_c, pred_params_c = predict_with_contribution(db_path, monthly_contribution)
+        predictions_c, pred_params_c = predict_with_contribution(db_path, risk_value, safe_value, monthly_contribution)
     except Exception:
         predictions_c, pred_params_c = [], {}
 
@@ -270,6 +274,8 @@ def _build_html(data: dict, dates: list[str]) -> str:
         note = "※ デフォルトパラメータ使用（データ蓄積中）" if is_est else f'※ {pred_params.get("data_points", 0)}日分のデータから推定'
         annual_ret = pred_params.get("annual_return", 0) * 100
         annual_vol = pred_params.get("annual_volatility", 0) * 100
+        p_risk = pred_params.get("risk_value", 0)
+        p_safe = pred_params.get("safe_value", 0)
         pred_html = f'''
     <div class="card">
       <div class="card-header">
@@ -280,7 +286,8 @@ def _build_html(data: dict, dates: list[str]) -> str:
         <strong>モンテカルロ・シミュレーションとは</strong>
         <p>現在の資産を出発点に、将来の資産額を確率的にシミュレーションする手法です。</p>
         <ul>
-          <li><strong>手法:</strong> 幾何ブラウン運動（対数正規モデル）で月次リターンを生成し、10,000回のシミュレーションを実行</li>
+          <li><strong>対象資産の分離:</strong> リスク資産（株式・投信: <strong>{p_risk:,.0f}円</strong>）のみ市場変動の対象とし、安全資産（預金・不動産・年金: <strong>{p_safe:,.0f}円</strong>）は変動なしで固定加算</li>
+          <li><strong>手法:</strong> 幾何ブラウン運動（対数正規モデル）でリスク資産の月次リターンを生成し、10,000回のシミュレーションを実行</li>
           <li><strong>パラメータ:</strong> 過去の日次リターンから年率の期待リターンとボラティリティ（価格変動の大きさ）を推定。データが5日未満の場合はデフォルト値（リターン5%/年、ボラティリティ15%/年）を使用</li>
           <li><strong>P10（悲観）:</strong> シミュレーション結果の下位10% — 10回中9回はこれ以上になる水準</li>
           <li><strong>P50（中央）:</strong> シミュレーション結果の中央値 — 最も起こりやすい水準</li>
@@ -292,7 +299,7 @@ def _build_html(data: dict, dates: list[str]) -> str:
         <tr><th></th><th class="num">悲観(P10)</th><th class="num">中央(P50)</th><th class="num">楽観(P90)</th></tr>
         {pred_rows}
       </table>
-      <div class="pred-note">{note}<br>期待リターン {annual_ret:.1f}%/年　ボラティリティ {annual_vol:.1f}%/年</div>
+      <div class="pred-note">{note}<br>リスク資産 {p_risk:,.0f}円 + 安全資産 {p_safe:,.0f}円（固定）<br>期待リターン {annual_ret:.1f}%/年　ボラティリティ {annual_vol:.1f}%/年</div>
     </div>'''
 
     # 積立込み成長予測 HTML 生成
@@ -662,11 +669,15 @@ def _demo_data() -> dict:
         PredictionRange(years=3, p10=18_200_000, p50=24_500_000, p90=33_100_000),
         PredictionRange(years=5, p10=17_500_000, p50=27_800_000, p90=44_200_000),
     ]
+    # リスク: 株式6,350,000 + 投信5,180,000 = 11,530,000
+    # 安全: 預金4,820,000 + 不動産1,200,000 + 年金3,950,000 = 9,970,000
     demo_pred_params = {
         "annual_return": 0.05,
         "annual_volatility": 0.15,
         "is_estimated": True,
         "data_points": 1,
+        "risk_value": 11_530_000,
+        "safe_value": 9_970_000,
     }
     # 積立込み予測デモデータ（月5万円）
     demo_predictions_c = [
