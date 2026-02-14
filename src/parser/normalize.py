@@ -26,6 +26,8 @@ class HoldingData:
     name: str
     value: float
     quantity: float | None = None
+    acquisition_price: float | None = None  # 平均取得単価
+    current_price: float | None = None      # 現在値/基準価額
     asset_class: str = ""
     position: int = 0  # テーブル内の行位置（同名銘柄の区別用）
 
@@ -144,12 +146,16 @@ def _parse_eq_section(section: Tag) -> list[HoldingData]:
             code = cells[0].get_text(strip=True)
             name = cells[1].get_text(strip=True)
             quantity = _parse_number(cells[2].get_text())
+            acquisition_price = _parse_number(cells[3].get_text()) if len(cells) > 3 else None
+            current_price = _parse_number(cells[4].get_text()) if len(cells) > 4 else None
             value = _parse_yen(cells[5].get_text())
             holdings.append(HoldingData(
                 symbol_or_code=code,
                 name=name,
                 value=value,
                 quantity=quantity,
+                acquisition_price=acquisition_price,
+                current_price=current_price,
                 asset_class="株式（現物）",
             ))
     return holdings
@@ -167,12 +173,16 @@ def _parse_mf_section(section: Tag) -> list[HoldingData]:
         if len(cells) >= 5:
             name = cells[0].get_text(strip=True)
             quantity = _parse_number(cells[1].get_text())
+            acquisition_price = _parse_number(cells[2].get_text()) if len(cells) > 2 else None
+            current_price = _parse_number(cells[3].get_text()) if len(cells) > 3 else None
             value = _parse_yen(cells[4].get_text())
             holdings.append(HoldingData(
                 symbol_or_code="",
                 name=name,
                 value=value,
                 quantity=quantity,
+                acquisition_price=acquisition_price,
+                current_price=current_price,
                 asset_class="投資信託",
             ))
     return holdings

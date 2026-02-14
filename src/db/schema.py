@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS snapshot_holdings (
     value          REAL NOT NULL,
     asset_class    TEXT NOT NULL DEFAULT '',
     position       INTEGER NOT NULL DEFAULT 0,  -- テーブル内行位置（同名銘柄区別用）
+    acquisition_price  REAL,           -- 平均取得単価（nullable）
+    current_price      REAL,           -- 現在値/基準価額（nullable）
     FOREIGN KEY (date) REFERENCES snapshots(date)
 );
 
@@ -47,6 +49,14 @@ CREATE TABLE IF NOT EXISTS monthly_cashflows (
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_comments (
+    date       TEXT NOT NULL,
+    page       TEXT NOT NULL,       -- 'dashboard' or 'lifeplan'
+    comment    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (date, page)
 );
 """
 
@@ -63,11 +73,15 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
 
-    # マイグレーション: position カラムがなければ追加
+    # マイグレーション: 不足カラムがあれば追加
     cols = [row[1] for row in conn.execute("PRAGMA table_info(snapshot_holdings)").fetchall()]
     if "position" not in cols:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
-        conn.commit()
+    if "acquisition_price" not in cols:
+        conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN acquisition_price REAL")
+    if "current_price" not in cols:
+        conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN current_price REAL")
+    conn.commit()
 
     return conn
 

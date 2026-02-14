@@ -182,11 +182,23 @@ async def fetch_monthly(page: Page, raw_path: Path) -> Path:
 
 
 async def request_aggregation(page: Page) -> None:
-    """一括更新をリクエストする。"""
-    print(f"一括更新リクエスト: {AGGREGATION_URL}")
-    await page.goto(AGGREGATION_URL, wait_until="networkidle", timeout=30000)
-    await page.wait_for_timeout(2000)
-    print("一括更新リクエスト完了")
+    """一括更新をリクエストする。
+
+    資産ページ上の「一括更新」ボタン（a[data-method="post"][href="/aggregation_queue"]）を
+    クリックして POST リクエストを発行する。ボタンが見つからない場合は直接 POST する。
+    """
+    # 資産ページ上のボタンをクリック
+    btn = page.locator('a[href="/aggregation_queue"][data-method="post"]')
+    if await btn.count() > 0:
+        print("一括更新ボタンをクリック...")
+        await btn.first.click()
+        await page.wait_for_timeout(3000)
+        print("一括更新リクエスト完了")
+    else:
+        # ボタンが見つからない場合、API で直接 POST
+        print("一括更新ボタンが見つかりません。API で直接リクエスト...")
+        resp = await page.request.post(AGGREGATION_URL)
+        print(f"一括更新リクエスト完了（status: {resp.status}）")
 
 
 async def fetch_assets(storage_state: str | None = None) -> Path:

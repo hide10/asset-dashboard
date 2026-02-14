@@ -15,7 +15,7 @@ from src.scraper.fetch import create_context, fetch_page, fetch_monthly, request
 from src.parser.normalize import parse_raw, AssetSnapshot
 from src.parser.cashflow import parse_monthly
 from src.db.schema import init_db
-from src.db.repository import save_snapshot, get_snapshot, save_cashflows
+from src.db.repository import save_snapshot, get_snapshot, save_cashflows, save_setting
 
 
 def _is_unchanged(current: AssetSnapshot, previous: dict) -> bool:
@@ -57,10 +57,21 @@ async def run(
             previous = get_snapshot(conn, snapshot.date)
             conn.close()
 
-            if previous and _is_unchanged(snapshot, previous):
+            needs_refresh = False
+            if snapshot.total_asset == 0:
+                # データ未ロード状態（金融機関連携がまだ反映されていない）
+                print("\n総資産が0円です（金融機関データ未反映の可能性）。")
+                needs_refresh = True
+            elif previous and _is_unchanged(snapshot, previous):
                 print(f"\n前回取得時からデータ変化なし（総資産: {snapshot.total_asset:,.0f}円）")
-                print("一括更新をリクエストします...")
+                needs_refresh = True
+            elif previous:
+                print(f"\n前回からデータ更新あり（前回: {previous['total_asset']:,.0f}円）")
+            else:
+                print("\n本日の初回取得です。")
 
+            if needs_refresh:
+                print("一括更新をリクエストします...")
                 await request_aggregation(page)
 
                 print(f"{wait_seconds}秒待機中...")
@@ -72,15 +83,14 @@ async def run(
                 snapshot = parse_raw(raw_path)
                 print(f"  総資産: {snapshot.total_asset:,.0f}円")
 
-                if previous and _is_unchanged(snapshot, previous):
+                if snapshot.total_asset == 0:
+                    print("\n※ 再取得後も総資産0円です。")
+                    print("  金融機関側の更新に時間がかかっている可能性があります。")
+                elif previous and _is_unchanged(snapshot, previous):
                     print("\n※ 再取得後もデータに変化がありませんでした。")
                     print("  金融機関側の更新に時間がかかっている可能性があります。")
                 else:
                     print("\nデータが更新されました。")
-            elif previous:
-                print(f"\n前回からデータ更新あり（前回: {previous['total_asset']:,.0f}円）")
-            else:
-                print("\n本日の初回取得です。")
 
         # 4. 月次収支取得
         try:
@@ -98,13 +108,17 @@ async def run(
         # 5. DB保存
         print("\n[3/3] DB保存中...")
         conn = init_db()
-        save_snapshot(conn, snapshot, str(raw_path))
+        if snapshot.total_asset > 0:
+            save_snapshot(conn, snapshot, str(raw_path))
+            from datetime import datetime
+            save_setting(conn, "last_fetch_at", datetime.now().isoformat())
+            print(f"\n完了: {snapshot.date} のスナップショットを保存しました。")
+        else:
+            print("\n※ 総資産0円のため、スナップショットの保存をスキップしました。")
         if cashflows:
             from datetime import date as _date
             save_cashflows(conn, cashflows, _date.today().isoformat())
         conn.close()
-
-        print(f"\n完了: {snapshot.date} のスナップショットを保存しました。")
 
     finally:
         await browser.close()

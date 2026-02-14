@@ -1,10 +1,16 @@
 """銘柄マスタ: 業種分類・配当情報。
 
-データが古くなったら手動で更新する。
-配当は年間予想配当（円/株）。
+配当は data/dividends.json（自動取得）を優先し、
+なければハードコード値にフォールバックする。
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
+
+_DIVIDENDS_JSON = Path(__file__).resolve().parent.parent.parent / "data" / "dividends.json"
+_dividend_cache: dict | None = None
 
 STOCK_MASTER: dict[str, dict] = {
     "8053": {"name": "住友商事",     "sector": "卸売業",       "dividend": 125},
@@ -29,7 +35,29 @@ def get_sector(code: str) -> str:
     return info["sector"] if info else "その他"
 
 
+def _load_dividends() -> dict:
+    """dividends.json をキャッシュ付きで読み込む。"""
+    global _dividend_cache
+    if _dividend_cache is None:
+        if _DIVIDENDS_JSON.exists():
+            _dividend_cache = json.loads(_DIVIDENDS_JSON.read_text(encoding="utf-8"))
+        else:
+            _dividend_cache = {}
+    return _dividend_cache
+
+
 def get_dividend(code: str) -> float:
-    """銘柄コードから年間予想配当（円/株）を返す。未登録なら0。"""
+    """銘柄コードから年間予想配当（円/株）を返す。
+
+    dividends.json を優先し、なければハードコード値にフォールバック。
+    """
+    divs = _load_dividends()
+    if code in divs:
+        return divs[code]["dps"]
     info = STOCK_MASTER.get(code)
     return info["dividend"] if info else 0.0
+
+
+def get_all_codes() -> list[str]:
+    """STOCK_MASTER に登録された全銘柄コードを返す。"""
+    return list(STOCK_MASTER.keys())
