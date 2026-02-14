@@ -25,8 +25,8 @@ def save_snapshot(conn: sqlite3.Connection, snapshot: AssetSnapshot, raw_path: s
         )
     for h in snapshot.holdings:
         conn.execute(
-            "INSERT INTO snapshot_holdings (date, symbol_or_code, name, quantity, value, asset_class) VALUES (?, ?, ?, ?, ?, ?)",
-            (snapshot.date, h.symbol_or_code, h.name, h.quantity, h.value, h.asset_class),
+            "INSERT INTO snapshot_holdings (date, symbol_or_code, name, quantity, value, asset_class, position) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (snapshot.date, h.symbol_or_code, h.name, h.quantity, h.value, h.asset_class, h.position),
         )
     conn.commit()
 

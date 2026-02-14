@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -40,7 +41,7 @@ def _get_snapshot_full(conn: sqlite3.Connection, target_date: str) -> dict | Non
     ).fetchall()
 
     holdings = conn.execute(
-        "SELECT symbol_or_code, name, value, quantity, asset_class FROM snapshot_holdings WHERE date = ?",
+        "SELECT symbol_or_code, name, value, quantity, asset_class, position FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, position",
         (target_date,),
     ).fetchall()
 
@@ -153,26 +154,40 @@ def _compute_diff(
             })
     account_diffs.sort(key=lambda x: abs(x["diff"]), reverse=True)
 
-    # 銘柄別差分 (symbol_or_code + name をキーにマッチング)
-    prev_holdings = {}
+    # 銘柄別差分
+    # 同名銘柄（投信など）は (asset_class, name) でグループ化し、
+    # 評価額の大きい順に並べてランク同士をマッチングする。
+    # これにより、新規口座の挿入でテーブル位置がずれても正しくマッチできる。
+    prev_by_name: dict[tuple, list] = defaultdict(list)
     for h in previous["holdings"]:
-        key = (h[0], h[1])  # (symbol_or_code, name)
-        prev_holdings[key] = h[2]  # value
+        prev_by_name[(h[4], h[1])].append(h)  # (asset_class, name)
+    for group in prev_by_name.values():
+        group.sort(key=lambda x: x[2], reverse=True)  # value desc
+
+    cur_by_name: dict[tuple, list] = defaultdict(list)
+    for h in current["holdings"]:
+        cur_by_name[(h[4], h[1])].append(h)
+    for group in cur_by_name.values():
+        group.sort(key=lambda x: x[2], reverse=True)
 
     holding_diffs = []
-    for h in current["holdings"]:
-        key = (h[0], h[1])
-        cur_val = h[2]
-        prev_val = prev_holdings.get(key, 0)
-        diff = cur_val - prev_val
-        if diff != 0:
-            holding_diffs.append({
-                "name": h[1],
-                "code": h[0],
-                "diff": diff,
-                "current": cur_val,
-                "previous": prev_val,
-            })
+    all_names = set(prev_by_name.keys()) | set(cur_by_name.keys())
+    for name_key in all_names:
+        prev_list = prev_by_name.get(name_key, [])
+        cur_list = cur_by_name.get(name_key, [])
+        for i in range(max(len(prev_list), len(cur_list))):
+            cur_val = cur_list[i][2] if i < len(cur_list) else 0
+            prev_val = prev_list[i][2] if i < len(prev_list) else 0
+            diff = cur_val - prev_val
+            if diff != 0:
+                ref = cur_list[i] if i < len(cur_list) else prev_list[i]
+                holding_diffs.append({
+                    "name": ref[1],
+                    "code": ref[0],
+                    "diff": diff,
+                    "current": cur_val,
+                    "previous": prev_val,
+                })
     holding_diffs.sort(key=lambda x: abs(x["diff"]), reverse=True)
 
     return ComparisonResult(

@@ -56,9 +56,9 @@ def _get_data(db_path: str, date: str | None = None, monthly_contribution: float
     ]
 
     holdings = [
-        {"name": r[0], "code": r[1], "asset_class": r[2], "value": r[3], "quantity": r[4]}
+        {"name": r[0], "code": r[1], "asset_class": r[2], "value": r[3], "quantity": r[4], "position": r[5]}
         for r in conn.execute(
-            "SELECT name, symbol_or_code, asset_class, value, quantity FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
+            "SELECT name, symbol_or_code, asset_class, value, quantity, position FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
             (date,),
         ).fetchall()
     ]

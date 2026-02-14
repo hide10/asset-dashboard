@@ -27,6 +27,7 @@ class HoldingData:
     value: float
     quantity: float | None = None
     asset_class: str = ""
+    position: int = 0  # テーブル内の行位置（同名銘柄の区別用）
 
 
 @dataclass
@@ -271,6 +272,13 @@ def parse_raw(raw_dir: Path) -> AssetSnapshot:
     # by_classからもポイント・マイルを除外し、総資産を再計算
     by_class.pop("ポイント・マイル", None)
     total_asset = sum(by_class.values())
+
+    # 資産クラス内の行位置を付与（同名銘柄の区別用）
+    class_counters: dict[str, int] = {}
+    for h in holdings:
+        idx = class_counters.get(h.asset_class, 0)
+        h.position = idx
+        class_counters[h.asset_class] = idx + 1
 
     return AssetSnapshot(
         date=date,

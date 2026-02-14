@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS snapshot_holdings (
     quantity       REAL,           -- nullable
     value          REAL NOT NULL,
     asset_class    TEXT NOT NULL DEFAULT '',
+    position       INTEGER NOT NULL DEFAULT 0,  -- テーブル内行位置（同名銘柄区別用）
     FOREIGN KEY (date) REFERENCES snapshots(date)
 );
 """
@@ -49,6 +50,13 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     conn.executescript(SCHEMA_SQL)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+
+    # マイグレーション: position カラムがなければ追加
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(snapshot_holdings)").fetchall()]
+    if "position" not in cols:
+        conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+
     return conn
 
 
