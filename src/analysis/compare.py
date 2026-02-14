@@ -184,6 +184,7 @@ def _compute_diff(
                 holding_diffs.append({
                     "name": ref[1],
                     "code": ref[0],
+                    "asset_class": ref[4],
                     "diff": diff,
                     "current": cur_val,
                     "previous": prev_val,

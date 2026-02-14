@@ -180,16 +180,37 @@ def _build_html(data: dict, dates: list[str]) -> str:
         label = f'{a["institution"]} / {a["name"]}' if a["institution"] and a["institution"] != a["name"] else a["name"]
         acc_rows += f'<tr><td>{label}</td><td class="num">{a["balance"]:,.0f}円</td></tr>'
 
-    # 銘柄 rows (クラス別グループ)
+    # 銘柄 rows (クラス別グループ + 前日比/前月比/前年比)
+    # 比較データから差分ルックアップを構築: (asset_class, name, current_value) -> diff
+    diff_lookups = []  # [daily_lookup, monthly_lookup, yearly_lookup]
+    for comp in comparisons:
+        lookup: dict[tuple, float] = {}
+        if comp.total_diff is not None:
+            for hd in comp.holding_diffs:
+                key = (hd.get("asset_class", ""), hd["name"], hd["current"])
+                lookup[key] = hd["diff"]
+        diff_lookups.append(lookup)
+
     hold_rows = ""
     current_class = None
     for h in holdings:
         if h["asset_class"] != current_class:
             current_class = h["asset_class"]
-            hold_rows += f'<tr class="group-header"><td colspan="4">{current_class}</td></tr>'
+            hold_rows += f'<tr class="group-header"><td colspan="5">{current_class}</td></tr>'
         code = f'<span class="code">{h["code"]}</span> ' if h["code"] else ""
         qty = f' <span class="qty">x{h["quantity"]:,.0f}</span>' if h["quantity"] else ""
-        hold_rows += f'<tr><td>{code}{h["name"]}{qty}</td><td class="num">{h["value"]:,.0f}円</td></tr>'
+        # 各比較期間の差分セル
+        diff_cells = ""
+        diff_key = (h["asset_class"], h["name"], h["value"])
+        for lookup in diff_lookups:
+            d = lookup.get(diff_key)
+            if d is not None and d != 0:
+                sign = "+" if d >= 0 else ""
+                css = "plus" if d >= 0 else "minus"
+                diff_cells += f'<td class="num {css}">{sign}{d:,.0f}</td>'
+            else:
+                diff_cells += '<td class="num diff-zero">-</td>'
+        hold_rows += f'<tr><td>{code}{h["name"]}{qty}</td><td class="num">{h["value"]:,.0f}円</td>{diff_cells}</tr>'
 
     # 業種別円グラフ用データ
     sector_colors = ["#2881D7", "#DF3727", "#FCAD4C", "#0F7F30", "#008986",
@@ -223,37 +244,26 @@ def _build_html(data: dict, dates: list[str]) -> str:
 
     # 比較カード HTML 生成
     compare_cards_html = ""
-    compare_detail_html = ""
     for comp in comparisons:
         if comp.total_diff is not None:
             sign = "+" if comp.total_diff >= 0 else ""
             css = "plus" if comp.total_diff >= 0 else "minus"
             ratio_str = f'{sign}{comp.total_ratio:.2f}%' if comp.total_ratio is not None else ""
+            # クラス別差分
+            class_diff_html = ""
+            if comp.by_class_diff:
+                for cls_name, diff in sorted(comp.by_class_diff.items(), key=lambda x: abs(x[1]), reverse=True):
+                    s = "+" if diff >= 0 else ""
+                    c = "plus" if diff >= 0 else "minus"
+                    class_diff_html += f'<div class="class-diff {c}">{cls_name} {s}{diff:,.0f}</div>'
             compare_cards_html += f'''
     <div class="compare-card">
       <h3>{comp.label}</h3>
       <div class="diff {css}">{sign}{comp.total_diff:,.0f}円</div>
       <div class="ratio {css}">{ratio_str}</div>
       <div class="compare-date">vs {comp.compare_date}</div>
+      {class_diff_html}
     </div>'''
-            # 詳細（クラス別・上位変動）
-            if comp.by_class_diff or comp.holding_diffs:
-                detail_rows = ""
-                for cls_name, diff in sorted(comp.by_class_diff.items(), key=lambda x: abs(x[1]), reverse=True):
-                    s = "+" if diff >= 0 else ""
-                    c = "plus" if diff >= 0 else "minus"
-                    detail_rows += f'<tr><td>{cls_name}</td><td class="num {c}">{s}{diff:,.0f}円</td></tr>'
-                hold_detail = ""
-                for hd in comp.holding_diffs[:5]:
-                    s = "+" if hd["diff"] >= 0 else ""
-                    c = "plus" if hd["diff"] >= 0 else "minus"
-                    code_s = f'<span class="code">{hd["code"]}</span> ' if hd["code"] else ""
-                    hold_detail += f'<tr><td>{code_s}{hd["name"]}</td><td class="num {c}">{s}{hd["diff"]:,.0f}円</td></tr>'
-                compare_detail_html += f'''
-    <details class="compare-detail">
-      <summary>{comp.label}の詳細（vs {comp.compare_date}）</summary>
-      <table>{detail_rows}{hold_detail}</table>
-    </details>'''
         else:
             compare_cards_html += f'''
     <div class="compare-card">
@@ -381,15 +391,16 @@ def _build_html(data: dict, dates: list[str]) -> str:
   .compare-card .diff {{ font-size: 1.3rem; font-weight: 700; }}
   .compare-card .ratio {{ font-size: 0.85rem; margin-top: 2px; }}
   .compare-card .compare-date {{ font-size: 0.75rem; color: #b2bec3; margin-top: 4px; }}
+  .class-diff {{ font-size: 0.7rem; margin-top: 2px; }}
   .plus {{ color: #e74c3c; }}
   .minus {{ color: #2881D7; }}
+  .diff-zero {{ color: #dfe6e9; }}
   .no-data {{ color: #b2bec3; font-size: 0.9rem; }}
+  .hold-table th {{ white-space: nowrap; }}
+  .hold-table td:nth-child(n+3) {{ font-size: 0.82rem; }}
   .pred-table {{ margin-top: 12px; }}
   .pred-table th {{ font-size: 0.8rem; }}
   .pred-note {{ font-size: 0.75rem; color: #b2bec3; margin-top: 8px; }}
-  .compare-detail {{ margin-top: 12px; }}
-  .compare-detail summary {{ cursor: pointer; font-size: 0.85rem; color: #636e72; }}
-  .compare-detail table {{ margin-top: 8px; }}
   .card-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }}
   .card-header h2 {{ margin-bottom: 0; }}
   .info-btn {{
@@ -439,8 +450,6 @@ def _build_html(data: dict, dates: list[str]) -> str:
   <div class="compare-cards">
     {compare_cards_html}
   </div>
-  {compare_detail_html}
-
   <div class="grid">
     <div class="card">
       <h2>資産クラス別内訳</h2>
@@ -488,8 +497,8 @@ def _build_html(data: dict, dates: list[str]) -> str:
 
     <div class="card full">
       <h2>保有銘柄 ({len(holdings)})</h2>
-      <table>
-        <tr><th>銘柄</th><th class="num">評価額</th></tr>
+      <table class="hold-table">
+        <tr><th>銘柄</th><th class="num">評価額</th><th class="num">前日比</th><th class="num">前月比</th><th class="num">前年比</th></tr>
         {hold_rows}
       </table>
     </div>
@@ -644,8 +653,8 @@ def _demo_data() -> dict:
             total_diff=42_300, total_ratio=0.20,
             by_class_diff={"株式（現物）": 35_800, "投資信託": 12_500, "預金・現金・暗号資産": -6_000},
             account_diffs=[], holding_diffs=[
-                {"name": "トヨタ自動車", "code": "7203", "diff": 18_000, "current": 1_260_000, "previous": 1_242_000},
-                {"name": "ソニーグループ", "code": "6758", "diff": 12_500, "current": 980_000, "previous": 967_500},
+                {"name": "トヨタ自動車", "code": "7203", "asset_class": "株式（現物）", "diff": 18_000, "current": 1_260_000, "previous": 1_242_000},
+                {"name": "ソニーグループ", "code": "6758", "asset_class": "株式（現物）", "diff": 12_500, "current": 980_000, "previous": 967_500},
             ],
         ),
         ComparisonResult(
