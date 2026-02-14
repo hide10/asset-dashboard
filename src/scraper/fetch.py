@@ -12,10 +12,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import async_playwright, Response
+from playwright.async_api import async_playwright, BrowserContext, Page, Response
 
 RAW_DIR = Path(__file__).resolve().parents[2] / "raw"
 PORTFOLIO_URL = "https://moneyforward.com/bs/portfolio"
+AGGREGATION_URL = "https://moneyforward.com/aggregation_queue"
 DEFAULT_STORAGE_STATE = Path(__file__).resolve().parents[2] / ".auth" / "storage_state.json"
 
 
@@ -27,8 +28,15 @@ def _build_raw_path() -> Path:
     return path
 
 
-async def fetch_assets(storage_state: str | None = None) -> Path:
-    """資産画面を取得しrawデータを保存する。"""
+async def create_context(
+    storage_state: str | None = None,
+) -> tuple:
+    """Playwrightのブラウザコンテキストを作成する。
+
+    Returns:
+        (playwright, browser, context) のタプル。
+        呼び出し側で browser.close() と playwright の終了を行うこと。
+    """
     if storage_state is None:
         storage_state = str(DEFAULT_STORAGE_STATE)
 
@@ -38,80 +46,98 @@ async def fetch_assets(storage_state: str | None = None) -> Path:
             "先に python -m src.scraper.login でログインしてください。"
         )
 
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(headless=False)
+    context = await browser.new_context(
+        storage_state=storage_state,
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+    )
+    return pw, browser, context
+
+
+async def fetch_page(page: Page) -> Path:
+    """既存のページで資産画面を取得しrawデータを保存する。"""
     raw_path = _build_raw_path()
     api_responses: list[dict] = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context(
-            storage_state=storage_state,
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
+    async def on_response(response: Response) -> None:
+        url = response.url
+        if "moneyforward.com" in url and response.status == 200:
+            content_type = response.headers.get("content-type", "")
+            if "application/json" in content_type:
+                try:
+                    body = await response.json()
+                    api_responses.append({
+                        "url": url,
+                        "status": response.status,
+                        "body": body,
+                    })
+                except Exception:
+                    pass
+
+    page.on("response", on_response)
+
+    print(f"アクセス中: {PORTFOLIO_URL}")
+    await page.goto(PORTFOLIO_URL, wait_until="networkidle", timeout=60000)
+
+    # ログインページにリダイレクトされた場合
+    if "sign_in" in page.url:
+        raise RuntimeError(
+            "ログインページにリダイレクトされました。セッションが期限切れです。\n"
+            "python -m src.scraper.login で再ログインしてください。"
         )
-        page = await context.new_page()
 
-        # APIレスポンスをインターセプト
-        async def on_response(response: Response) -> None:
-            url = response.url
-            if "moneyforward.com" in url and response.status == 200:
-                content_type = response.headers.get("content-type", "")
-                if "application/json" in content_type:
-                    try:
-                        body = await response.json()
-                        api_responses.append({
-                            "url": url,
-                            "status": response.status,
-                            "body": body,
-                        })
-                    except Exception:
-                        pass
+    await page.wait_for_timeout(3000)
 
-        page.on("response", on_response)
+    # HTML保存
+    html_content = await page.content()
+    html_path = raw_path / "asset.html"
+    html_path.write_text(html_content, encoding="utf-8")
+    print(f"HTML保存: {html_path}")
 
-        # 資産画面にアクセス
-        print(f"アクセス中: {PORTFOLIO_URL}")
-        await page.goto(PORTFOLIO_URL, wait_until="networkidle", timeout=60000)
+    # スクリーンショット保存（フルページ）
+    png_path = raw_path / "asset.png"
+    await page.screenshot(path=str(png_path), full_page=True)
+    print(f"スクリーンショット保存: {png_path}")
 
-        # ログインページにリダイレクトされた場合
-        if "sign_in" in page.url:
-            await browser.close()
-            raise RuntimeError(
-                "ログインページにリダイレクトされました。セッションが期限切れです。\n"
-                "python -m src.scraper.login で再ログインしてください。"
-            )
+    # APIレスポンスJSON保存
+    if api_responses:
+        json_path = raw_path / "api_responses.json"
+        json_path.write_text(
+            json.dumps(api_responses, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"APIレスポンス保存: {json_path} ({len(api_responses)}件)")
 
-        # ページ読み込み完了を少し待つ（動的コンテンツ用）
-        await page.wait_for_timeout(3000)
+    # リスナー解除
+    page.remove_listener("response", on_response)
 
-        # HTML保存
-        html_content = await page.content()
-        html_path = raw_path / "asset.html"
-        html_path.write_text(html_content, encoding="utf-8")
-        print(f"HTML保存: {html_path}")
-
-        # スクリーンショット保存（フルページ）
-        png_path = raw_path / "asset.png"
-        await page.screenshot(path=str(png_path), full_page=True)
-        print(f"スクリーンショット保存: {png_path}")
-
-        # APIレスポンスJSON保存
-        if api_responses:
-            json_path = raw_path / "api_responses.json"
-            json_path.write_text(
-                json.dumps(api_responses, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            print(f"APIレスポンス保存: {json_path} ({len(api_responses)}件)")
-        else:
-            print("APIレスポンス: なし（HTMLからパースが必要）")
-
-        await browser.close()
-
-    print(f"\nraw保存完了: {raw_path}")
+    print(f"raw保存完了: {raw_path}")
     return raw_path
+
+
+async def request_aggregation(page: Page) -> None:
+    """一括更新をリクエストする。"""
+    print(f"一括更新リクエスト: {AGGREGATION_URL}")
+    await page.goto(AGGREGATION_URL, wait_until="networkidle", timeout=30000)
+    await page.wait_for_timeout(2000)
+    print("一括更新リクエスト完了")
+
+
+async def fetch_assets(storage_state: str | None = None) -> Path:
+    """資産画面を取得しrawデータを保存する（単体実行用）。"""
+    pw, browser, context = await create_context(storage_state)
+    try:
+        page = await context.new_page()
+        raw_path = await fetch_page(page)
+        return raw_path
+    finally:
+        await browser.close()
+        await pw.stop()
 
 
 def main() -> None:

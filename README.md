@@ -52,9 +52,12 @@ python -m src.scraper.login
 ### 2. 日次データ取得（毎日1回）
 
 取得 → パース → DB保存 を1コマンドで実行する。
+前回からデータに変化がない場合は自動的に**一括更新をリクエスト**し、待機後に再取得する。
 
 ```bash
-python -m src.daily
+python -m src.daily                # デフォルト（更新待ち60秒）
+python -m src.daily --wait 30      # 更新待ちを30秒に変更
+python -m src.daily --no-refresh   # 一括更新を行わない（従来動作）
 ```
 
 raw データは `raw/YYYY-MM-DD_HHMMSS/` に保存され、解析結果が `data/assets.db` に格納される。
