@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import threading
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -18,20 +20,23 @@ from src.analysis.compare import get_all_comparisons, ComparisonResult
 from src.prediction.montecarlo import predict_no_contribution, predict_with_contribution, RISK_CLASSES, PredictionRange
 from src.db.schema import init_db
 from src.db.repository import get_cashflows, get_setting, save_setting
+from src.analysis.ai_comment import generate_comments, get_comment
 
 DB_DEFAULT = Path(__file__).resolve().parents[2] / "data" / "assets.db"
+
+_update_state = {"running": False, "completed_at": None}
 
 
 def _get_dates(db_path: str) -> list[str]:
     """利用可能な日付一覧を返す（新しい順）。"""
-    conn = sqlite3.connect(db_path)
+    conn = init_db(db_path)
     rows = conn.execute("SELECT date FROM snapshots ORDER BY date DESC").fetchall()
     conn.close()
     return [r[0] for r in rows]
 
 
 def _get_data(db_path: str, date: str | None = None) -> dict:
-    conn = sqlite3.connect(db_path)
+    conn = init_db(db_path)
     if date is None:
         row = conn.execute("SELECT date FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
         if not row:
@@ -58,9 +63,10 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
     ]
 
     holdings = [
-        {"name": r[0], "code": r[1], "asset_class": r[2], "value": r[3], "quantity": r[4], "position": r[5]}
+        {"name": r[0], "code": r[1], "asset_class": r[2], "value": r[3], "quantity": r[4], "position": r[5],
+         "acquisition_price": r[6], "current_price": r[7]}
         for r in conn.execute(
-            "SELECT name, symbol_or_code, asset_class, value, quantity, position FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
+            "SELECT name, symbol_or_code, asset_class, value, quantity, position, acquisition_price, current_price FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
             (date,),
         ).fetchall()
     ]
@@ -85,12 +91,18 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
             annual = dps * h["quantity"]
             total_dividend += annual
             if dps > 0:
+                cur_price = h.get("current_price")
+                acq_price = h.get("acquisition_price")
+                current_yield = (dps / cur_price * 100) if cur_price else None
+                acq_yield = (dps / acq_price * 100) if acq_price else None
                 dividends.append({
                     "code": h["code"],
                     "name": h["name"],
                     "quantity": h["quantity"],
                     "dps": dps,
                     "annual": annual,
+                    "current_yield": current_yield,
+                    "acq_yield": acq_yield,
                 })
     dividends.sort(key=lambda x: x["annual"], reverse=True)
 
@@ -110,7 +122,24 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
     }
 
 
-def _build_html(data: dict, dates: list[str]) -> str:
+def _avg_yield_html(dividends: list[dict]) -> str:
+    """配当加重平均利回りの HTML 片を返す。"""
+    total_value = 0.0
+    total_div = 0.0
+    for d in dividends:
+        if d.get("current_yield") is not None and d["annual"] > 0:
+            # 銘柄の評価額 = dps / (current_yield/100) * quantity
+            # 簡易的に annual / (current_yield/100) で株式部分の評価額を逆算
+            stock_value = d["annual"] / (d["current_yield"] / 100)
+            total_value += stock_value
+            total_div += d["annual"]
+    if total_value > 0:
+        avg_yield = total_div / total_value * 100
+        return f"　加重平均利回り {avg_yield:.2f}%"
+    return ""
+
+
+def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comment: str | None = None) -> str:
     if not data:
         return "<html><body><h1>データがありません</h1></body></html>"
 
@@ -212,11 +241,14 @@ def _build_html(data: dict, dates: list[str]) -> str:
     # 配当予測 rows
     div_rows = ""
     for d in dividends:
-        div_yield = d["annual"] / (d["dps"] / d["dps"] * d["annual"] / d["quantity"] * d["quantity"]) * 100 if d["annual"] else 0
+        cur_y = f'{d["current_yield"]:.2f}%' if d.get("current_yield") is not None else "-"
+        acq_y = f'{d["acq_yield"]:.2f}%' if d.get("acq_yield") is not None else "-"
         div_rows += f'<tr><td><span class="code">{d["code"]}</span> {d["name"]}</td>'
         div_rows += f'<td class="num">{d["quantity"]:,.0f}</td>'
         div_rows += f'<td class="num">{d["dps"]:,.1f}円</td>'
-        div_rows += f'<td class="num">{d["annual"]:,.0f}円</td></tr>'
+        div_rows += f'<td class="num">{d["annual"]:,.0f}円</td>'
+        div_rows += f'<td class="num">{cur_y}</td>'
+        div_rows += f'<td class="num">{acq_y}</td></tr>'
 
     # 比較カード HTML 生成
     compare_cards_html = ""
@@ -253,6 +285,7 @@ def _build_html(data: dict, dates: list[str]) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
 <title>資産ダッシュボード - {date}</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box; }}
@@ -273,8 +306,8 @@ def _build_html(data: dict, dates: list[str]) -> str:
   }}
   .date-picker .nav-btn:hover {{ background: #f1f2f6; }}
   .date-picker .nav-btn:disabled {{ color: #b2bec3; cursor: default; background: #fff; }}
-  .total {{ font-size: 2.2rem; font-weight: 700; color: #2d3436; margin-bottom: 24px; }}
-  .total span {{ font-size: 1rem; color: #636e72; font-weight: 400; }}
+  .total {{ font-size: 1.4rem; font-weight: 700; color: #636e72; margin-bottom: 24px; }}
+  .total strong {{ color: #2d3436; font-size: 1.8rem; }}
   .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }}
   .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
   .card h2 {{ font-size: 1.1rem; margin-bottom: 12px; color: #2d3436; }}
@@ -314,13 +347,42 @@ def _build_html(data: dict, dates: list[str]) -> str:
     padding: 6px 14px; border: 1px solid #2881D7; border-radius: 6px;
   }}
   .nav-link:hover {{ background: #2881D7; color: #fff; }}
+  .ai-comment-card {{
+    background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
+    border: 1px solid #d4ddee; border-radius: 12px;
+    padding: 16px 20px; margin-bottom: 20px;
+    display: flex; align-items: flex-start; gap: 12px;
+    font-size: 0.9rem; line-height: 1.7;
+  }}
+  .ai-icon {{
+    background: #2881D7; color: #fff; font-size: 0.7rem; font-weight: 700;
+    padding: 3px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
+  }}
+  #reload-banner {{
+    display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    background: #0F7F30; color: #fff; padding: 10px 20px;
+    align-items: center; justify-content: center; gap: 12px;
+    font-size: 0.9rem; font-weight: 600;
+  }}
+  #reload-banner button {{
+    background: #fff; color: #0F7F30; border: none; border-radius: 6px;
+    padding: 4px 14px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  }}
+  #reload-banner button:hover {{ background: #f1f2f6; }}
 </style>
 </head>
 <body>
+<div id="reload-banner">
+  データが更新されました
+  <button onclick="location.reload()">再読み込み</button>
+</div>
 <div class="container">
   <div class="page-header">
     <h1>資産ダッシュボード</h1>
-    <a href="/plan" class="nav-link">ライフプラン &rarr;</a>
+    <div style="display:flex;gap:8px">
+      <a href="/settings" class="nav-link" style="font-size:0.8rem;padding:6px 10px;border-color:#b2bec3;color:#636e72">設定</a>
+      <a href="/plan" class="nav-link">ライフプラン &rarr;</a>
+    </div>
   </div>
   <div class="date-picker">
     <button class="nav-btn" id="prev-btn" title="前の日">&larr;</button>
@@ -330,7 +392,8 @@ def _build_html(data: dict, dates: list[str]) -> str:
     <button class="nav-btn" id="next-btn" title="次の日">&rarr;</button>
     <label>({len(dates)}日分のデータ)</label>
   </div>
-  <div class="total">{total:,.0f}<span> 円</span></div>
+  <div class="total">現在の総資産: <strong>{total:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({date}時点)</span></div>
+  {f'<div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">{ai_comment}</div></div>' if ai_comment else ''}
 
   <div class="compare-cards">
     {compare_cards_html}
@@ -369,9 +432,9 @@ def _build_html(data: dict, dates: list[str]) -> str:
     <div class="card">
       <h2>年間配当予測</h2>
       <div class="dividend-total">{total_dividend:,.0f}<span> 円/年</span></div>
-      <div class="dividend-monthly">月平均 {total_dividend/12:,.0f}円</div>
+      <div class="dividend-monthly">月平均 {total_dividend/12:,.0f}円{_avg_yield_html(dividends)}</div>
       <table style="margin-top:12px">
-        <tr><th>銘柄</th><th class="num">保有数</th><th class="num">配当/株</th><th class="num">年間配当</th></tr>
+        <tr><th>銘柄</th><th class="num">保有数</th><th class="num">配当/株</th><th class="num">年間配当</th><th class="num">利回り</th><th class="num">取得利回り</th></tr>
         {div_rows}
       </table>
     </div>
@@ -446,6 +509,19 @@ prevBtn.disabled = idx === dates.length - 1;
 prevBtn.onclick = () => {{ if (idx < dates.length - 1) location.href = '/?date=' + dates[idx + 1]; }};
 nextBtn.onclick = () => {{ if (idx > 0) location.href = '/?date=' + dates[idx - 1]; }};
 
+{'// reload polling' + """
+const loadedAt = new Date().toISOString();
+const pollId = setInterval(async () => {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    if (s.completed_at && s.completed_at > loadedAt) {
+      document.getElementById('reload-banner').style.display = 'flex';
+      clearInterval(pollId);
+    }
+  } catch(e) {}
+}, 5000);
+""" if not skip_update else ''}
 </script>
 </body>
 </html>"""
@@ -475,22 +551,22 @@ def _demo_data() -> dict:
     ]
 
     holdings = [
-        {"name": "トヨタ自動車",      "code": "7203", "asset_class": "株式（現物）", "value": 1_260_000, "quantity": 300},
-        {"name": "ソニーグループ",    "code": "6758", "asset_class": "株式（現物）", "value": 980_000,   "quantity": 100},
-        {"name": "三菱商事",          "code": "8058", "asset_class": "株式（現物）", "value": 875_000,   "quantity": 100},
-        {"name": "信越化学工業",      "code": "4063", "asset_class": "株式（現物）", "value": 720_000,   "quantity": 100},
-        {"name": "日立製作所",        "code": "6501", "asset_class": "株式（現物）", "value": 685_000,   "quantity": 200},
-        {"name": "キーエンス",        "code": "6861", "asset_class": "株式（現物）", "value": 650_000,   "quantity": 10},
-        {"name": "任天堂",            "code": "7974", "asset_class": "株式（現物）", "value": 580_000,   "quantity": 100},
-        {"name": "ダイキン工業",      "code": "6367", "asset_class": "株式（現物）", "value": 350_000,   "quantity": 100},
-        {"name": "INPEX",             "code": "1605", "asset_class": "株式（現物）", "value": 250_000,   "quantity": 500},
-        {"name": "eMAXIS Slim 全世界株式(オルカン)",            "code": "", "asset_class": "投資信託", "value": 2_480_000, "quantity": 680000},
-        {"name": "eMAXIS Slim 米国株式(S&P500)",               "code": "", "asset_class": "投資信託", "value": 1_850_000, "quantity": 520000},
-        {"name": "ニッセイ外国株式インデックスファンド",        "code": "", "asset_class": "投資信託", "value": 850_000,   "quantity": 290000},
-        {"name": "不動産クラウドファンディング",                "code": "", "asset_class": "不動産",   "value": 1_200_000, "quantity": None},
-        {"name": "企業型確定拠出年金",                          "code": "", "asset_class": "年金",     "value": 2_800_000, "quantity": None},
-        {"name": "iDeCo（先進国株式）",                         "code": "", "asset_class": "年金",     "value": 850_000,   "quantity": None},
-        {"name": "個人年金保険",                                "code": "", "asset_class": "年金",     "value": 300_000,   "quantity": None},
+        {"name": "トヨタ自動車",      "code": "7203", "asset_class": "株式（現物）", "value": 1_260_000, "quantity": 300, "acquisition_price": 3_800, "current_price": 4_200},
+        {"name": "ソニーグループ",    "code": "6758", "asset_class": "株式（現物）", "value": 980_000,   "quantity": 100, "acquisition_price": 8_500, "current_price": 9_800},
+        {"name": "三菱商事",          "code": "8058", "asset_class": "株式（現物）", "value": 875_000,   "quantity": 100, "acquisition_price": 7_200, "current_price": 8_750},
+        {"name": "信越化学工業",      "code": "4063", "asset_class": "株式（現物）", "value": 720_000,   "quantity": 100, "acquisition_price": 6_500, "current_price": 7_200},
+        {"name": "日立製作所",        "code": "6501", "asset_class": "株式（現物）", "value": 685_000,   "quantity": 200, "acquisition_price": 2_800, "current_price": 3_425},
+        {"name": "キーエンス",        "code": "6861", "asset_class": "株式（現物）", "value": 650_000,   "quantity": 10,  "acquisition_price": 58_000, "current_price": 65_000},
+        {"name": "任天堂",            "code": "7974", "asset_class": "株式（現物）", "value": 580_000,   "quantity": 100, "acquisition_price": 5_200, "current_price": 5_800},
+        {"name": "ダイキン工業",      "code": "6367", "asset_class": "株式（現物）", "value": 350_000,   "quantity": 100, "acquisition_price": 3_000, "current_price": 3_500},
+        {"name": "INPEX",             "code": "1605", "asset_class": "株式（現物）", "value": 250_000,   "quantity": 500, "acquisition_price": 420,   "current_price": 500},
+        {"name": "eMAXIS Slim 全世界株式(オルカン)",            "code": "", "asset_class": "投資信託", "value": 2_480_000, "quantity": 680000, "acquisition_price": None, "current_price": None},
+        {"name": "eMAXIS Slim 米国株式(S&P500)",               "code": "", "asset_class": "投資信託", "value": 1_850_000, "quantity": 520000, "acquisition_price": None, "current_price": None},
+        {"name": "ニッセイ外国株式インデックスファンド",        "code": "", "asset_class": "投資信託", "value": 850_000,   "quantity": 290000, "acquisition_price": None, "current_price": None},
+        {"name": "不動産クラウドファンディング",                "code": "", "asset_class": "不動産",   "value": 1_200_000, "quantity": None, "acquisition_price": None, "current_price": None},
+        {"name": "企業型確定拠出年金",                          "code": "", "asset_class": "年金",     "value": 2_800_000, "quantity": None, "acquisition_price": None, "current_price": None},
+        {"name": "iDeCo（先進国株式）",                         "code": "", "asset_class": "年金",     "value": 850_000,   "quantity": None, "acquisition_price": None, "current_price": None},
+        {"name": "個人年金保険",                                "code": "", "asset_class": "年金",     "value": 300_000,   "quantity": None, "acquisition_price": None, "current_price": None},
     ]
 
     # 業種別
@@ -502,15 +578,15 @@ def _demo_data() -> dict:
 
     # 配当予測
     demo_dividends = [
-        {"code": "7203", "name": "トヨタ自動車",   "quantity": 300, "dps": 75,   "annual": 22_500},
-        {"code": "6758", "name": "ソニーグループ", "quantity": 100, "dps": 85,   "annual": 8_500},
-        {"code": "8058", "name": "三菱商事",       "quantity": 100, "dps": 100,  "annual": 10_000},
-        {"code": "4063", "name": "信越化学工業",   "quantity": 100, "dps": 120,  "annual": 12_000},
-        {"code": "6501", "name": "日立製作所",     "quantity": 200, "dps": 52,   "annual": 10_400},
-        {"code": "6861", "name": "キーエンス",     "quantity": 10,  "dps": 300,  "annual": 3_000},
-        {"code": "7974", "name": "任天堂",         "quantity": 100, "dps": 183,  "annual": 18_300},
-        {"code": "6367", "name": "ダイキン工業",   "quantity": 100, "dps": 100,  "annual": 10_000},
-        {"code": "1605", "name": "INPEX",          "quantity": 500, "dps": 60,   "annual": 30_000},
+        {"code": "7203", "name": "トヨタ自動車",   "quantity": 300, "dps": 75,   "annual": 22_500, "current_yield": 75/4200*100,  "acq_yield": 75/3800*100},
+        {"code": "6758", "name": "ソニーグループ", "quantity": 100, "dps": 85,   "annual": 8_500,  "current_yield": 85/9800*100,  "acq_yield": 85/8500*100},
+        {"code": "8058", "name": "三菱商事",       "quantity": 100, "dps": 100,  "annual": 10_000, "current_yield": 100/8750*100, "acq_yield": 100/7200*100},
+        {"code": "4063", "name": "信越化学工業",   "quantity": 100, "dps": 120,  "annual": 12_000, "current_yield": 120/7200*100, "acq_yield": 120/6500*100},
+        {"code": "6501", "name": "日立製作所",     "quantity": 200, "dps": 52,   "annual": 10_400, "current_yield": 52/3425*100,  "acq_yield": 52/2800*100},
+        {"code": "6861", "name": "キーエンス",     "quantity": 10,  "dps": 300,  "annual": 3_000,  "current_yield": 300/65000*100,"acq_yield": 300/58000*100},
+        {"code": "7974", "name": "任天堂",         "quantity": 100, "dps": 183,  "annual": 18_300, "current_yield": 183/5800*100, "acq_yield": 183/5200*100},
+        {"code": "6367", "name": "ダイキン工業",   "quantity": 100, "dps": 100,  "annual": 10_000, "current_yield": 100/3500*100, "acq_yield": 100/3000*100},
+        {"code": "1605", "name": "INPEX",          "quantity": 500, "dps": 60,   "annual": 30_000, "current_yield": 60/500*100,   "acq_yield": 60/420*100},
     ]
     demo_dividends.sort(key=lambda x: x["annual"], reverse=True)
 
@@ -739,7 +815,7 @@ def _demo_plan_data() -> dict:
     }
 
 
-def _build_plan_html(data: dict) -> str:
+def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | None = None) -> str:
     """ライフプランニングページの HTML を生成する。"""
     if not data:
         return "<html><body><h1>データがありません</h1><p><a href='/'>ダッシュボードに戻る</a></p></body></html>"
@@ -848,6 +924,7 @@ def _build_plan_html(data: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
 <title>ライフプランニング - {date}</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box; }}
@@ -912,15 +989,42 @@ def _build_plan_html(data: dict) -> str:
     background: #fff; cursor: pointer; font-size: 0.85rem; color: #2d3436;
   }}
   .contrib-form button:hover {{ background: #f1f2f6; }}
+  .ai-comment-card {{
+    background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
+    border: 1px solid #d4ddee; border-radius: 12px;
+    padding: 16px 20px; margin-bottom: 20px;
+    display: flex; align-items: flex-start; gap: 12px;
+    font-size: 0.9rem; line-height: 1.7;
+  }}
+  .ai-icon {{
+    background: #2881D7; color: #fff; font-size: 0.7rem; font-weight: 700;
+    padding: 3px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
+  }}
+  #reload-banner {{
+    display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    background: #0F7F30; color: #fff; padding: 10px 20px;
+    align-items: center; justify-content: center; gap: 12px;
+    font-size: 0.9rem; font-weight: 600;
+  }}
+  #reload-banner button {{
+    background: #fff; color: #0F7F30; border: none; border-radius: 6px;
+    padding: 4px 14px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  }}
+  #reload-banner button:hover {{ background: #f1f2f6; }}
 </style>
 </head>
 <body>
+<div id="reload-banner">
+  データが更新されました
+  <button onclick="location.reload()">再読み込み</button>
+</div>
 <div class="container">
   <div class="page-header">
     <h1>ライフプランニング</h1>
     <a href="/" class="nav-link">&larr; ダッシュボード</a>
   </div>
   <div class="total">現在の総資産: <strong>{total_asset:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({date}時点)</span></div>
+  {f'<div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">{ai_comment}</div></div>' if ai_comment else ''}
 
   <div class="grid">
     <div class="card full">
@@ -1083,7 +1187,105 @@ function updateContrib() {{
   url.searchParams.set('contrib', v);
   location.href = url.toString();
 }}
+
+{'// reload polling' + """
+const loadedAt = new Date().toISOString();
+const pollId = setInterval(async () => {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    if (s.completed_at && s.completed_at > loadedAt) {
+      document.getElementById('reload-banner').style.display = 'flex';
+      clearInterval(pollId);
+    }
+  } catch(e) {}
+}, 5000);
+""" if not skip_update else ''}
 </script>
+</body>
+</html>"""
+
+
+def _build_settings_html(db_path: str, saved: str | None = None) -> str:
+    """設定ページのHTMLを生成する。"""
+    import os
+    conn = init_db(db_path)
+    db_key = get_setting(conn, "gemini_api_key", "")
+    conn.close()
+    env_key = os.environ.get("GEMINI_API_KEY", "")
+    # 表示用マスク
+    if env_key:
+        source = "環境変数"
+        display_key = env_key[:8] + "..." if len(env_key) > 8 else env_key
+    elif db_key:
+        source = "DB設定"
+        display_key = db_key[:8] + "..." if len(db_key) > 8 else db_key
+    else:
+        source = ""
+        display_key = ""
+
+    saved_msg = '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です — 数十秒後にダッシュボードを開くと表示されます。</div>' if saved else ''
+
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>設定</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f6fa; color: #2d3436; line-height: 1.6; }}
+  .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+  .page-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }}
+  h1 {{ font-size: 1.5rem; }}
+  .nav-link {{
+    color: #2881D7; text-decoration: none; font-size: 0.9rem; font-weight: 600;
+    padding: 6px 14px; border: 1px solid #2881D7; border-radius: 6px;
+  }}
+  .nav-link:hover {{ background: #2881D7; color: #fff; }}
+  .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; }}
+  .card h2 {{ font-size: 1.1rem; margin-bottom: 12px; }}
+  .field {{ margin-bottom: 16px; }}
+  .field label {{ display: block; font-size: 0.85rem; color: #636e72; margin-bottom: 4px; font-weight: 600; }}
+  .field input {{ width: 100%; padding: 8px 12px; border: 1px solid #dfe6e9; border-radius: 6px; font-size: 0.9rem; }}
+  .field .hint {{ font-size: 0.78rem; color: #b2bec3; margin-top: 4px; }}
+  .status {{ font-size: 0.85rem; color: #636e72; margin-bottom: 12px; padding: 8px 12px; background: #f8f9fa; border-radius: 6px; }}
+  .status .active {{ color: #0F7F30; font-weight: 600; }}
+  .status .inactive {{ color: #b2bec3; }}
+  .btn {{ padding: 8px 20px; background: #2881D7; color: #fff; border: none; border-radius: 6px;
+          font-size: 0.9rem; font-weight: 600; cursor: pointer; }}
+  .btn:hover {{ background: #1a6cb8; }}
+  .saved-msg {{ background: #0F7F30; color: #fff; padding: 10px 16px; border-radius: 8px;
+               margin-bottom: 16px; font-size: 0.9rem; font-weight: 600; }}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="page-header">
+    <h1>設定</h1>
+    <a href="/" class="nav-link">&larr; ダッシュボード</a>
+  </div>
+  {saved_msg}
+  <div class="card">
+    <h2>AI分析（Gemini API）</h2>
+    <div class="status">
+      現在のステータス:
+      {f'<span class="active">有効</span>（{source}: {display_key}）' if display_key else '<span class="inactive">未設定 — APIキーを入力するとAI分析コメントが有効になります</span>'}
+    </div>
+    <form method="POST" action="/settings">
+      <div class="field">
+        <label>Gemini APIキー</label>
+        <input type="password" name="gemini_api_key" value="{db_key}" placeholder="AIza...">
+        <div class="hint">
+          Google AI Studio（<a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a>）で無料で取得できます。
+          環境変数 GEMINI_API_KEY でも設定可能です。空欄で保存するとDBのキーを削除します。
+        </div>
+      </div>
+      <button type="submit" class="btn">保存</button>
+    </form>
+  </div>
+</div>
 </body>
 </html>"""
 
@@ -1091,12 +1293,23 @@ function updateContrib() {{
 class Handler(BaseHTTPRequestHandler):
     db_path: str = str(DB_DEFAULT)
     demo: bool = False
+    skip_update: bool = False
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
 
-        if parsed.path == "/api/data":
+        if parsed.path == "/api/status":
+            payload = {
+                "updating": _update_state["running"],
+                "completed_at": _update_state["completed_at"],
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+
+        elif parsed.path == "/api/data":
             if self.demo:
                 data = _demo_data()
             else:
@@ -1127,9 +1340,18 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             if self.demo:
                 data = _demo_plan_data()
+                ai_comment = "直近6ヶ月で資産は約1,970万円から2,150万円へ着実に増加しており、月平均+30万円の成長ペースです。月次収支は概ね黒字を維持していますが、12月のように支出が膨らむ月もあるため、臨時出費への備えも意識しましょう。モンテカルロ・シミュレーションでは、月5万円の積立を継続した場合、5年後の中央値は約3,120万円と見込まれ、長期的な資産形成は順調と言えます。"
             else:
                 data = _get_plan_data(self.db_path, contrib)
-            html = _build_plan_html(data)
+                ai_comment = None
+                if data:
+                    try:
+                        conn = init_db(self.db_path)
+                        ai_comment = get_comment(conn, data["date"], "lifeplan")
+                        conn.close()
+                    except Exception:
+                        pass
+            html = _build_plan_html(data, self.skip_update, ai_comment=ai_comment)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -1139,15 +1361,36 @@ class Handler(BaseHTTPRequestHandler):
             if self.demo:
                 data = _demo_data()
                 dates = [data["date"]]
+                ai_comment = "総資産約2,150万円のポートフォリオは、株式・投資信託・預金・年金にバランスよく分散されています。前日比+4.2万円、前月比+28.5万円と堅調に推移しており、特にリスク資産（株式+投信）の貢献が大きいです。年間配当予測は約12.5万円（利回り約1.9%）で、高配当銘柄の追加や業種の偏り（電気機器が大きい）の分散を検討すると、より安定したポートフォリオになるでしょう。"
             else:
                 date = params.get("date", [None])[0]
                 dates = _get_dates(self.db_path)
                 data = _get_data(self.db_path, date)
-            html = _build_html(data, dates)
+                ai_comment = None
+                if data:
+                    try:
+                        conn = init_db(self.db_path)
+                        ai_comment = get_comment(conn, data["date"], "dashboard")
+                        conn.close()
+                    except Exception:
+                        pass
+            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(html.encode())
+
+        elif parsed.path == "/settings":
+            saved = params.get("saved", [None])[0]
+            html = _build_settings_html(self.db_path, saved=saved)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(html.encode())
+
+        elif parsed.path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
 
         else:
             self.send_response(404)
@@ -1155,19 +1398,52 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"<html><body><h1>404 Not Found</h1></body></html>")
 
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/settings":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            post_params = parse_qs(body)
+            api_key = post_params.get("gemini_api_key", [""])[0].strip()
+            conn = init_db(self.db_path)
+            if api_key:
+                save_setting(conn, "gemini_api_key", api_key)
+            else:
+                conn.execute("DELETE FROM settings WHERE key = 'gemini_api_key'")
+                conn.commit()
+            conn.close()
+            # キーが設定されたら即座にAIコメント生成を試みる（バックグラウンド）
+            if api_key:
+                t = threading.Thread(target=_generate_ai_comments, args=(self.db_path,), daemon=True)
+                t.start()
+            self.send_response(303)
+            self.send_header("Location", "/settings?saved=1")
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def log_message(self, format, *args):
         pass  # suppress access logs
 
 
-def _needs_daily_update(db_path: str) -> bool:
-    """当日のスナップショットが DB に存在しないなら True。"""
-    from datetime import date as _date
-    conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        "SELECT 1 FROM snapshots WHERE date = ?", (_date.today().isoformat(),)
-    ).fetchone()
+def _should_update(db_path: str, max_age_hours: int = 6) -> bool:
+    """前回取得から max_age_hours 以上経過していれば True。
+
+    - last_fetch_at が存在しない場合、snapshots が1件以上あれば True
+      （過去に取得成功している＝ログイン設定済み）
+    - snapshots が0件なら False（初回セットアップ未完了の可能性）
+    """
+    conn = init_db(db_path)
+    last = get_setting(conn, "last_fetch_at")
+    has_snapshots = conn.execute("SELECT 1 FROM snapshots LIMIT 1").fetchone() is not None
     conn.close()
-    return row is None
+
+    if last is None:
+        return has_snapshots
+
+    elapsed = datetime.now() - datetime.fromisoformat(last)
+    return elapsed.total_seconds() >= max_age_hours * 3600
 
 
 def _needs_dividend_update() -> bool:
@@ -1181,25 +1457,67 @@ def _needs_dividend_update() -> bool:
     return not any(v.get("fetched") == today for v in data.values())
 
 
-def _auto_update(db_path: str) -> None:
-    """サーバー起動前に当日データがなければ日次取得・配当更新を実行する。"""
-    import asyncio
+def _generate_ai_comments(db_path: str) -> None:
+    """AIコメントを生成・保存する。失敗してもエラーを握りつぶす。"""
+    try:
+        generate_comments(db_path)
+    except Exception as e:
+        print(f"[ai] AI分析エラー: {e}")
 
-    if _needs_daily_update(db_path):
-        print("[auto] 当日の資産データがありません。日次取得を実行します...")
+
+def _bg_worker(db_path: str) -> None:
+    """バックグラウンドでデータ取得・配当更新・AI分析を実行する。"""
+    _update_state["running"] = True
+    try:
+        import asyncio
         from src.daily import run
         asyncio.run(run())
-        print("[auto] 日次取得完了\n")
-    else:
-        print("[auto] 当日の資産データあり — スキップ")
 
-    if _needs_dividend_update():
-        print("[auto] 配当データを更新します...")
-        from src.data.dividend_fetcher import update_all_dividends
-        update_all_dividends()
-        print("[auto] 配当更新完了\n")
+        if _needs_dividend_update():
+            from src.data.dividend_fetcher import update_all_dividends
+            update_all_dividends()
+
+        _generate_ai_comments(db_path)
+
+        _update_state["completed_at"] = datetime.now().isoformat()
+        print("[auto] バックグラウンド更新完了")
+    except Exception as e:
+        print(f"[auto] バックグラウンド更新失敗: {e}")
+    finally:
+        _update_state["running"] = False
+
+
+def _start_bg_update(db_path: str) -> None:
+    """必要に応じてバックグラウンドでデータ更新を開始する。"""
+    if _should_update(db_path):
+        print("[auto] バックグラウンドでデータ更新を開始します...")
+        t = threading.Thread(target=_bg_worker, args=(db_path,), daemon=True)
+        t.start()
     else:
-        print("[auto] 配当データは当日取得済み — スキップ")
+        print("[auto] データは最新です — スキップ")
+
+
+def _kill_existing(port: int) -> None:
+    """指定ポートを使用している既存プロセスを停止する。"""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"], capture_output=True, text=True
+        )
+        pids = result.stdout.strip().split()
+        if pids:
+            print(f"ポート {port} の既存プロセス (PID: {', '.join(pids)}) を停止します...")
+            subprocess.run(["kill"] + pids)
+            import time
+            time.sleep(1)
+    except FileNotFoundError:
+        # lsof がない場合は fuser を試す
+        try:
+            subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
+            import time
+            time.sleep(1)
+        except FileNotFoundError:
+            pass
 
 
 def main() -> None:
@@ -1211,12 +1529,22 @@ def main() -> None:
                         help="起動時の自動更新をスキップ")
     args = parser.parse_args()
 
-    if not args.demo and not args.skip_update:
-        _auto_update(args.db)
+    skip_update = args.demo or args.skip_update
+    if not skip_update:
+        _start_bg_update(args.db)
 
     Handler.db_path = args.db
     Handler.demo = args.demo
-    server = HTTPServer(("0.0.0.0", args.port), Handler)
+    Handler.skip_update = skip_update
+
+    try:
+        server = HTTPServer(("0.0.0.0", args.port), Handler)
+    except OSError as e:
+        if "Address already in use" in str(e):
+            _kill_existing(args.port)
+            server = HTTPServer(("0.0.0.0", args.port), Handler)
+        else:
+            raise
     mode = " [DEMO MODE]" if args.demo else ""
     print(f"Dashboard{mode}: http://localhost:{args.port}")
     try:
