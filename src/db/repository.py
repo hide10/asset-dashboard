@@ -6,6 +6,7 @@ import json
 import sqlite3
 
 from src.parser.normalize import AssetSnapshot
+from src.parser.cashflow import CashflowMonth
 
 
 def save_snapshot(conn: sqlite3.Connection, snapshot: AssetSnapshot, raw_path: str) -> None:
@@ -69,3 +70,37 @@ def get_all_total_assets(conn: sqlite3.Connection) -> list[tuple[str, float]]:
         "SELECT date, total_asset FROM snapshots ORDER BY date ASC"
     ).fetchall()
     return rows
+
+
+def save_cashflows(conn: sqlite3.Connection, months: list[CashflowMonth], fetched_date: str) -> None:
+    """月次収支データをDBに保存する。同月データがあれば差し替える。"""
+    for m in months:
+        conn.execute(
+            "INSERT OR REPLACE INTO monthly_cashflows (year_month, income, expense, fetched) VALUES (?, ?, ?, ?)",
+            (m.year_month, m.income, m.expense, fetched_date),
+        )
+    conn.commit()
+
+
+def get_cashflows(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
+    """月次収支データを新しい順に取得する。"""
+    rows = conn.execute(
+        "SELECT year_month, income, expense FROM monthly_cashflows ORDER BY year_month DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [
+        {"year_month": r[0], "income": r[1], "expense": r[2]}
+        for r in rows
+    ]
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    """設定値を取得する。"""
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def save_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """設定値を保存する。"""
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    conn.commit()

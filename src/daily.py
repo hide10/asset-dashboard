@@ -11,10 +11,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from src.scraper.fetch import create_context, fetch_page, request_aggregation
+from src.scraper.fetch import create_context, fetch_page, fetch_monthly, request_aggregation
 from src.parser.normalize import parse_raw, AssetSnapshot
+from src.parser.cashflow import parse_monthly
 from src.db.schema import init_db
-from src.db.repository import save_snapshot, get_snapshot
+from src.db.repository import save_snapshot, get_snapshot, save_cashflows
 
 
 def _is_unchanged(current: AssetSnapshot, previous: dict) -> bool:
@@ -81,10 +82,26 @@ async def run(
             else:
                 print("\n本日の初回取得です。")
 
-        # 4. DB保存
+        # 4. 月次収支取得
+        try:
+            print("\n月次収支データ取得中...")
+            await fetch_monthly(page, raw_path)
+            cashflows = parse_monthly(raw_path)
+            if cashflows:
+                print(f"  月次収支: {len(cashflows)}ヶ月分")
+            else:
+                print("  月次収支: パース結果なし（HTML構造確認後に調整）")
+        except Exception as e:
+            print(f"  月次収支取得失敗（続行）: {e}")
+            cashflows = []
+
+        # 5. DB保存
         print("\n[3/3] DB保存中...")
         conn = init_db()
         save_snapshot(conn, snapshot, str(raw_path))
+        if cashflows:
+            from datetime import date as _date
+            save_cashflows(conn, cashflows, _date.today().isoformat())
         conn.close()
 
         print(f"\n完了: {snapshot.date} のスナップショットを保存しました。")

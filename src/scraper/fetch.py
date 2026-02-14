@@ -16,6 +16,7 @@ from playwright.async_api import async_playwright, BrowserContext, Page, Respons
 
 RAW_DIR = Path(__file__).resolve().parents[2] / "raw"
 PORTFOLIO_URL = "https://moneyforward.com/bs/portfolio"
+MONTHLY_URL = "https://moneyforward.com/cf/monthly"
 AGGREGATION_URL = "https://moneyforward.com/aggregation_queue"
 DEFAULT_STORAGE_STATE = Path(__file__).resolve().parents[2] / ".auth" / "storage_state.json"
 
@@ -117,6 +118,66 @@ async def fetch_page(page: Page) -> Path:
     page.remove_listener("response", on_response)
 
     print(f"raw保存完了: {raw_path}")
+    return raw_path
+
+
+async def fetch_monthly(page: Page, raw_path: Path) -> Path:
+    """月次収支ページを取得しrawデータを保存する。"""
+    api_responses: list[dict] = []
+
+    async def on_response(response: Response) -> None:
+        url = response.url
+        if "moneyforward.com" in url and response.status == 200:
+            content_type = response.headers.get("content-type", "")
+            if "application/json" in content_type:
+                try:
+                    body = await response.json()
+                    api_responses.append({
+                        "url": url,
+                        "status": response.status,
+                        "body": body,
+                    })
+                except Exception:
+                    pass
+
+    page.on("response", on_response)
+
+    print(f"アクセス中: {MONTHLY_URL}")
+    await page.goto(MONTHLY_URL, wait_until="networkidle", timeout=60000)
+
+    # ログインページにリダイレクトされた場合
+    if "sign_in" in page.url:
+        page.remove_listener("response", on_response)
+        raise RuntimeError(
+            "ログインページにリダイレクトされました。セッションが期限切れです。\n"
+            "python -m src.scraper.login で再ログインしてください。"
+        )
+
+    await page.wait_for_timeout(3000)
+
+    # HTML保存
+    html_content = await page.content()
+    html_path = raw_path / "monthly.html"
+    html_path.write_text(html_content, encoding="utf-8")
+    print(f"HTML保存: {html_path}")
+
+    # スクリーンショット保存
+    png_path = raw_path / "monthly.png"
+    await page.screenshot(path=str(png_path), full_page=True)
+    print(f"スクリーンショット保存: {png_path}")
+
+    # APIレスポンスJSON保存
+    if api_responses:
+        json_path = raw_path / "monthly_api.json"
+        json_path.write_text(
+            json.dumps(api_responses, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"APIレスポンス保存: {json_path} ({len(api_responses)}件)")
+
+    page.remove_listener("response", on_response)
+
+    print(f"月次収支raw保存完了: {raw_path}")
     return raw_path
 
 

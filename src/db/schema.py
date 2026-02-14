@@ -36,6 +36,18 @@ CREATE TABLE IF NOT EXISTS snapshot_holdings (
     position       INTEGER NOT NULL DEFAULT 0,  -- テーブル内行位置（同名銘柄区別用）
     FOREIGN KEY (date) REFERENCES snapshots(date)
 );
+
+CREATE TABLE IF NOT EXISTS monthly_cashflows (
+    year_month  TEXT PRIMARY KEY,  -- YYYY-MM
+    income      REAL NOT NULL,
+    expense     REAL NOT NULL,
+    fetched     TEXT NOT NULL       -- YYYY-MM-DD
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
