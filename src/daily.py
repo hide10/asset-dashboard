@@ -35,8 +35,9 @@ async def run(
     storage_state: str | None = None,
     wait_seconds: int = 60,
     enable_refresh: bool = True,
+    headless: bool = False,
 ) -> None:
-    pw, browser, context = await create_context(storage_state)
+    pw, browser, context = await create_context(storage_state, headless=headless)
     try:
         page = await context.new_page()
 

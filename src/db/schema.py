@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS snapshot_holdings (
     position       INTEGER NOT NULL DEFAULT 0,  -- テーブル内行位置（同名銘柄区別用）
     acquisition_price  REAL,           -- 平均取得単価（nullable）
     current_price      REAL,           -- 現在値/基準価額（nullable）
+    unrealized_gain    REAL,           -- 評価損益（nullable）
+    unrealized_gain_pct REAL,          -- 評価損益率 %（nullable）
     FOREIGN KEY (date) REFERENCES snapshots(date)
 );
 
@@ -81,6 +83,10 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN acquisition_price REAL")
     if "current_price" not in cols:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN current_price REAL")
+    if "unrealized_gain" not in cols:
+        conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN unrealized_gain REAL")
+    if "unrealized_gain_pct" not in cols:
+        conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN unrealized_gain_pct REAL")
     conn.commit()
 
     return conn

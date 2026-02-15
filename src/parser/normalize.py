@@ -28,6 +28,8 @@ class HoldingData:
     quantity: float | None = None
     acquisition_price: float | None = None  # 平均取得単価
     current_price: float | None = None      # 現在値/基準価額
+    unrealized_gain: float | None = None    # 評価損益（円）
+    unrealized_gain_pct: float | None = None  # 評価損益率（%）
     asset_class: str = ""
     position: int = 0  # テーブル内の行位置（同名銘柄の区別用）
 
@@ -52,6 +54,17 @@ def _parse_yen(text: str) -> float:
 def _parse_number(text: str) -> float | None:
     """数値文字列をfloatに変換する。空やハイフンはNone。"""
     cleaned = re.sub(r"[,\s　ポイント口]", "", text.strip())
+    if not cleaned or cleaned == "-":
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _parse_percent(text: str) -> float | None:
+    """「4.74%」「-10.30%」のような文字列をfloatに変換する。"""
+    cleaned = re.sub(r"[%\s　,]", "", text.strip())
     if not cleaned or cleaned == "-":
         return None
     try:
@@ -134,7 +147,10 @@ def _parse_depo_section(section: Tag) -> list[AccountData]:
 
 
 def _parse_eq_section(section: Tag) -> list[HoldingData]:
-    """株式（現物）セクションをパースする。"""
+    """株式（現物）セクションをパースする。
+
+    HTMLカラム: コード|銘柄名|保有数|平均取得単価|現在値|評価額|前日比|評価損益|評価損益率|...
+    """
     holdings: list[HoldingData] = []
     table = section.find("table", class_="table-eq")
     if not table:
@@ -149,6 +165,9 @@ def _parse_eq_section(section: Tag) -> list[HoldingData]:
             acquisition_price = _parse_number(cells[3].get_text()) if len(cells) > 3 else None
             current_price = _parse_number(cells[4].get_text()) if len(cells) > 4 else None
             value = _parse_yen(cells[5].get_text())
+            # cells[6] = 前日比（スキップ）, cells[7] = 評価損益, cells[8] = 評価損益率
+            unrealized_gain = _parse_yen(cells[7].get_text()) if len(cells) > 7 else None
+            unrealized_gain_pct = _parse_percent(cells[8].get_text()) if len(cells) > 8 else None
             holdings.append(HoldingData(
                 symbol_or_code=code,
                 name=name,
@@ -156,13 +175,18 @@ def _parse_eq_section(section: Tag) -> list[HoldingData]:
                 quantity=quantity,
                 acquisition_price=acquisition_price,
                 current_price=current_price,
+                unrealized_gain=unrealized_gain,
+                unrealized_gain_pct=unrealized_gain_pct,
                 asset_class="株式（現物）",
             ))
     return holdings
 
 
 def _parse_mf_section(section: Tag) -> list[HoldingData]:
-    """投資信託セクションをパースする。"""
+    """投資信託セクションをパースする。
+
+    HTMLカラム: 銘柄名|保有数|平均取得単価|基準価額|評価額|前日比|評価損益|評価損益率|...
+    """
     holdings: list[HoldingData] = []
     table = section.find("table", class_="table-mf")
     if not table:
@@ -176,6 +200,9 @@ def _parse_mf_section(section: Tag) -> list[HoldingData]:
             acquisition_price = _parse_number(cells[2].get_text()) if len(cells) > 2 else None
             current_price = _parse_number(cells[3].get_text()) if len(cells) > 3 else None
             value = _parse_yen(cells[4].get_text())
+            # cells[5] = 前日比（スキップ）, cells[6] = 評価損益, cells[7] = 評価損益率
+            unrealized_gain = _parse_yen(cells[6].get_text()) if len(cells) > 6 else None
+            unrealized_gain_pct = _parse_percent(cells[7].get_text()) if len(cells) > 7 else None
             holdings.append(HoldingData(
                 symbol_or_code="",
                 name=name,
@@ -183,6 +210,8 @@ def _parse_mf_section(section: Tag) -> list[HoldingData]:
                 quantity=quantity,
                 acquisition_price=acquisition_price,
                 current_price=current_price,
+                unrealized_gain=unrealized_gain,
+                unrealized_gain_pct=unrealized_gain_pct,
                 asset_class="投資信託",
             ))
     return holdings

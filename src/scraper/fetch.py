@@ -31,8 +31,13 @@ def _build_raw_path() -> Path:
 
 async def create_context(
     storage_state: str | None = None,
+    headless: bool = False,
 ) -> tuple:
     """Playwrightのブラウザコンテキストを作成する。
+
+    Args:
+        storage_state: storageState JSON のパス。
+        headless: True にするとブラウザウィンドウを非表示で起動する。
 
     Returns:
         (playwright, browser, context) のタプル。
@@ -48,7 +53,7 @@ async def create_context(
         )
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(headless=False)
+    browser = await pw.chromium.launch(headless=headless)
     context = await browser.new_context(
         storage_state=storage_state,
         user_agent=(

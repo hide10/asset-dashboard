@@ -17,14 +17,15 @@ from urllib.parse import urlparse, parse_qs
 
 from src.data.stock_master import get_sector, get_dividend
 from src.analysis.compare import get_all_comparisons, ComparisonResult
-from src.prediction.montecarlo import predict_no_contribution, predict_with_contribution, RISK_CLASSES, PredictionRange
+from src.analysis.metrics import daily_volatility, max_drawdown, concentration_top_n
+from src.prediction.montecarlo import predict_no_contribution, predict_with_contribution, RISK_CLASSES, PredictionRange, classify_pension_holdings
 from src.db.schema import init_db
 from src.db.repository import get_cashflows, get_setting, save_setting
 from src.analysis.ai_comment import generate_comments, get_comment
 
 DB_DEFAULT = Path(__file__).resolve().parents[2] / "data" / "assets.db"
 
-_update_state = {"running": False, "completed_at": None}
+_update_state = {"running": False, "version": 0}
 
 
 def _get_dates(db_path: str) -> list[str]:
@@ -64,9 +65,9 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
 
     holdings = [
         {"name": r[0], "code": r[1], "asset_class": r[2], "value": r[3], "quantity": r[4], "position": r[5],
-         "acquisition_price": r[6], "current_price": r[7]}
+         "acquisition_price": r[6], "current_price": r[7], "unrealized_gain": r[8], "unrealized_gain_pct": r[9]}
         for r in conn.execute(
-            "SELECT name, symbol_or_code, asset_class, value, quantity, position, acquisition_price, current_price FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
+            "SELECT name, symbol_or_code, asset_class, value, quantity, position, acquisition_price, current_price, unrealized_gain, unrealized_gain_pct FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
             (date,),
         ).fetchall()
     ]
@@ -106,6 +107,50 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
                 })
     dividends.sort(key=lambda x: x["annual"], reverse=True)
 
+    # 配当利回り別内訳（低配当0-2% / 中配当2-4% / 高配当4%超）
+    yield_breakdown: dict[str, float] = {"低配当 (0-2%)": 0, "中配当 (2-4%)": 0, "高配当 (4%超)": 0}
+    for d in dividends:
+        cy = d.get("current_yield")
+        if cy is None:
+            continue
+        # この銘柄の評価額を逆算: annual / (current_yield/100)
+        stock_value = d["annual"] / (cy / 100) if cy > 0 else 0
+        if cy < 2:
+            yield_breakdown["低配当 (0-2%)"] += stock_value
+        elif cy < 4:
+            yield_breakdown["中配当 (2-4%)"] += stock_value
+        else:
+            yield_breakdown["高配当 (4%超)"] += stock_value
+
+    # 業種別配当内訳
+    sector_dividends: dict[str, dict] = {}
+    for h in holdings:
+        if h["asset_class"] == "株式（現物）" and h["code"] and h["quantity"]:
+            sector = get_sector(h["code"])
+            dps = get_dividend(h["code"])
+            annual = dps * h["quantity"]
+            if sector not in sector_dividends:
+                sector_dividends[sector] = {"value": 0, "dividend": 0}
+            sector_dividends[sector]["value"] += h["value"]
+            sector_dividends[sector]["dividend"] += annual
+    # 加重利回りを計算
+    for sec_data in sector_dividends.values():
+        sec_data["yield"] = (sec_data["dividend"] / sec_data["value"] * 100) if sec_data["value"] > 0 else 0
+
+    # ボラティリティ指標
+    try:
+        vol = daily_volatility(db_path, days=30)
+    except Exception:
+        vol = None
+    try:
+        mdd = max_drawdown(db_path)
+    except Exception:
+        mdd = None
+    try:
+        conc = concentration_top_n(db_path, date, n=5)
+    except Exception:
+        conc = None
+
     # 比較データ
     comparisons = get_all_comparisons(db_path, date)
 
@@ -118,6 +163,11 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         "sector_totals": sector_totals,
         "dividends": dividends,
         "total_dividend": total_dividend,
+        "yield_breakdown": yield_breakdown,
+        "sector_dividends": sector_dividends,
+        "volatility": vol,
+        "max_drawdown": mdd,
+        "concentration": conc,
         "comparisons": comparisons,
     }
 
@@ -151,6 +201,11 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     sector_totals = data.get("sector_totals", {})
     dividends = data.get("dividends", [])
     total_dividend = data.get("total_dividend", 0)
+    yield_breakdown = data.get("yield_breakdown", {})
+    sector_dividends = data.get("sector_dividends", {})
+    vol = data.get("volatility")
+    mdd = data.get("max_drawdown")
+    conc = data.get("concentration")
     comparisons = data.get("comparisons", [])
 
     # 日付セレクタ
@@ -159,14 +214,31 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
         sel = ' selected' if d == date else ''
         date_options += f'<option value="{d}"{sel}>{d}</option>'
 
-    # クラス別 rows
-    class_rows = ""
+    # クラス別の内訳詳細を構築
     colors = ["#2881D7", "#DF3727", "#FCAD4C", "#0F7F30", "#008986", "#9C39B6"]
+    class_details: dict[str, list] = {}
+    for cls in by_class:
+        details = []
+        if cls == "預金・現金・暗号資産":
+            for a in accounts:
+                if a["asset_class"] == cls:
+                    lbl = f'{a["institution"]} / {a["name"]}' if a["institution"] and a["institution"] != a["name"] else a["name"]
+                    details.append({"name": lbl, "value": a["balance"]})
+        else:
+            for h in holdings:
+                if h["asset_class"] == cls:
+                    details.append({"name": h["name"], "value": h["value"]})
+        details.sort(key=lambda x: x["value"], reverse=True)
+        class_details[cls] = details
+
+    # クラス別 rows（ホバー詳細付き）
+    class_rows = ""
     for i, (cls, amt) in enumerate(by_class.items()):
         ratio = amt / total * 100 if total else 0
         color = colors[i % len(colors)]
+        details_attr = json.dumps(class_details[cls], ensure_ascii=False).replace("&", "&amp;").replace('"', "&quot;")
         class_rows += f"""
-        <tr>
+        <tr class="has-tip" data-details="{details_attr}" data-label="{cls}">
           <td><span class="dot" style="background:{color}"></span>{cls}</td>
           <td class="num">{amt:,.0f}円</td>
           <td class="num">{ratio:.1f}%</td>
@@ -175,7 +247,7 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
 
     # 円グラフ用データ
     pie_data = json.dumps([
-        {"label": cls, "value": amt, "color": colors[i % len(colors)]}
+        {"label": cls, "value": amt, "color": colors[i % len(colors)], "details": class_details[cls]}
         for i, (cls, amt) in enumerate(by_class.items())
     ], ensure_ascii=False)
 
@@ -201,9 +273,19 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     for h in holdings:
         if h["asset_class"] != current_class:
             current_class = h["asset_class"]
-            hold_rows += f'<tr class="group-header"><td colspan="5">{current_class}</td></tr>'
+            hold_rows += f'<tr class="group-header"><td colspan="6">{current_class}</td></tr>'
         code = f'<span class="code">{h["code"]}</span> ' if h["code"] else ""
         qty = f' <span class="qty">x{h["quantity"]:,.0f}</span>' if h["quantity"] else ""
+        # 評価損益セル
+        ug = h.get("unrealized_gain")
+        ugp = h.get("unrealized_gain_pct")
+        if ug is not None and ug != 0:
+            ug_sign = "+" if ug >= 0 else ""
+            ug_css = "plus" if ug >= 0 else "minus"
+            ugp_str = f' ({ugp:+.1f}%)' if ugp is not None else ""
+            gain_cell = f'<td class="num {ug_css}">{ug_sign}{ug:,.0f}円{ugp_str}</td>'
+        else:
+            gain_cell = '<td class="num diff-zero">-</td>'
         # 各比較期間の差分セル
         diff_cells = ""
         diff_key = (h["asset_class"], h["name"], h["value"])
@@ -215,14 +297,22 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
                 diff_cells += f'<td class="num {css}">{sign}{d:,.0f}</td>'
             else:
                 diff_cells += '<td class="num diff-zero">-</td>'
-        hold_rows += f'<tr><td>{code}{h["name"]}{qty}</td><td class="num">{h["value"]:,.0f}円</td>{diff_cells}</tr>'
+        hold_rows += f'<tr><td>{code}{h["name"]}{qty}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
 
     # 業種別円グラフ用データ
     sector_colors = ["#2881D7", "#DF3727", "#FCAD4C", "#0F7F30", "#008986",
                      "#9C39B6", "#FF5266", "#80BD45", "#FF689A", "#1FBBDB",
                      "#FD9441", "#6C5CE7", "#00B894"]
+    # 業種別円グラフ（銘柄詳細付き）
+    sector_holdings: dict[str, list] = data.get("_sector_holdings", {})
+    if not sector_holdings:
+        for h in holdings:
+            if h["asset_class"] == "株式（現物）" and h["code"]:
+                sec = get_sector(h["code"])
+                sector_holdings.setdefault(sec, []).append({"name": h["name"], "value": h["value"]})
     sector_pie_data = json.dumps([
-        {"label": sec, "value": amt, "color": sector_colors[i % len(sector_colors)]}
+        {"label": sec, "value": amt, "color": sector_colors[i % len(sector_colors)],
+         "details": sorted(sector_holdings.get(sec, []), key=lambda x: x["value"], reverse=True)}
         for i, (sec, amt) in enumerate(sector_totals.items())
     ], ensure_ascii=False)
 
@@ -231,11 +321,18 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     for i, (sec, amt) in enumerate(sector_totals.items()):
         ratio = amt / stock_total * 100 if stock_total else 0
         color = sector_colors[i % len(sector_colors)]
+        sd = sector_dividends.get(sec, {})
+        sec_div = sd.get("dividend", 0)
+        sec_yield = sd.get("yield", 0)
+        sec_details = sorted(sector_holdings.get(sec, []), key=lambda x: x["value"], reverse=True)
+        details_attr = json.dumps(sec_details, ensure_ascii=False).replace("&", "&amp;").replace('"', "&quot;")
         sector_rows += f"""
-        <tr>
+        <tr class="has-tip" data-details="{details_attr}" data-label="{sec}">
           <td><span class="dot" style="background:{color}"></span>{sec}</td>
           <td class="num">{amt:,.0f}円</td>
           <td class="num">{ratio:.1f}%</td>
+          <td class="num">{sec_div:,.0f}円</td>
+          <td class="num">{sec_yield:.2f}%</td>
         </tr>"""
 
     # 配当予測 rows
@@ -249,6 +346,85 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
         div_rows += f'<td class="num">{d["annual"]:,.0f}円</td>'
         div_rows += f'<td class="num">{cur_y}</td>'
         div_rows += f'<td class="num">{acq_y}</td></tr>'
+
+    # 配当利回り別円グラフデータ（銘柄詳細付き）
+    yield_colors = ["#80BD45", "#FCAD4C", "#DF3727"]
+    yield_details: dict[str, list] = {"低配当 (0-2%)": [], "中配当 (2-4%)": [], "高配当 (4%超)": []}
+    for d in dividends:
+        cy = d.get("current_yield")
+        if cy is None:
+            continue
+        stock_value = d["annual"] / (cy / 100) if cy > 0 else 0
+        item = {"name": d["name"], "value": stock_value}
+        if cy < 2:
+            yield_details["低配当 (0-2%)"].append(item)
+        elif cy < 4:
+            yield_details["中配当 (2-4%)"].append(item)
+        else:
+            yield_details["高配当 (4%超)"].append(item)
+    for v in yield_details.values():
+        v.sort(key=lambda x: x["value"], reverse=True)
+    yield_pie_data = json.dumps([
+        {"label": label, "value": amt, "color": yield_colors[i],
+         "details": yield_details.get(label, [])}
+        for i, (label, amt) in enumerate(yield_breakdown.items()) if amt > 0
+    ], ensure_ascii=False)
+    yield_total = sum(yield_breakdown.values())
+    yield_breakdown_rows = ""
+    for i, (label, amt) in enumerate(yield_breakdown.items()):
+        if amt > 0:
+            ratio = amt / yield_total * 100 if yield_total else 0
+            color = yield_colors[i]
+            yield_breakdown_rows += f"""
+            <tr>
+              <td><span class="dot" style="background:{color}"></span>{label}</td>
+              <td class="num">{amt:,.0f}円</td>
+              <td class="num">{ratio:.1f}%</td>
+            </tr>"""
+
+    # リスク指標カード HTML
+    risk_cards_html = ""
+    if vol is not None:
+        risk_cards_html += f'''
+    <div class="compare-card">
+      <h3>ボラティリティ（年率）</h3>
+      <div class="diff" style="color:#2d3436">{vol * 100:.1f}%</div>
+      <div class="compare-date">直近30日</div>
+    </div>'''
+    else:
+        risk_cards_html += '''
+    <div class="compare-card">
+      <h3>ボラティリティ（年率）</h3>
+      <div class="no-data">データ蓄積中</div>
+    </div>'''
+
+    if mdd is not None:
+        risk_cards_html += f'''
+    <div class="compare-card">
+      <h3>最大ドローダウン</h3>
+      <div class="diff minus">-{mdd:.1f}%</div>
+      <div class="compare-date">全期間</div>
+    </div>'''
+    else:
+        risk_cards_html += '''
+    <div class="compare-card">
+      <h3>最大ドローダウン</h3>
+      <div class="no-data">データ蓄積中</div>
+    </div>'''
+
+    if conc is not None and conc.get("concentration_pct", 0) > 0:
+        risk_cards_html += f'''
+    <div class="compare-card">
+      <h3>上位5銘柄集中度</h3>
+      <div class="diff" style="color:#2d3436">{conc["concentration_pct"]:.1f}%</div>
+      <div class="compare-date">総資産に対する割合</div>
+    </div>'''
+    else:
+        risk_cards_html += '''
+    <div class="compare-card">
+      <h3>上位5銘柄集中度</h3>
+      <div class="no-data">データ蓄積中</div>
+    </div>'''
 
     # 比較カード HTML 生成
     compare_cards_html = ""
@@ -322,7 +498,17 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
   .qty {{ color: #636e72; font-size: 0.8rem; }}
   .full {{ grid-column: 1 / -1; }}
   canvas {{ max-width: 280px; margin: 0 auto; display: block; }}
-  .pie-wrap {{ display: flex; align-items: center; gap: 20px; }}
+  .pie-wrap {{ display: flex; align-items: center; gap: 20px; position: relative; }}
+  .pie-tooltip {{
+    position: fixed; pointer-events: none; z-index: 9999;
+    background: rgba(45,52,54,0.92); color: #fff; border-radius: 8px;
+    padding: 8px 14px; font-size: 0.82rem; line-height: 1.5;
+    white-space: nowrap; opacity: 0; transition: opacity 0.15s ease;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }}
+  .pie-tooltip.show {{ opacity: 1; }}
+  .has-tip {{ cursor: pointer; }}
+  .has-tip:hover {{ background: #f0f4ff; }}
   .pie-legend {{ font-size: 0.85rem; }}
   .pie-legend li {{ list-style: none; margin-bottom: 4px; }}
   .dividend-total {{ font-size: 1.8rem; font-weight: 700; color: #0F7F30; margin-bottom: 2px; }}
@@ -339,6 +525,26 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
   .minus {{ color: #2881D7; }}
   .diff-zero {{ color: #dfe6e9; }}
   .no-data {{ color: #b2bec3; font-size: 0.9rem; }}
+  .info-btn {{
+    width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid #b2bec3;
+    background: transparent; color: #636e72; font-size: 0.7rem; font-weight: 700;
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; vertical-align: middle; margin-left: 4px;
+  }}
+  .info-btn:hover {{ background: #f1f2f6; border-color: #636e72; }}
+  .info-panel {{
+    display: none; background: #f8f9fa; border-radius: 8px; padding: 12px 14px;
+    font-size: 0.8rem; color: #636e72; line-height: 1.7; margin-bottom: 12px;
+    border: 1px solid #dfe6e9;
+  }}
+  .info-panel.show {{ display: block; }}
+  .info-panel strong {{ color: #2d3436; }}
+  .info-panel ul {{ margin: 4px 0 4px 18px; }}
+  .info-panel li {{ margin-bottom: 2px; }}
+  .section-header {{ display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }}
+  .section-header h3 {{ font-size: 0.95rem; color: #636e72; font-weight: 600; margin: 0; }}
+  .card-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }}
+  .card-header h2 {{ margin-bottom: 0; }}
   .hold-table th {{ white-space: nowrap; }}
   .hold-table td:nth-child(n+3) {{ font-size: 0.82rem; }}
   .page-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }}
@@ -398,9 +604,34 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
   <div class="compare-cards">
     {compare_cards_html}
   </div>
+  <div class="section-header">
+    <h3>リスク指標</h3>
+    <button class="info-btn" onclick="document.getElementById('risk-info').classList.toggle('show')" title="リスク指標について">?</button>
+  </div>
+  <div class="info-panel" id="risk-info">
+    <ul>
+      <li><strong>ボラティリティ（年率）</strong> — 資産額の日々の変動幅を年率に換算した数値です。数値が大きいほど資産の値動きが激しいことを意味します。一般的に 10% 以下なら安定的、20% を超えるとハイリスクとされます。</li>
+      <li><strong>最大ドローダウン</strong> — 過去の最高値から最も大きく下落した割合です。「最悪の場合にどれだけ資産が減ったか」を示します。-5% なら最高値から5%下がった期間があったということです。</li>
+      <li><strong>上位5銘柄集中度</strong> — 総資産のうち上位5つの保有銘柄が占める割合です。集中度が高い（例: 50%超）と特定銘柄の値動きに資産全体が左右されやすくなります。</li>
+    </ul>
+  </div>
+  <div class="compare-cards" style="margin-bottom:20px">
+    {risk_cards_html}
+  </div>
   <div class="grid">
     <div class="card">
-      <h2>資産クラス別内訳</h2>
+      <div class="card-header">
+        <h2>資産クラス別内訳</h2>
+        <button class="info-btn" onclick="document.getElementById('class-info').classList.toggle('show')" title="資産クラスについて">?</button>
+      </div>
+      <div class="info-panel" id="class-info">
+        <ul>
+          <li><strong>資産クラス</strong> — 資産を性質ごとにグループ分けしたものです。値動きの異なるクラスに分散することでリスクを抑えられます。</li>
+          <li><strong>株式（現物）</strong> — 個別企業の株式。値動きが大きい（ハイリスク・ハイリターン）。</li>
+          <li><strong>投資信託</strong> — 複数の株式や債券をまとめた商品。個別株より分散が効いています。</li>
+          <li><strong>預金・現金</strong> — 元本保証。インフレ時は実質目減りするリスクがあります。</li>
+        </ul>
+      </div>
       <div class="pie-wrap">
         <canvas id="pie" width="220" height="220"></canvas>
         <ul class="pie-legend" id="legend"></ul>
@@ -419,20 +650,48 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     </div>
 
     <div class="card">
-      <h2>株式 業種別内訳</h2>
+      <div class="card-header">
+        <h2>株式 業種別内訳</h2>
+        <button class="info-btn" onclick="document.getElementById('sector-info').classList.toggle('show')" title="業種別内訳について">?</button>
+      </div>
+      <div class="info-panel" id="sector-info">
+        <ul>
+          <li><strong>業種別内訳</strong> — 保有株式を東証の業種分類ごとに集計したものです。特定の業種に偏りすぎていないかを確認し、分散投資の参考にします。</li>
+          <li><strong>利回り</strong> — 各業種の年間配当合計 &divide; 評価額。業種ごとの配当効率の比較に使えます。</li>
+        </ul>
+      </div>
       <div class="pie-wrap">
         <canvas id="sector-pie" width="220" height="220"></canvas>
         <ul class="pie-legend" id="sector-legend"></ul>
       </div>
       <table style="margin-top:16px">
+        <tr><th>業種</th><th class="num">評価額</th><th class="num">比率</th><th class="num">年間配当</th><th class="num">利回り</th></tr>
         {sector_rows}
       </table>
     </div>
 
     <div class="card">
-      <h2>年間配当予測</h2>
+      <div class="card-header">
+        <h2>年間配当予測</h2>
+        <button class="info-btn" onclick="document.getElementById('div-info').classList.toggle('show')" title="配当予測について">?</button>
+      </div>
+      <div class="info-panel" id="div-info">
+        <ul>
+          <li><strong>年間配当予測</strong> — 各銘柄の「予想1株配当 &times; 保有株数」を合計した金額です。実際の配当は業績により増減します。</li>
+          <li><strong>加重平均利回り</strong> — 保有株式全体の配当利回りを評価額で加重平均した数値です。ポートフォリオ全体の配当効率を示します。</li>
+          <li><strong>配当利回り</strong> — 1株配当 &divide; 現在の株価 &times; 100。株価に対して年間どれだけ配当がもらえるかの指標です。</li>
+          <li><strong>取得利回り</strong> — 1株配当 &divide; 取得時の株価 &times; 100。自分の買値に対する配当の割合で、投資効率の評価に使います。</li>
+          <li><strong>利回り別内訳</strong> — 低配当(0-2%)・中配当(2-4%)・高配当(4%超)の3区間で保有株式を分類したものです。</li>
+        </ul>
+      </div>
       <div class="dividend-total">{total_dividend:,.0f}<span> 円/年</span></div>
       <div class="dividend-monthly">月平均 {total_dividend/12:,.0f}円{_avg_yield_html(dividends)}</div>
+      {f"""<div style="margin:16px 0;display:flex;align-items:center;gap:16px">
+        <canvas id="yield-pie" width="140" height="140"></canvas>
+        <table style="font-size:0.85rem;width:auto">
+          {yield_breakdown_rows}
+        </table>
+      </div>""" if yield_total > 0 else ""}
       <table style="margin-top:12px">
         <tr><th>銘柄</th><th class="num">保有数</th><th class="num">配当/株</th><th class="num">年間配当</th><th class="num">利回り</th><th class="num">取得利回り</th></tr>
         {div_rows}
@@ -442,58 +701,135 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     <div class="card full">
       <h2>保有銘柄 ({len(holdings)})</h2>
       <table class="hold-table">
-        <tr><th>銘柄</th><th class="num">評価額</th><th class="num">前日比</th><th class="num">前月比</th><th class="num">前年比</th></tr>
+        <tr><th>銘柄</th><th class="num">評価額</th><th class="num">損益</th><th class="num">前日比</th><th class="num">前月比</th><th class="num">前年比</th></tr>
         {hold_rows}
       </table>
     </div>
   </div>
 </div>
+<div class="pie-tooltip" id="pie-tooltip"></div>
 
 <script>
+// ツールチップ
+const tooltip = document.getElementById('pie-tooltip');
+function fmt(v) {{ return v.toLocaleString('ja-JP', {{maximumFractionDigits:0}}); }}
+
+function hitTest(e, canvas, cx, cy, r, chartData) {{
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const dx = mx - cx, dy = my - cy;
+  if (dx * dx + dy * dy > r * r) return null;
+  let angle = Math.atan2(dy, dx);
+  const offset = -Math.PI / 2;
+  angle = angle - offset;
+  if (angle < 0) angle += 2 * Math.PI;
+  const total = chartData.reduce((s, d) => s + d.value, 0);
+  let cumAngle = 0;
+  for (const d of chartData) {{
+    const sl = (d.value / total) * 2 * Math.PI;
+    if (angle >= cumAngle && angle < cumAngle + sl) {{
+      return {{ label: d.label, value: d.value, pct: (d.value / total * 100).toFixed(1), details: d.details || [] }};
+    }}
+    cumAngle += sl;
+  }}
+  return null;
+}}
+
+function attachTooltip(canvas, cx, cy, r, chartData) {{
+  canvas.addEventListener('mousemove', e => {{
+    const hit = hitTest(e, canvas, cx, cy, r, chartData);
+    if (hit) {{
+      let html = '<strong>' + hit.label + '</strong>　' + fmt(hit.value) + ' 円（' + hit.pct + '%）';
+      if (hit.details.length > 0) {{
+        html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
+        const show = hit.details.slice(0, 8);
+        show.forEach(item => {{
+          html += '<div style="display:flex;justify-content:space-between;gap:16px">'
+            + '<span>' + item.name + '</span><span>' + fmt(item.value) + ' 円</span></div>';
+        }});
+        if (hit.details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (hit.details.length - 8) + ' 件</div>';
+        html += '</div>';
+      }}
+      tooltip.innerHTML = html;
+      tooltip.classList.add('show');
+      requestAnimationFrame(() => {{
+        const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+        tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - tw - 16) + 'px';
+        tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - th - 16) + 'px';
+      }});
+      canvas.style.cursor = 'pointer';
+    }} else {{
+      tooltip.classList.remove('show');
+      canvas.style.cursor = '';
+    }}
+  }});
+  canvas.addEventListener('mouseleave', () => {{
+    tooltip.classList.remove('show');
+    canvas.style.cursor = '';
+  }});
+}}
+
 // 円グラフ描画
-const data = {pie_data};
-const canvas = document.getElementById('pie');
-const ctx = canvas.getContext('2d');
-const cx = 110, cy = 110, r = 100;
-let startAngle = -Math.PI / 2;
-const total = data.reduce((s, d) => s + d.value, 0);
-const legend = document.getElementById('legend');
-
-data.forEach(d => {{
-  const sliceAngle = (d.value / total) * 2 * Math.PI;
-  ctx.beginPath();
-  ctx.moveTo(cx, cy);
-  ctx.arc(cx, cy, r, startAngle, startAngle + sliceAngle);
-  ctx.closePath();
-  ctx.fillStyle = d.color;
-  ctx.fill();
-  startAngle += sliceAngle;
-
-  const li = document.createElement('li');
-  li.innerHTML = '<span class="dot" style="background:' + d.color + '"></span>' + d.label;
-  legend.appendChild(li);
-}});
-
-// 業種別円グラフ描画
-function drawPie(canvasId, legendId, chartData) {{
+function drawPieChart(canvasId, legendId, chartData, size) {{
   const c = document.getElementById(canvasId);
+  if (!c || chartData.length === 0) return;
   const x = c.getContext('2d');
-  const w = 110, h = 110, rad = 100;
+  const w = size / 2, h = size / 2, rad = w - 10;
   let angle = -Math.PI / 2;
   const t = chartData.reduce((s, d) => s + d.value, 0);
-  const leg = document.getElementById(legendId);
   chartData.forEach(d => {{
     const sl = (d.value / t) * 2 * Math.PI;
     x.beginPath(); x.moveTo(w, h); x.arc(w, h, rad, angle, angle + sl);
     x.closePath(); x.fillStyle = d.color; x.fill();
     angle += sl;
-    const li = document.createElement('li');
-    li.innerHTML = '<span class="dot" style="background:' + d.color + '"></span>' + d.label;
-    leg.appendChild(li);
   }});
+  if (legendId) {{
+    const leg = document.getElementById(legendId);
+    chartData.forEach(d => {{
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="dot" style="background:' + d.color + '"></span>' + d.label;
+      leg.appendChild(li);
+    }});
+  }}
+  attachTooltip(c, w, h, rad, chartData);
 }}
+
+const data = {pie_data};
+drawPieChart('pie', 'legend', data, 220);
+
 const sectorData = {sector_pie_data};
-if (sectorData.length > 0) drawPie('sector-pie', 'sector-legend', sectorData);
+drawPieChart('sector-pie', 'sector-legend', sectorData, 220);
+
+const yieldData = {yield_pie_data};
+drawPieChart('yield-pie', null, yieldData, 140);
+
+// テーブル行ホバーツールチップ
+document.querySelectorAll('.has-tip').forEach(row => {{
+  row.addEventListener('mousemove', e => {{
+    const details = JSON.parse(row.dataset.details || '[]');
+    const label = row.dataset.label || '';
+    if (details.length === 0) return;
+    let html = '<strong>' + label + '</strong>';
+    html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
+    const show = details.slice(0, 8);
+    show.forEach(item => {{
+      html += '<div style="display:flex;justify-content:space-between;gap:16px">'
+        + '<span>' + item.name + '</span><span>' + fmt(item.value) + ' 円</span></div>';
+    }});
+    if (details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (details.length - 8) + ' 件</div>';
+    html += '</div>';
+    tooltip.innerHTML = html;
+    tooltip.classList.add('show');
+    requestAnimationFrame(() => {{
+      const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+      tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - tw - 16) + 'px';
+      tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - th - 16) + 'px';
+    }});
+  }});
+  row.addEventListener('mouseleave', () => {{
+    tooltip.classList.remove('show');
+  }});
+}});
 
 // 日付ナビゲーション
 const sel = document.getElementById('date-select');
@@ -509,18 +845,18 @@ prevBtn.disabled = idx === dates.length - 1;
 prevBtn.onclick = () => {{ if (idx < dates.length - 1) location.href = '/?date=' + dates[idx + 1]; }};
 nextBtn.onclick = () => {{ if (idx > 0) location.href = '/?date=' + dates[idx - 1]; }};
 
-{'// reload polling' + """
-const loadedAt = new Date().toISOString();
-const pollId = setInterval(async () => {
-  try {
+{'// reload polling' + f"""
+const loadedVersion = {_update_state["version"]};
+const pollId = setInterval(async () => {{
+  try {{
     const r = await fetch('/api/status');
     const s = await r.json();
-    if (s.completed_at && s.completed_at > loadedAt) {
+    if (s.version > loadedVersion) {{
       document.getElementById('reload-banner').style.display = 'flex';
       clearInterval(pollId);
-    }
-  } catch(e) {}
-}, 5000);
+    }}
+  }} catch(e) {{}}
+}}, 5000);
 """ if not skip_update else ''}
 </script>
 </body>
@@ -551,22 +887,22 @@ def _demo_data() -> dict:
     ]
 
     holdings = [
-        {"name": "トヨタ自動車",      "code": "7203", "asset_class": "株式（現物）", "value": 1_260_000, "quantity": 300, "acquisition_price": 3_800, "current_price": 4_200},
-        {"name": "ソニーグループ",    "code": "6758", "asset_class": "株式（現物）", "value": 980_000,   "quantity": 100, "acquisition_price": 8_500, "current_price": 9_800},
-        {"name": "三菱商事",          "code": "8058", "asset_class": "株式（現物）", "value": 875_000,   "quantity": 100, "acquisition_price": 7_200, "current_price": 8_750},
-        {"name": "信越化学工業",      "code": "4063", "asset_class": "株式（現物）", "value": 720_000,   "quantity": 100, "acquisition_price": 6_500, "current_price": 7_200},
-        {"name": "日立製作所",        "code": "6501", "asset_class": "株式（現物）", "value": 685_000,   "quantity": 200, "acquisition_price": 2_800, "current_price": 3_425},
-        {"name": "キーエンス",        "code": "6861", "asset_class": "株式（現物）", "value": 650_000,   "quantity": 10,  "acquisition_price": 58_000, "current_price": 65_000},
-        {"name": "任天堂",            "code": "7974", "asset_class": "株式（現物）", "value": 580_000,   "quantity": 100, "acquisition_price": 5_200, "current_price": 5_800},
-        {"name": "ダイキン工業",      "code": "6367", "asset_class": "株式（現物）", "value": 350_000,   "quantity": 100, "acquisition_price": 3_000, "current_price": 3_500},
-        {"name": "INPEX",             "code": "1605", "asset_class": "株式（現物）", "value": 250_000,   "quantity": 500, "acquisition_price": 420,   "current_price": 500},
-        {"name": "eMAXIS Slim 全世界株式(オルカン)",            "code": "", "asset_class": "投資信託", "value": 2_480_000, "quantity": 680000, "acquisition_price": None, "current_price": None},
-        {"name": "eMAXIS Slim 米国株式(S&P500)",               "code": "", "asset_class": "投資信託", "value": 1_850_000, "quantity": 520000, "acquisition_price": None, "current_price": None},
-        {"name": "ニッセイ外国株式インデックスファンド",        "code": "", "asset_class": "投資信託", "value": 850_000,   "quantity": 290000, "acquisition_price": None, "current_price": None},
-        {"name": "不動産クラウドファンディング",                "code": "", "asset_class": "不動産",   "value": 1_200_000, "quantity": None, "acquisition_price": None, "current_price": None},
-        {"name": "企業型確定拠出年金",                          "code": "", "asset_class": "年金",     "value": 2_800_000, "quantity": None, "acquisition_price": None, "current_price": None},
-        {"name": "iDeCo（先進国株式）",                         "code": "", "asset_class": "年金",     "value": 850_000,   "quantity": None, "acquisition_price": None, "current_price": None},
-        {"name": "個人年金保険",                                "code": "", "asset_class": "年金",     "value": 300_000,   "quantity": None, "acquisition_price": None, "current_price": None},
+        {"name": "トヨタ自動車",      "code": "7203", "asset_class": "株式（現物）", "value": 1_260_000, "quantity": 300, "acquisition_price": 3_800, "current_price": 4_200, "unrealized_gain": 120_000, "unrealized_gain_pct": 10.5},
+        {"name": "ソニーグループ",    "code": "6758", "asset_class": "株式（現物）", "value": 980_000,   "quantity": 100, "acquisition_price": 8_500, "current_price": 9_800, "unrealized_gain": 130_000, "unrealized_gain_pct": 15.3},
+        {"name": "三菱商事",          "code": "8058", "asset_class": "株式（現物）", "value": 875_000,   "quantity": 100, "acquisition_price": 7_200, "current_price": 8_750, "unrealized_gain": 155_000, "unrealized_gain_pct": 21.5},
+        {"name": "信越化学工業",      "code": "4063", "asset_class": "株式（現物）", "value": 720_000,   "quantity": 100, "acquisition_price": 6_500, "current_price": 7_200, "unrealized_gain": 70_000, "unrealized_gain_pct": 10.8},
+        {"name": "日立製作所",        "code": "6501", "asset_class": "株式（現物）", "value": 685_000,   "quantity": 200, "acquisition_price": 2_800, "current_price": 3_425, "unrealized_gain": 125_000, "unrealized_gain_pct": 22.3},
+        {"name": "キーエンス",        "code": "6861", "asset_class": "株式（現物）", "value": 650_000,   "quantity": 10,  "acquisition_price": 58_000, "current_price": 65_000, "unrealized_gain": 70_000, "unrealized_gain_pct": 12.1},
+        {"name": "任天堂",            "code": "7974", "asset_class": "株式（現物）", "value": 580_000,   "quantity": 100, "acquisition_price": 5_200, "current_price": 5_800, "unrealized_gain": 60_000, "unrealized_gain_pct": 11.5},
+        {"name": "ダイキン工業",      "code": "6367", "asset_class": "株式（現物）", "value": 350_000,   "quantity": 100, "acquisition_price": 3_000, "current_price": 3_500, "unrealized_gain": 50_000, "unrealized_gain_pct": 16.7},
+        {"name": "INPEX",             "code": "1605", "asset_class": "株式（現物）", "value": 250_000,   "quantity": 500, "acquisition_price": 420,   "current_price": 500, "unrealized_gain": 40_000, "unrealized_gain_pct": 19.0},
+        {"name": "eMAXIS Slim 全世界株式(オルカン)",            "code": "", "asset_class": "投資信託", "value": 2_480_000, "quantity": 680000, "acquisition_price": None, "current_price": None, "unrealized_gain": 480_000, "unrealized_gain_pct": 24.0},
+        {"name": "eMAXIS Slim 米国株式(S&P500)",               "code": "", "asset_class": "投資信託", "value": 1_850_000, "quantity": 520000, "acquisition_price": None, "current_price": None, "unrealized_gain": 350_000, "unrealized_gain_pct": 23.3},
+        {"name": "ニッセイ外国株式インデックスファンド",        "code": "", "asset_class": "投資信託", "value": 850_000,   "quantity": 290000, "acquisition_price": None, "current_price": None, "unrealized_gain": 80_000, "unrealized_gain_pct": 10.4},
+        {"name": "不動産クラウドファンディング",                "code": "", "asset_class": "不動産",   "value": 1_200_000, "quantity": None, "acquisition_price": None, "current_price": None, "unrealized_gain": None, "unrealized_gain_pct": None},
+        {"name": "企業型確定拠出年金",                          "code": "", "asset_class": "年金",     "value": 2_800_000, "quantity": None, "acquisition_price": None, "current_price": None, "unrealized_gain": None, "unrealized_gain_pct": None},
+        {"name": "iDeCo（先進国株式）",                         "code": "", "asset_class": "年金",     "value": 850_000,   "quantity": None, "acquisition_price": None, "current_price": None, "unrealized_gain": None, "unrealized_gain_pct": None},
+        {"name": "個人年金保険",                                "code": "", "asset_class": "年金",     "value": 300_000,   "quantity": None, "acquisition_price": None, "current_price": None, "unrealized_gain": None, "unrealized_gain_pct": None},
     ]
 
     # 業種別
@@ -666,6 +1002,43 @@ def _demo_data() -> dict:
         ),
     ]
 
+    # 配当利回り別内訳
+    demo_yield_breakdown = {"低配当 (0-2%)": 0.0, "中配当 (2-4%)": 0.0, "高配当 (4%超)": 0.0}
+    for d in demo_dividends:
+        cy = d.get("current_yield", 0)
+        stock_val = d["annual"] / (cy / 100) if cy > 0 else 0
+        if cy < 2:
+            demo_yield_breakdown["低配当 (0-2%)"] += stock_val
+        elif cy < 4:
+            demo_yield_breakdown["中配当 (2-4%)"] += stock_val
+        else:
+            demo_yield_breakdown["高配当 (4%超)"] += stock_val
+
+    # 業種別配当
+    demo_sector_dividends = {
+        "輸送用機器": {"value": 1_260_000, "dividend": 22_500, "yield": 22_500 / 1_260_000 * 100},
+        "電気機器":   {"value": 2_315_000, "dividend": 21_900, "yield": 21_900 / 2_315_000 * 100},
+        "卸売業":     {"value": 875_000,   "dividend": 10_000, "yield": 10_000 / 875_000 * 100},
+        "化学":       {"value": 720_000,   "dividend": 12_000, "yield": 12_000 / 720_000 * 100},
+        "その他製品": {"value": 580_000,   "dividend": 18_300, "yield": 18_300 / 580_000 * 100},
+        "機械":       {"value": 350_000,   "dividend": 10_000, "yield": 10_000 / 350_000 * 100},
+        "鉱業":       {"value": 250_000,   "dividend": 30_000, "yield": 30_000 / 250_000 * 100},
+    }
+
+    # 業種別→銘柄マッピング（デモ用）
+    demo_sector_map = {
+        "7203": "輸送用機器", "6758": "電気機器", "8058": "卸売業",
+        "4063": "化学", "6501": "電気機器", "6861": "電気機器",
+        "7974": "その他製品", "6367": "機械", "1605": "鉱業",
+    }
+    demo_sector_holdings: dict[str, list] = {}
+    for h in holdings:
+        if h["asset_class"] == "株式（現物）" and h["code"]:
+            sec = demo_sector_map.get(h["code"], "その他")
+            demo_sector_holdings.setdefault(sec, []).append({"name": h["name"], "value": h["value"]})
+    for v in demo_sector_holdings.values():
+        v.sort(key=lambda x: x["value"], reverse=True)
+
     return {
         "date": today,
         "total_asset": total_asset,
@@ -675,7 +1048,13 @@ def _demo_data() -> dict:
         "sector_totals": demo_sectors,
         "dividends": demo_dividends,
         "total_dividend": sum(d["annual"] for d in demo_dividends),
+        "yield_breakdown": demo_yield_breakdown,
+        "sector_dividends": demo_sector_dividends,
+        "volatility": 0.142,
+        "max_drawdown": 3.8,
+        "concentration": {"top_n": [], "concentration_pct": 32.5},
         "comparisons": demo_comparisons,
+        "_sector_holdings": demo_sector_holdings,
     }
 
 
@@ -732,21 +1111,42 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
     # 月末スナップショットから月次資産推移を算出
     monthly_totals = _calc_monthly_totals(conn)
 
+    # 年金の株式型を判定してリスク資産に移す
+    holdings_for_pension = [
+        {"name": r[0], "asset_class": r[1], "value": r[2]}
+        for r in conn.execute(
+            "SELECT name, asset_class, value FROM snapshot_holdings WHERE date = ? AND asset_class = '年金'",
+            (date,),
+        ).fetchall()
+    ]
     conn.close()
+
+    eq_pension, ins_pension = classify_pension_holdings(holdings_for_pension)
 
     # リスク資産 / 安全資産の分離
     risk_value = sum(v for cls, v in by_class.items() if cls in RISK_CLASSES)
+    risk_value += eq_pension
     safe_value = total_asset - risk_value
+
+    # クラス別評価額（加重デフォルトパラメータ計算用）
+    class_values = {}
+    for cls, v in by_class.items():
+        if cls in RISK_CLASSES:
+            class_values[cls] = v
+    if eq_pension > 0:
+        class_values["年金（株式型）"] = eq_pension
 
     # 成長予測（追加投資なし）
     try:
-        predictions, pred_params = predict_no_contribution(db_path, risk_value, safe_value)
+        predictions, pred_params = predict_no_contribution(
+            db_path, risk_value, safe_value, class_values=class_values)
     except Exception:
         predictions, pred_params = [], {}
 
     # 成長予測（積立込み）
     try:
-        predictions_c, pred_params_c = predict_with_contribution(db_path, risk_value, safe_value, monthly_contribution)
+        predictions_c, pred_params_c = predict_with_contribution(
+            db_path, risk_value, safe_value, monthly_contribution, class_values=class_values)
     except Exception:
         predictions_c, pred_params_c = [], {}
 
@@ -839,9 +1239,11 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
 
     # --- セクション2: 月次収支（MF集計、参考） ---
     cf_chart_data = json.dumps(cashflows, ensure_ascii=False)
+    mc_int = int(monthly_contribution)
 
     cf_rows = ""
     for cf in cashflows:
+        living = cf["expense"] - mc_int
         net = cf["income"] - cf["expense"]
         sign = "+" if net >= 0 else ""
         css = "plus" if net >= 0 else "minus"
@@ -849,6 +1251,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
           <td>{cf["year_month"]}</td>
           <td class="num">{cf["income"]:,.0f}円</td>
           <td class="num">{cf["expense"]:,.0f}円</td>
+          <td class="num">{living:,.0f}円</td>
           <td class="num {css}">{sign}{net:,.0f}円</td>
         </tr>'''
 
@@ -1040,10 +1443,10 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
       <h2>月次収支</h2>
       {'<canvas id="cf-chart" height="200"></canvas>' if cashflows else ''}
       {f"""<table style="margin-top:16px">
-        <tr><th>月</th><th class="num">収入</th><th class="num">支出</th><th class="num">収支</th></tr>
+        <tr><th>月</th><th class="num">収入</th><th class="num">支出</th><th class="num">生活費</th><th class="num">収支</th></tr>
         {cf_rows}
       </table>
-      <div class="pred-note" style="margin-top:8px">※ 支出には積立投資・貯蓄性の振替を含みます</div>""" if cashflows else '<div class="no-data">月次収支データがありません。<code>python -m src.daily</code> を実行すると取得されます。</div>'}
+      <div class="pred-note" style="margin-top:8px">※ 支出には積立投資・貯蓄性の振替を含みます。生活費 = 支出 - 月額積立({mc_int:,}円)</div>""" if cashflows else '<div class="no-data">月次収支データがありません。<code>python -m src.daily</code> を実行すると取得されます。</div>'}
     </div>
 
     {pred_html}
@@ -1188,18 +1591,18 @@ function updateContrib() {{
   location.href = url.toString();
 }}
 
-{'// reload polling' + """
-const loadedAt = new Date().toISOString();
-const pollId = setInterval(async () => {
-  try {
+{'// reload polling' + f"""
+const loadedVersion = {_update_state["version"]};
+const pollId = setInterval(async () => {{
+  try {{
     const r = await fetch('/api/status');
     const s = await r.json();
-    if (s.completed_at && s.completed_at > loadedAt) {
+    if (s.version > loadedVersion) {{
       document.getElementById('reload-banner').style.display = 'flex';
       clearInterval(pollId);
-    }
-  } catch(e) {}
-}, 5000);
+    }}
+  }} catch(e) {{}}
+}}, 5000);
 """ if not skip_update else ''}
 </script>
 </body>
@@ -1302,7 +1705,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/status":
             payload = {
                 "updating": _update_state["running"],
-                "completed_at": _update_state["completed_at"],
+                "version": _update_state["version"],
             }
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1471,7 +1874,7 @@ def _bg_worker(db_path: str) -> None:
     try:
         import asyncio
         from src.daily import run
-        asyncio.run(run())
+        asyncio.run(run(headless=True))
 
         if _needs_dividend_update():
             from src.data.dividend_fetcher import update_all_dividends
@@ -1479,7 +1882,7 @@ def _bg_worker(db_path: str) -> None:
 
         _generate_ai_comments(db_path)
 
-        _update_state["completed_at"] = datetime.now().isoformat()
+        _update_state["version"] += 1
         print("[auto] バックグラウンド更新完了")
     except Exception as e:
         print(f"[auto] バックグラウンド更新失敗: {e}")

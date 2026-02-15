@@ -3,26 +3,81 @@
 フェーズ1: 追加投資なし（過去リターンからレンジ推定）
 フェーズ2: 積立込み（月次入金パラメータ付き）
 
-リスク資産（株式・投信）のみシミュレーション対象とし、
-安全資産（預金・不動産・年金）は固定値として加算する。
-データが少ない場合（5日未満）は保守的なデフォルトパラメータを使用する。
+リスク資産（株式・投信・株式型年金）のみシミュレーション対象とし、
+安全資産（預金・不動産・保険型年金）は固定値として加算する。
+データが少ない場合（5日未満）は資産クラス別デフォルトパラメータの加重平均を使用する。
 """
 
 from __future__ import annotations
 
 import math
+import re
 import sqlite3
 from dataclasses import dataclass
 
 
-# データ不足時のデフォルトパラメータ（年率）
-DEFAULT_ANNUAL_RETURN = 0.05  # 5%
-DEFAULT_ANNUAL_VOLATILITY = 0.15  # 15%
-
 TRADING_DAYS_PER_YEAR = 252
 
-# リスク資産とみなす資産クラス
+# リスク資産とみなす資産クラス（基本）
 RISK_CLASSES = {"株式（現物）", "投資信託"}
+
+# 資産クラス別のデフォルトパラメータ（年率リターン, 年率ボラティリティ）
+CLASS_PARAMS: dict[str, tuple[float, float]] = {
+    "株式（現物）":       (0.07, 0.20),   # 国内株
+    "投資信託":           (0.08, 0.18),   # 先進国株投信が主
+    "年金（株式型）":     (0.08, 0.18),   # iDeCo・DC（株式運用）
+    "不動産":             (0.01, 0.05),
+    "預金・現金・暗号資産": (0.0, 0.0),
+    "年金（保険型）":     (0.01, 0.02),   # 個人年金保険等
+}
+
+# 年金の保有銘柄名から株式型を判定するパターン
+_EQUITY_PENSION_RE = re.compile(
+    r"(iDeCo|確定拠出|DC|株式|先進国|全世界|S&P|オルカン|インデックス)",
+    re.IGNORECASE,
+)
+
+
+def classify_pension_holdings(
+    holdings: list[dict],
+) -> tuple[float, float]:
+    """年金クラスの保有銘柄を株式型/保険型に分類する。
+
+    Returns:
+        (equity_pension_value, insurance_pension_value)
+    """
+    equity = 0.0
+    insurance = 0.0
+    for h in holdings:
+        if h.get("asset_class") != "年金":
+            continue
+        name = h.get("name", "")
+        if _EQUITY_PENSION_RE.search(name):
+            equity += h["value"]
+        else:
+            insurance += h["value"]
+    return equity, insurance
+
+
+def weighted_default_params(class_values: dict[str, float]) -> tuple[float, float]:
+    """資産クラス別の評価額から加重平均のリターン/ボラティリティを算出する。
+
+    リスク資産のみを対象に加重平均を計算する。
+    """
+    total = 0.0
+    w_return = 0.0
+    w_vol = 0.0
+    for cls, value in class_values.items():
+        params = CLASS_PARAMS.get(cls)
+        if params is None or params == (0.0, 0.0):
+            continue  # 安全資産はスキップ
+        ret, vol = params
+        w_return += ret * value
+        w_vol += vol * value
+        total += value
+    if total == 0:
+        return 0.05, 0.15  # フォールバック
+    return w_return / total, w_vol / total
 
 
 @dataclass
@@ -44,15 +99,26 @@ def _get_daily_totals(db_path: str) -> list[tuple[str, float]]:
     return rows
 
 
-def _estimate_params(totals: list[tuple[str, float]]) -> tuple[float, float, bool]:
+def _estimate_params(
+    totals: list[tuple[str, float]],
+    class_values: dict[str, float] | None = None,
+) -> tuple[float, float, bool]:
     """日次リターンから年率期待リターンとボラティリティを推定する。
+
+    データが5日未満の場合は class_values の加重平均デフォルト値を使用する。
 
     Returns:
         (annual_return, annual_volatility, is_estimated)
         is_estimated=True はデフォルト値を使用したことを意味する。
     """
+    def _defaults() -> tuple[float, float]:
+        if class_values:
+            return weighted_default_params(class_values)
+        return 0.05, 0.15
+
     if len(totals) < 2:
-        return DEFAULT_ANNUAL_RETURN, DEFAULT_ANNUAL_VOLATILITY, True
+        r, v = _defaults()
+        return r, v, True
 
     # 日次リターンを計算
     daily_returns = []
@@ -63,7 +129,8 @@ def _estimate_params(totals: list[tuple[str, float]]) -> tuple[float, float, boo
             daily_returns.append(curr / prev - 1)
 
     if len(daily_returns) < 5:
-        return DEFAULT_ANNUAL_RETURN, DEFAULT_ANNUAL_VOLATILITY, True
+        r, v = _defaults()
+        return r, v, True
 
     # 平均日次リターン
     mean_daily = sum(daily_returns) / len(daily_returns)
@@ -138,12 +205,14 @@ def predict_no_contribution(
     safe_value: float,
     years_list: list[int] | None = None,
     simulations: int = 10000,
+    class_values: dict[str, float] | None = None,
 ) -> tuple[list[PredictionRange], dict]:
     """追加投資なしの成長予測（フェーズ1）。
 
     Args:
-        risk_value: リスク資産額（株式+投信）。シミュレーション対象。
-        safe_value: 安全資産額（預金・不動産・年金）。固定値として加算。
+        risk_value: リスク資産額（株式+投信+株式型年金）。シミュレーション対象。
+        safe_value: 安全資産額（預金・不動産・保険型年金）。固定値として加算。
+        class_values: 資産クラス別の評価額。デフォルトパラメータの加重平均計算に使用。
 
     Returns:
         (predictions, params) where params contains estimation details.
@@ -155,7 +224,7 @@ def predict_no_contribution(
     if not totals:
         return [], {"error": "データがありません"}
 
-    annual_return, annual_vol, is_estimated = _estimate_params(totals)
+    annual_return, annual_vol, is_estimated = _estimate_params(totals, class_values)
 
     params = {
         "risk_value": risk_value,
@@ -190,13 +259,15 @@ def predict_with_contribution(
     monthly_contribution: float,
     years_list: list[int] | None = None,
     simulations: int = 10000,
+    class_values: dict[str, float] | None = None,
 ) -> tuple[list[PredictionRange], dict]:
     """積立込みの成長予測（フェーズ2）。
 
     Args:
-        risk_value: リスク資産額（株式+投信）。シミュレーション対象。
-        safe_value: 安全資産額（預金・不動産・年金）。固定値として加算。
+        risk_value: リスク資産額（株式+投信+株式型年金）。シミュレーション対象。
+        safe_value: 安全資産額（預金・不動産・保険型年金）。固定値として加算。
         monthly_contribution: 月次積立額（リスク資産側に投入）。
+        class_values: 資産クラス別の評価額。デフォルトパラメータの加重平均計算に使用。
 
     Returns:
         (predictions, params) where params contains estimation details.
@@ -208,7 +279,7 @@ def predict_with_contribution(
     if not totals:
         return [], {"error": "データがありません"}
 
-    annual_return, annual_vol, is_estimated = _estimate_params(totals)
+    annual_return, annual_vol, is_estimated = _estimate_params(totals, class_values)
 
     params = {
         "risk_value": risk_value,

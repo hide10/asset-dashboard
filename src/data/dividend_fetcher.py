@@ -69,6 +69,14 @@ def update_all_dividends(codes: list[str] | None = None) -> dict:
         encoding="utf-8",
     )
     print(f"\n保存: {_JSON_PATH}")
+
+    # 業種情報も同時に取得・キャッシュ
+    try:
+        from src.data.stock_master import update_sectors
+        update_sectors(codes)
+    except Exception as e:
+        print(f"[sector] 業種取得エラー: {e}")
+
     return data
 
 
