@@ -176,10 +176,16 @@ _NAV_CSS = """
   .nav-toolbar a:hover { background: #f1f2f6; color: #2d3436; }
   .nav-toolbar a.active { background: #2881D7; color: #fff; border-color: #2881D7; }
   .nav-toolbar a.active + a { border-left-color: #2881D7; }
+  .demo-badge {
+    background: #DF3727; color: #fff; font-size: 0.7rem; font-weight: 700;
+    padding: 4px 10px; border-radius: 4px; letter-spacing: 0.05em;
+    animation: demo-pulse 2s ease-in-out infinite;
+  }
+  @keyframes demo-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.7; } }
 """
 
 
-def _nav_html(active: str) -> str:
+def _nav_html(active: str, demo: bool = False) -> str:
     """ナビゲーションツールバーのHTMLを返す。"""
     pages = [
         ("/", "ダッシュボード"),
@@ -191,7 +197,8 @@ def _nav_html(active: str) -> str:
     for path, label in pages:
         cls = ' class="active"' if path == active else ""
         links.append(f'<a href="{path}"{cls}>{label}</a>')
-    return '<div class="nav-toolbar">' + "".join(links) + "</div>"
+    demo_badge = '<span class="demo-badge">DEMO</span>' if demo else ""
+    return '<div class="nav-toolbar">' + "".join(links) + "</div>" + demo_badge
 
 
 # --- 共通 CSS: 折りたたみ ---
@@ -402,7 +409,9 @@ def _avg_yield_html(dividends: list[dict]) -> str:
     return ""
 
 
-def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comment: str | None = None) -> str:
+def _build_html(
+    data: dict, dates: list[str], skip_update: bool = False, ai_comment: str | None = None, demo: bool = False
+) -> str:
     if not data:
         return "<html><body><h1>データがありません</h1></body></html>"
 
@@ -825,7 +834,7 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
 <div class="container">
   <div class="page-header">
     <h1>資産ダッシュボード</h1>
-    {_nav_html("/")}
+    {_nav_html("/", demo=demo)}
   </div>
   <div class="date-picker">
     <button class="nav-btn" id="prev-btn" title="前の日">&larr;</button>
@@ -1693,7 +1702,7 @@ def _demo_plan_data() -> dict:
     }
 
 
-def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | None = None) -> str:
+def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | None = None, demo: bool = False) -> str:
     """ライフプランニングページの HTML を生成する。"""
     if not data:
         return "<html><body><h1>データがありません</h1><p><a href='/'>ダッシュボードに戻る</a></p></body></html>"
@@ -1961,7 +1970,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
 <div class="container">
   <div class="page-header">
     <h1>ライフプランニング</h1>
-    {_nav_html("/plan")}
+    {_nav_html("/plan", demo=demo)}
   </div>
   <div class="total">現在の総資産: <strong>{total_asset:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({
         date
@@ -2269,7 +2278,7 @@ const pollId = setInterval(async () => {{
 </html>"""
 
 
-def _build_settings_html(db_path: str, saved: str | None = None) -> str:
+def _build_settings_html(db_path: str, saved: str | None = None, demo: bool = False) -> str:
     """設定ページのHTMLを生成する。"""
     import os
 
@@ -2327,7 +2336,7 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
 <div class="container">
   <div class="page-header">
     <h1>設定</h1>
-    {_nav_html("/settings")}
+    {_nav_html("/settings", demo=demo)}
   </div>
   {saved_msg}
   <div class="card">
@@ -2707,7 +2716,7 @@ def _demo_cf_data() -> dict:
     }
 
 
-def _build_cf_html(data: dict, skip_update: bool = False) -> str:
+def _build_cf_html(data: dict, skip_update: bool = False, demo: bool = False) -> str:
     """家計簿分析ページの HTML を生成する。"""
     if not data:
         return "<html><body><h1>データがありません</h1><p><a href='/'>ダッシュボードに戻る</a></p></body></html>"
@@ -3026,7 +3035,7 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
 <div class="container">
   <div class="page-header">
     <h1>家計簿分析</h1>
-    {_nav_html("/cf")}
+    {_nav_html("/cf", demo=demo)}
   </div>
   <div class="month-picker">
     <button class="nav-btn" id="prev-month" title="前の月">&larr;</button>
@@ -3403,7 +3412,7 @@ class Handler(BaseHTTPRequestHandler):
                         conn.close()
                     except Exception:
                         pass
-            html = _build_plan_html(data, self.skip_update, ai_comment=ai_comment)
+            html = _build_plan_html(data, self.skip_update, ai_comment=ai_comment, demo=self.demo)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -3426,7 +3435,7 @@ class Handler(BaseHTTPRequestHandler):
                         conn.close()
                     except Exception:
                         pass
-            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment)
+            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment, demo=self.demo)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -3440,7 +3449,7 @@ class Handler(BaseHTTPRequestHandler):
                     data["year_month"] = month
             else:
                 data = _get_cf_data(self.db_path, month)
-            html = _build_cf_html(data, self.skip_update)
+            html = _build_cf_html(data, self.skip_update, demo=self.demo)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -3461,7 +3470,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif parsed.path == "/settings":
             saved = params.get("saved", [None])[0]
-            html = _build_settings_html(self.db_path, saved=saved)
+            html = _build_settings_html(self.db_path, saved=saved, demo=self.demo)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
