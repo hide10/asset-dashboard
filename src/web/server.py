@@ -1648,16 +1648,16 @@ def _demo_plan_data() -> dict:
     from datetime import timedelta
 
     demo_daily = []
-    base_total = 20_800_000
+    base_total = 19_500_000
     base_classes = {
-        "株式（現物）": 8_500_000,
-        "投資信託": 3_000_000,
-        "年金": 2_800_000,
-        "預金・現金": 5_200_000,
-        "不動産": 1_300_000,
+        "株式（現物）": 8_000_000,
+        "投資信託": 2_800_000,
+        "年金": 2_600_000,
+        "預金・現金": 4_900_000,
+        "不動産": 1_200_000,
     }
-    for i in range(30):
-        d = _date(2026, 1, 16) + timedelta(days=i)
+    for i in range(180):
+        d = _date(2025, 8, 19) + timedelta(days=i)
         # 緩やかな上昇 + 小さなランダム風の変動
         drift = int(base_total * 0.001 * i + (((i * 7 + 3) % 11) - 5) * 30_000)
         total = base_total + drift
@@ -1733,13 +1733,9 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
 
     # --- セクション0: 日次資産推移（実績） ---
     daily_chart_data = json.dumps(daily_assets, ensure_ascii=False)
-    daily_rows = ""
-    for da in daily_assets:
-        daily_rows += f'<tr><td>{da["date"]}</td><td class="num">{da["total"]:,.0f}円</td></tr>'
-
     daily_card_html = ""
     if daily_assets:
-        daily_card_html = f"""
+        daily_card_html = """
     <div class="card full" data-card-id="plan-daily-assets">
       <div class="card-header">
         <h2>資産推移（実績）</h2>
@@ -1754,10 +1750,6 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
       </div>
       <div class="card-body">
       <canvas id="daily-chart" height="280"></canvas>
-      <table style="margin-top:16px">
-        <tr><th>日付</th><th class="num">総資産</th></tr>
-        {daily_rows}
-      </table>
       </div>
     </div>"""
 

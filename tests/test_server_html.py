@@ -295,7 +295,7 @@ class TestDemoData:
     def test_plan_demo_has_daily_assets(self):
         d = _demo_plan_data()
         assert "daily_assets" in d
-        assert len(d["daily_assets"]) == 30
+        assert len(d["daily_assets"]) == 180
         assert "date" in d["daily_assets"][0]
         assert "total" in d["daily_assets"][0]
         assert "by_class" in d["daily_assets"][0]
