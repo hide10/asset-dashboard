@@ -2061,7 +2061,8 @@ function drawDailyChart(data) {{
   data.forEach(d => {{ Object.keys(d.by_class || {{}}).forEach(k => {{ if (!classSet.has(k)) {{ classSet.add(k); classKeys.push(k); }} }}); }});
 
   const totals = data.map(d => d.total);
-  const minVal = Math.min(...totals) * 0.95;
+  const hasClasses = classKeys.length > 0;
+  const minVal = hasClasses ? 0 : Math.min(...totals) * 0.95;
   const maxVal = Math.max(...totals) * 1.05;
   const range = maxVal - minVal || 1;
 
@@ -2095,7 +2096,7 @@ function drawDailyChart(data) {{
 
     for (let ci = classKeys.length - 1; ci >= 0; ci--) {{
       const color = AREA_COLORS[ci % AREA_COLORS.length];
-      ctx.fillStyle = color + '40';
+      ctx.fillStyle = color + '99';
       ctx.beginPath();
       data.forEach((d, i) => {{
         const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
@@ -2103,10 +2104,10 @@ function drawDailyChart(data) {{
         const y = padding.top + chartH * (1 - (val - minVal) / range);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }});
-      // 下辺: 一つ下のクラスの上辺、または minVal
+      // 下辺: 一つ下のクラスの上辺、または 0
       for (let i = data.length - 1; i >= 0; i--) {{
         const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
-        const val = ci > 0 ? stacked[i][classKeys[ci - 1]] : minVal;
+        const val = ci > 0 ? stacked[i][classKeys[ci - 1]] : 0;
         const y = padding.top + chartH * (1 - (val - minVal) / range);
         ctx.lineTo(x, y);
       }}
