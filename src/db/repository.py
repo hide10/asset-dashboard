@@ -83,6 +83,21 @@ def get_all_total_assets(conn: sqlite3.Connection) -> list[tuple[str, float]]:
     return rows
 
 
+def get_daily_assets(conn: sqlite3.Connection, months: int = 6) -> list[dict]:
+    """日次の総資産+資産クラス別データを返す（新しい順にN ヶ月分）。
+
+    Returns: [{"date": "2026-02-15", "total": 21500000, "by_class": {...}}, ...]
+    """
+    from datetime import date, timedelta
+
+    cutoff = (date.today() - timedelta(days=months * 30)).isoformat()
+    rows = conn.execute(
+        "SELECT date, total_asset, by_class_json FROM snapshots WHERE date >= ? ORDER BY date ASC",
+        (cutoff,),
+    ).fetchall()
+    return [{"date": r[0], "total": r[1], "by_class": json.loads(r[2])} for r in rows]
+
+
 def save_cashflows(conn: sqlite3.Connection, months: list[CashflowMonth], fetched_date: str) -> None:
     """月次収支データをDBに保存する。同月データがあれば差し替える。"""
     for m in months:

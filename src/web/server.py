@@ -30,6 +30,7 @@ from src.db.repository import (
     get_cf_income_breakdown,
     get_cf_income_trend,
     get_cf_monthly_trend,
+    get_daily_assets,
     get_setting,
     save_cf_csv_month,
     save_cf_transactions,
@@ -1554,6 +1555,9 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
     # 家計簿の実績貯蓄データ
     cf_savings = get_cf_actual_savings(conn)
 
+    # 日次資産推移
+    daily_assets = get_daily_assets(conn, months=6)
+
     conn.close()
 
     eq_pension, ins_pension = classify_pension_holdings(holdings_for_pension)
@@ -1596,6 +1600,7 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
         "pred_params_contrib": pred_params_c,
         "monthly_contribution": monthly_contribution,
         "cf_savings": cf_savings,
+        "daily_assets": daily_assets,
     }
 
 
@@ -1638,6 +1643,35 @@ def _demo_plan_data() -> dict:
         PredictionRange(years=5, p10=20_800_000, p50=31_200_000, p90=47_500_000),
     ]
 
+    # 日次資産推移デモデータ（30日分）
+    from datetime import date as _date
+    from datetime import timedelta
+
+    demo_daily = []
+    base_total = 20_800_000
+    base_classes = {
+        "株式（現物）": 8_500_000,
+        "投資信託": 3_000_000,
+        "年金": 2_800_000,
+        "預金・現金": 5_200_000,
+        "不動産": 1_300_000,
+    }
+    for i in range(30):
+        d = _date(2026, 1, 16) + timedelta(days=i)
+        # 緩やかな上昇 + 小さなランダム風の変動
+        drift = int(base_total * 0.001 * i + (((i * 7 + 3) % 11) - 5) * 30_000)
+        total = base_total + drift
+        by_class = {}
+        remaining = total
+        for j, (cls, base_val) in enumerate(base_classes.items()):
+            if j == len(base_classes) - 1:
+                by_class[cls] = remaining
+            else:
+                val = int(base_val + base_val * 0.001 * i + (((i * 3 + j * 5) % 7) - 3) * 10_000)
+                by_class[cls] = val
+                remaining -= val
+        demo_daily.append({"date": d.isoformat(), "total": total, "by_class": by_class})
+
     return {
         "date": "2026-02-14",
         "total_asset": 21_500_000,
@@ -1655,6 +1689,7 @@ def _demo_plan_data() -> dict:
             "savings_rate": 14.6,
             "months_used": 6,
         },
+        "daily_assets": demo_daily,
     }
 
 
@@ -1672,6 +1707,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     predictions_c = data.get("predictions_contrib", [])
     data.get("pred_params_contrib", {})  # reserved for future use
     monthly_contribution = data.get("monthly_contribution", 50000)
+    daily_assets = data.get("daily_assets", [])
 
     # --- 家計簿実績バナー ---
     cf_savings = data.get("cf_savings")
@@ -1693,6 +1729,36 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
         <div><span style="font-size:0.8rem;color:#636e72">貯蓄率</span><div style="font-size:1.1rem;font-weight:700">{s["savings_rate"]}%</div></div>
       </div>
       <div style="font-size:0.75rem;color:#b2bec3;margin-top:8px">※ 積立額設定の参考値としてご活用ください（自動変更はしません）</div>
+    </div>"""
+
+    # --- セクション0: 日次資産推移（実績） ---
+    daily_chart_data = json.dumps(daily_assets, ensure_ascii=False)
+    daily_rows = ""
+    for da in daily_assets:
+        daily_rows += f'<tr><td>{da["date"]}</td><td class="num">{da["total"]:,.0f}円</td></tr>'
+
+    daily_card_html = ""
+    if daily_assets:
+        daily_card_html = f"""
+    <div class="card full" data-card-id="plan-daily-assets">
+      <div class="card-header">
+        <h2>資産推移（実績）</h2>
+        <div class="period-buttons">
+          <button class="period-btn active" data-period="1">1M</button>
+          <button class="period-btn" data-period="3">3M</button>
+          <button class="period-btn" data-period="6">6M</button>
+          <button class="period-btn" data-period="12">1Y</button>
+          <button class="period-btn" data-period="0">ALL</button>
+        </div>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <canvas id="daily-chart" height="280"></canvas>
+      <table style="margin-top:16px">
+        <tr><th>日付</th><th class="num">総資産</th></tr>
+        {daily_rows}
+      </table>
+      </div>
     </div>"""
 
     # --- セクション1: 月次資産推移 ---
@@ -1864,6 +1930,20 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     background: #fff; cursor: pointer; font-size: 0.85rem; color: #2d3436;
   }}
   .contrib-form button:hover {{ background: #f1f2f6; }}
+  .period-buttons {{ display: flex; gap: 4px; margin-left: auto; }}
+  .period-btn {{
+    padding: 2px 10px; border: 1px solid #dfe6e9; border-radius: 4px;
+    background: #fff; cursor: pointer; font-size: 0.75rem; color: #636e72; font-weight: 600;
+  }}
+  .period-btn:hover {{ background: #f1f2f6; }}
+  .period-btn.active {{ background: #2881D7; color: #fff; border-color: #2881D7; }}
+  .daily-tooltip {{
+    position: fixed; pointer-events: none; background: rgba(45,52,54,0.92);
+    color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 0.8rem;
+    line-height: 1.6; opacity: 0; transition: opacity 0.15s; z-index: 999;
+    max-width: 280px;
+  }}
+  .daily-tooltip.show {{ opacity: 1; }}
   .ai-comment-card {{
     background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
     border: 1px solid #d4ddee; border-radius: 12px;
@@ -1909,6 +1989,8 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     }
 
   <div class="grid">
+    {daily_card_html}
+
     <div class="card full" data-card-id="plan-totals">
       <div class="card-header">
         <h2>月次資産推移</h2>
@@ -1953,8 +2035,172 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     {pred_contrib_html}
   </div>
 </div>
+<div class="daily-tooltip" id="daily-tooltip"></div>
 
 <script>
+// --- 日次資産推移（実績）チャート ---
+const dailyAllData = {daily_chart_data};
+const dailyCanvas = document.getElementById('daily-chart');
+const AREA_COLORS = ['#2881D7','#FCAD4C','#0F7F30','#008986','#9C39B6','#DF3727','#80BD45','#E67E22'];
+
+function drawDailyChart(data) {{
+  if (!data.length || !dailyCanvas) return;
+  const ctx = dailyCanvas.getContext('2d');
+  const W = dailyCanvas.parentElement.clientWidth - 40;
+  dailyCanvas.width = W;
+  dailyCanvas.height = 280;
+  ctx.clearRect(0, 0, W, 280);
+
+  const padding = {{ left: 80, right: 20, top: 20, bottom: 30 }};
+  const chartW = W - padding.left - padding.right;
+  const chartH = 280 - padding.top - padding.bottom;
+
+  // 資産クラスキー収集
+  const classKeys = [];
+  const classSet = new Set();
+  data.forEach(d => {{ Object.keys(d.by_class || {{}}).forEach(k => {{ if (!classSet.has(k)) {{ classSet.add(k); classKeys.push(k); }} }}); }});
+
+  const totals = data.map(d => d.total);
+  const minVal = Math.min(...totals) * 0.95;
+  const maxVal = Math.max(...totals) * 1.05;
+  const range = maxVal - minVal || 1;
+
+  // Y軸グリッド
+  ctx.strokeStyle = '#f1f2f6';
+  ctx.fillStyle = '#b2bec3';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {{
+    const y = padding.top + chartH * (1 - i/4);
+    const val = minVal + range * i / 4;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(W - padding.right, y);
+    ctx.stroke();
+    ctx.fillText((val/10000).toFixed(0) + '万', padding.left - 6, y + 4);
+  }}
+
+  // 積み上げ面グラフ（資産クラス別）
+  if (classKeys.length > 0) {{
+    // 各クラスの累積値を計算
+    const stacked = data.map(d => {{
+      let cum = 0;
+      const vals = {{}};
+      classKeys.forEach(k => {{
+        cum += (d.by_class || {{}})[k] || 0;
+        vals[k] = cum;
+      }});
+      return vals;
+    }});
+
+    for (let ci = classKeys.length - 1; ci >= 0; ci--) {{
+      const color = AREA_COLORS[ci % AREA_COLORS.length];
+      ctx.fillStyle = color + '40';
+      ctx.beginPath();
+      data.forEach((d, i) => {{
+        const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
+        const val = stacked[i][classKeys[ci]];
+        const y = padding.top + chartH * (1 - (val - minVal) / range);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }});
+      // 下辺: 一つ下のクラスの上辺、または minVal
+      for (let i = data.length - 1; i >= 0; i--) {{
+        const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
+        const val = ci > 0 ? stacked[i][classKeys[ci - 1]] : minVal;
+        const y = padding.top + chartH * (1 - (val - minVal) / range);
+        ctx.lineTo(x, y);
+      }}
+      ctx.closePath();
+      ctx.fill();
+    }}
+  }}
+
+  // 総資産ライン
+  ctx.strokeStyle = '#2881D7';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  data.forEach((d, i) => {{
+    const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
+    const y = padding.top + chartH * (1 - (d.total - minVal) / range);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }});
+  ctx.stroke();
+
+  // X軸ラベル（7日おきに間引き）
+  const step = Math.max(1, Math.floor(data.length / 8));
+  ctx.fillStyle = '#636e72';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  data.forEach((d, i) => {{
+    if (i % step === 0 || i === data.length - 1) {{
+      const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
+      ctx.fillText(d.date.substring(5), x, padding.top + chartH + 18);
+    }}
+  }});
+
+  // 凡例
+  if (classKeys.length > 0) {{
+    let lx = padding.left;
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    classKeys.forEach((k, ci) => {{
+      const color = AREA_COLORS[ci % AREA_COLORS.length];
+      ctx.fillStyle = color + '80';
+      ctx.fillRect(lx, 4, 10, 10);
+      ctx.fillStyle = '#2d3436';
+      ctx.fillText(k, lx + 13, 13);
+      lx += ctx.measureText(k).width + 22;
+    }});
+  }}
+
+  // ツールチップ
+  dailyCanvas.onmousemove = function(e) {{
+    const rect = dailyCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const idx = Math.round((mx - padding.left) / (chartW / (data.length - 1 || 1)));
+    if (idx < 0 || idx >= data.length) {{ dailyTooltip.classList.remove('show'); return; }}
+    const d = data[idx];
+    let html = '<strong>' + d.date + '</strong><br>総資産: ' + (d.total / 10000).toLocaleString('ja-JP', {{maximumFractionDigits:0}}) + '万円';
+    if (d.by_class) {{
+      html += '<div style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.2);padding-top:4px">';
+      Object.entries(d.by_class).forEach(([k, v]) => {{
+        html += '<div style="display:flex;justify-content:space-between;gap:12px"><span>' + k + '</span><span>' + (v/10000).toLocaleString('ja-JP', {{maximumFractionDigits:0}}) + '万</span></div>';
+      }});
+      html += '</div>';
+    }}
+    const tip = document.getElementById('daily-tooltip');
+    if (tip) {{
+      tip.innerHTML = html;
+      tip.classList.add('show');
+      tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 260) + 'px';
+      tip.style.top = (e.clientY - 10) + 'px';
+    }}
+  }};
+  dailyCanvas.onmouseleave = function() {{
+    const tip = document.getElementById('daily-tooltip');
+    if (tip) tip.classList.remove('show');
+  }};
+}}
+
+// 期間切替
+const periodBtns = document.querySelectorAll('.period-btn');
+function filterByPeriod(months) {{
+  if (months === 0 || !months) {{ drawDailyChart(dailyAllData); return; }}
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - months);
+  const cutoffStr = cutoff.toISOString().substring(0, 10);
+  drawDailyChart(dailyAllData.filter(d => d.date >= cutoffStr));
+}}
+periodBtns.forEach(btn => {{
+  btn.addEventListener('click', function() {{
+    periodBtns.forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    filterByPeriod(parseInt(this.dataset.period));
+  }});
+}});
+// 初期描画（デフォルト1M）
+filterByPeriod(1);
+
 // 月次資産推移（折れ線グラフ）
 const totalsData = {totals_chart_data};
 const totalsCanvas = document.getElementById('totals-chart');
