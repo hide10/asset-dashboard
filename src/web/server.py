@@ -176,16 +176,12 @@ _NAV_CSS = """
   .nav-toolbar a:hover { background: #f1f2f6; color: #2d3436; }
   .nav-toolbar a.active { background: #2881D7; color: #fff; border-color: #2881D7; }
   .nav-toolbar a.active + a { border-left-color: #2881D7; }
-  .demo-badge {
-    background: #DF3727; color: #fff; font-size: 0.7rem; font-weight: 700;
-    padding: 4px 10px; border-radius: 4px; letter-spacing: 0.05em;
-    animation: demo-pulse 2s ease-in-out infinite;
-  }
-  @keyframes demo-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.7; } }
 """
 
+_DEMO_BANNER = """<div style="background:#DF3727;color:#fff;text-align:center;padding:6px 0;font-size:0.8rem;font-weight:700;letter-spacing:0.1em">DEMO MODE — 表示データはすべてダミーです</div>"""
 
-def _nav_html(active: str, demo: bool = False) -> str:
+
+def _nav_html(active: str) -> str:
     """ナビゲーションツールバーのHTMLを返す。"""
     pages = [
         ("/", "ダッシュボード"),
@@ -197,8 +193,7 @@ def _nav_html(active: str, demo: bool = False) -> str:
     for path, label in pages:
         cls = ' class="active"' if path == active else ""
         links.append(f'<a href="{path}"{cls}>{label}</a>')
-    demo_badge = '<span class="demo-badge">DEMO</span>' if demo else ""
-    return '<div class="nav-toolbar">' + "".join(links) + "</div>" + demo_badge
+    return '<div class="nav-toolbar">' + "".join(links) + "</div>"
 
 
 # --- 共通 CSS: 折りたたみ ---
@@ -834,7 +829,7 @@ def _build_html(
 <div class="container">
   <div class="page-header">
     <h1>資産ダッシュボード</h1>
-    {_nav_html("/", demo=demo)}
+    {_nav_html("/")}
   </div>
   <div class="date-picker">
     <button class="nav-btn" id="prev-btn" title="前の日">&larr;</button>
@@ -1702,7 +1697,7 @@ def _demo_plan_data() -> dict:
     }
 
 
-def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | None = None, demo: bool = False) -> str:
+def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | None = None) -> str:
     """ライフプランニングページの HTML を生成する。"""
     if not data:
         return "<html><body><h1>データがありません</h1><p><a href='/'>ダッシュボードに戻る</a></p></body></html>"
@@ -1970,7 +1965,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
 <div class="container">
   <div class="page-header">
     <h1>ライフプランニング</h1>
-    {_nav_html("/plan", demo=demo)}
+    {_nav_html("/plan")}
   </div>
   <div class="total">現在の総資産: <strong>{total_asset:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({
         date
@@ -2278,7 +2273,7 @@ const pollId = setInterval(async () => {{
 </html>"""
 
 
-def _build_settings_html(db_path: str, saved: str | None = None, demo: bool = False) -> str:
+def _build_settings_html(db_path: str, saved: str | None = None) -> str:
     """設定ページのHTMLを生成する。"""
     import os
 
@@ -2336,7 +2331,7 @@ def _build_settings_html(db_path: str, saved: str | None = None, demo: bool = Fa
 <div class="container">
   <div class="page-header">
     <h1>設定</h1>
-    {_nav_html("/settings", demo=demo)}
+    {_nav_html("/settings")}
   </div>
   {saved_msg}
   <div class="card">
@@ -2716,7 +2711,7 @@ def _demo_cf_data() -> dict:
     }
 
 
-def _build_cf_html(data: dict, skip_update: bool = False, demo: bool = False) -> str:
+def _build_cf_html(data: dict, skip_update: bool = False) -> str:
     """家計簿分析ページの HTML を生成する。"""
     if not data:
         return "<html><body><h1>データがありません</h1><p><a href='/'>ダッシュボードに戻る</a></p></body></html>"
@@ -3035,7 +3030,7 @@ def _build_cf_html(data: dict, skip_update: bool = False, demo: bool = False) ->
 <div class="container">
   <div class="page-header">
     <h1>家計簿分析</h1>
-    {_nav_html("/cf", demo=demo)}
+    {_nav_html("/cf")}
   </div>
   <div class="month-picker">
     <button class="nav-btn" id="prev-month" title="前の月">&larr;</button>
@@ -3358,6 +3353,15 @@ class Handler(BaseHTTPRequestHandler):
     demo: bool = False
     skip_update: bool = False
 
+    def _send_html(self, html: str) -> None:
+        """HTMLレスポンスを送信する。デモモード時はバナーを挿入。"""
+        if self.demo:
+            html = html.replace("<body>", "<body>" + _DEMO_BANNER, 1)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode())
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
@@ -3412,11 +3416,8 @@ class Handler(BaseHTTPRequestHandler):
                         conn.close()
                     except Exception:
                         pass
-            html = _build_plan_html(data, self.skip_update, ai_comment=ai_comment, demo=self.demo)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html.encode())
+            html = _build_plan_html(data, self.skip_update, ai_comment=ai_comment)
+            self._send_html(html)
 
         elif parsed.path == "/":
             if self.demo:
@@ -3435,11 +3436,8 @@ class Handler(BaseHTTPRequestHandler):
                         conn.close()
                     except Exception:
                         pass
-            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment, demo=self.demo)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html.encode())
+            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment)
+            self._send_html(html)
 
         elif parsed.path == "/cf":
             month = params.get("month", [None])[0]
@@ -3449,11 +3447,8 @@ class Handler(BaseHTTPRequestHandler):
                     data["year_month"] = month
             else:
                 data = _get_cf_data(self.db_path, month)
-            html = _build_cf_html(data, self.skip_update, demo=self.demo)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html.encode())
+            html = _build_cf_html(data, self.skip_update)
+            self._send_html(html)
 
         elif parsed.path == "/api/cf/months":
             if self.demo:
@@ -3470,11 +3465,8 @@ class Handler(BaseHTTPRequestHandler):
 
         elif parsed.path == "/settings":
             saved = params.get("saved", [None])[0]
-            html = _build_settings_html(self.db_path, saved=saved, demo=self.demo)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html.encode())
+            html = _build_settings_html(self.db_path, saved=saved)
+            self._send_html(html)
 
         elif parsed.path == "/favicon.ico":
             self.send_response(204)
