@@ -122,7 +122,7 @@ class TestCollapse:
         """全ライフプランカードに data-card-id と collapse-btn がある。"""
         html = _build_plan_html(_demo_plan_data())
         card_ids = re.findall(r'data-card-id="([^"]+)"', html)
-        expected = {"plan-daily-assets", "plan-totals", "plan-cashflow", "plan-pred", "plan-pred-c"}
+        expected = {"plan-daily-assets", "plan-cashflow", "plan-pred", "plan-pred-c"}
         assert expected.issubset(set(card_ids)), f"Missing: {expected - set(card_ids)}"
         for cid in expected:
             pattern = f'data-card-id="{cid}"[^>]*>.*?collapse-btn'

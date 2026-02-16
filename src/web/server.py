@@ -1701,7 +1701,6 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     date = data["date"]
     total_asset = data["total_asset"]
     cashflows = data.get("cashflows", [])
-    monthly_totals = data.get("monthly_totals", [])
     predictions = data.get("predictions", [])
     pred_params = data.get("pred_params", {})
     predictions_c = data.get("predictions_contrib", [])
@@ -1752,13 +1751,6 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
       <canvas id="daily-chart" height="280"></canvas>
       </div>
     </div>"""
-
-    # --- セクション1: 月次資産推移 ---
-    totals_chart_data = json.dumps(monthly_totals, ensure_ascii=False)
-
-    totals_rows = ""
-    for mt in monthly_totals:
-        totals_rows += f'<tr><td>{mt["year_month"]}</td><td class="num">{mt["total"]:,.0f}円</td></tr>'
 
     # --- セクション2: 月次収支（MF集計、参考） ---
     cf_chart_data = json.dumps(cashflows, ensure_ascii=False)
@@ -1983,24 +1975,6 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
   <div class="grid">
     {daily_card_html}
 
-    <div class="card full" data-card-id="plan-totals">
-      <div class="card-header">
-        <h2>月次資産推移</h2>
-        <button class="collapse-btn">&#x25BC;</button>
-      </div>
-      <div class="card-body">
-      {'<canvas id="totals-chart" height="200"></canvas>' if monthly_totals else ""}
-      {
-        f'''<table style="margin-top:16px">
-        <tr><th>月</th><th class="num">月末総資産</th></tr>
-        {totals_rows}
-      </table>'''
-        if monthly_totals
-        else '<div class="no-data">複数月のスナップショットが必要です。日次取得を続けるとデータが蓄積されます。</div>'
-    }
-      </div>
-    </div>
-
     {cf_savings_html}
 
     <div class="card full" data-card-id="plan-cashflow">
@@ -2193,64 +2167,6 @@ periodBtns.forEach(btn => {{
 }});
 // 初期描画（デフォルト1M）
 filterByPeriod(1);
-
-// 月次資産推移（折れ線グラフ）
-const totalsData = {totals_chart_data};
-const totalsCanvas = document.getElementById('totals-chart');
-if (totalsData.length > 0 && totalsCanvas) {{
-  const ctx = totalsCanvas.getContext('2d');
-  const W = totalsCanvas.parentElement.clientWidth - 40;
-  totalsCanvas.width = W;
-  totalsCanvas.height = 220;
-
-  const labels = totalsData.map(d => d.year_month.substring(5));
-  const values = totalsData.map(d => d.total);
-  const minVal = Math.min(...values) * 0.95;
-  const maxVal = Math.max(...values) * 1.05;
-  const range = maxVal - minVal || 1;
-
-  const padding = {{ left: 80, right: 20, top: 20, bottom: 30 }};
-  const chartW = W - padding.left - padding.right;
-  const chartH = 220 - padding.top - padding.bottom;
-
-  // Y軸グリッド
-  ctx.strokeStyle = '#f1f2f6';
-  ctx.fillStyle = '#b2bec3';
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'right';
-  for (let i = 0; i <= 4; i++) {{
-    const y = padding.top + chartH * (1 - i/4);
-    const val = minVal + range * i / 4;
-    ctx.beginPath();
-    ctx.moveTo(padding.left, y);
-    ctx.lineTo(W - padding.right, y);
-    ctx.stroke();
-    ctx.fillText((val/10000).toFixed(0) + '万', padding.left - 6, y + 4);
-  }}
-
-  // 折れ線
-  ctx.strokeStyle = '#2881D7';
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  values.forEach((v, i) => {{
-    const x = padding.left + (chartW / (values.length - 1 || 1)) * i;
-    const y = padding.top + chartH * (1 - (v - minVal) / range);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }});
-  ctx.stroke();
-
-  // ドット + ラベル
-  values.forEach((v, i) => {{
-    const x = padding.left + (chartW / (values.length - 1 || 1)) * i;
-    const y = padding.top + chartH * (1 - (v - minVal) / range);
-    ctx.fillStyle = '#2881D7';
-    ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#636e72';
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(labels[i], x, padding.top + chartH + 18);
-  }});
-}}
 
 // 月次収支棒グラフ描画
 const cfData = {cf_chart_data};
