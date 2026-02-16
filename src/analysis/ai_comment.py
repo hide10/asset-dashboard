@@ -11,13 +11,13 @@ import os
 import sqlite3
 from datetime import datetime
 
+from src.db.repository import get_cashflows, get_setting
 from src.db.schema import init_db
-from src.db.repository import get_setting, get_cashflows
-
 
 # ---------------------------------------------------------------------------
 # APIキー取得
 # ---------------------------------------------------------------------------
+
 
 def _get_api_key(db_path: str) -> str | None:
     """APIキーを取得する。環境変数 > DB settings の順で探す。"""
@@ -33,6 +33,7 @@ def _get_api_key(db_path: str) -> str | None:
 # ---------------------------------------------------------------------------
 # DB操作
 # ---------------------------------------------------------------------------
+
 
 def save_comment(conn: sqlite3.Connection, date: str, page: str, comment: str) -> None:
     """AIコメントをDBに保存する。"""
@@ -56,16 +57,15 @@ def get_comment(conn: sqlite3.Connection, date: str, page: str) -> str | None:
 # プロンプト生成
 # ---------------------------------------------------------------------------
 
+
 def _build_dashboard_prompt(db_path: str, date: str) -> str:
     """ダッシュボード用の分析プロンプトを組み立てる。"""
     from src.analysis.compare import get_all_comparisons
-    from src.data.stock_master import get_sector, get_dividend
+    from src.data.stock_master import get_dividend, get_sector
 
     conn = init_db(db_path)
 
-    row = conn.execute(
-        "SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)
-    ).fetchone()
+    row = conn.execute("SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)).fetchone()
     if not row:
         conn.close()
         return ""
@@ -120,10 +120,10 @@ def _build_dashboard_prompt(db_path: str, date: str) -> str:
 {chr(10).join(class_lines)}
 
 ■ 変動:
-{chr(10).join(comp_lines) if comp_lines else '  比較データなし'}
+{chr(10).join(comp_lines) if comp_lines else "  比較データなし"}
 
 ■ 業種別内訳（上位5件）:
-{chr(10).join(sector_lines) if sector_lines else '  株式データなし'}
+{chr(10).join(sector_lines) if sector_lines else "  株式データなし"}
 
 ■ 年間配当予測: {total_dividend:,.0f}円（利回り {div_yield:.2f}%）"""
 
@@ -135,13 +135,11 @@ def _build_dashboard_prompt(db_path: str, date: str) -> str:
 
 def _build_lifeplan_prompt(db_path: str, date: str) -> str:
     """ライフプラン用の分析プロンプトを組み立てる。"""
-    from src.prediction.montecarlo import predict_no_contribution, predict_with_contribution, RISK_CLASSES
+    from src.prediction.montecarlo import RISK_CLASSES, predict_no_contribution, predict_with_contribution
 
     conn = init_db(db_path)
 
-    row = conn.execute(
-        "SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)
-    ).fetchone()
+    row = conn.execute("SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)).fetchone()
     if not row:
         conn.close()
         return ""
@@ -149,9 +147,7 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
     by_class = json.loads(row[1])
 
     # 月次資産推移
-    rows = conn.execute(
-        "SELECT date, total_asset FROM snapshots ORDER BY date ASC"
-    ).fetchall()
+    rows = conn.execute("SELECT date, total_asset FROM snapshots ORDER BY date ASC").fetchall()
     monthly_end: dict[str, float] = {}
     for date_str, total in rows:
         ym = date_str[:7]
@@ -169,7 +165,9 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
     for cf in cashflows:
         net = cf["income"] - cf["expense"]
         sign = "+" if net >= 0 else ""
-        cf_lines.append(f"  {cf['year_month']}: 収入{cf['income']:,.0f}円 / 支出{cf['expense']:,.0f}円 / 収支{sign}{net:,.0f}円")
+        cf_lines.append(
+            f"  {cf['year_month']}: 収入{cf['income']:,.0f}円 / 支出{cf['expense']:,.0f}円 / 収支{sign}{net:,.0f}円"
+        )
 
     conn.close()
 
@@ -206,16 +204,16 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
 現在の総資産: {total_asset:,.0f}円
 
 ■ 月次資産推移（直近6ヶ月）:
-{chr(10).join(trend_lines) if trend_lines else '  データなし'}
+{chr(10).join(trend_lines) if trend_lines else "  データなし"}
 
 ■ 月次収支（直近6ヶ月）:
-{chr(10).join(cf_lines) if cf_lines else '  データなし'}
+{chr(10).join(cf_lines) if cf_lines else "  データなし"}
 
 ■ 成長予測（追加投資なし）:
-{chr(10).join(pred_lines) if pred_lines else '  データ不足'}
+{chr(10).join(pred_lines) if pred_lines else "  データ不足"}
 
 ■ 成長予測（月額{monthly_contribution:,.0f}円積立込み）:
-{chr(10).join(pred_c_lines) if pred_c_lines else '  データ不足'}"""
+{chr(10).join(pred_c_lines) if pred_c_lines else "  データ不足"}"""
 
     return f"""{data_text}
 
@@ -226,6 +224,7 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
 # ---------------------------------------------------------------------------
 # Gemini API呼び出し
 # ---------------------------------------------------------------------------
+
 
 def _call_gemini(api_key: str, prompt: str) -> str:
     """Gemini APIを呼び出してテキストを取得する。"""
@@ -242,6 +241,7 @@ def _call_gemini(api_key: str, prompt: str) -> str:
 # ---------------------------------------------------------------------------
 # メインエントリポイント
 # ---------------------------------------------------------------------------
+
 
 def generate_comments(db_path: str) -> None:
     """ダッシュボード・ライフプラン両方のAIコメントを生成・保存する。

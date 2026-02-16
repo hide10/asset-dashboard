@@ -16,6 +16,7 @@ from datetime import date, timedelta
 @dataclass
 class ComparisonResult:
     """比較結果。"""
+
     label: str  # "前日比", "前月比", "前年比"
     target_date: str
     compare_date: str | None
@@ -146,12 +147,14 @@ def _compute_diff(
         diff = cur_bal - prev_bal
         if diff != 0:
             label_name = f"{acc[3]} / {acc[0]}" if acc[3] and acc[3] != acc[0] else acc[0]
-            account_diffs.append({
-                "name": label_name,
-                "diff": diff,
-                "current": cur_bal,
-                "previous": prev_bal,
-            })
+            account_diffs.append(
+                {
+                    "name": label_name,
+                    "diff": diff,
+                    "current": cur_bal,
+                    "previous": prev_bal,
+                }
+            )
     account_diffs.sort(key=lambda x: abs(x["diff"]), reverse=True)
 
     # 銘柄別差分
@@ -181,14 +184,16 @@ def _compute_diff(
             diff = cur_val - prev_val
             if diff != 0:
                 ref = cur_list[i] if i < len(cur_list) else prev_list[i]
-                holding_diffs.append({
-                    "name": ref[1],
-                    "code": ref[0],
-                    "asset_class": ref[4],
-                    "diff": diff,
-                    "current": cur_val,
-                    "previous": prev_val,
-                })
+                holding_diffs.append(
+                    {
+                        "name": ref[1],
+                        "code": ref[0],
+                        "asset_class": ref[4],
+                        "diff": diff,
+                        "current": cur_val,
+                        "previous": prev_val,
+                    }
+                )
     holding_diffs.sort(key=lambda x: abs(x["diff"]), reverse=True)
 
     return ComparisonResult(

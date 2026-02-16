@@ -7,25 +7,227 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sqlite3
 import threading
 from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
-from src.data.stock_master import get_sector, get_dividend
-from src.analysis.compare import get_all_comparisons, ComparisonResult
-from src.analysis.metrics import daily_volatility, max_drawdown, concentration_top_n
-from src.prediction.montecarlo import predict_no_contribution, predict_with_contribution, RISK_CLASSES, PredictionRange, classify_pension_holdings
-from src.db.schema import init_db
-from src.db.repository import get_cashflows, get_setting, save_setting
 from src.analysis.ai_comment import generate_comments, get_comment
+from src.analysis.compare import ComparisonResult, get_all_comparisons
+from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
+from src.data.stock_master import get_dividend, get_sector
+from src.db.repository import (
+    get_cashflows,
+    get_cf_actual_savings,
+    get_cf_available_months,
+    get_cf_category_summary,
+    get_cf_category_trend,
+    get_cf_fixed_expenses,
+    get_cf_income_breakdown,
+    get_cf_income_trend,
+    get_cf_monthly_trend,
+    get_setting,
+    save_cf_csv_month,
+    save_cf_transactions,
+    save_setting,
+)
+from src.db.schema import init_db
+from src.prediction.montecarlo import (
+    RISK_CLASSES,
+    PredictionRange,
+    classify_pension_holdings,
+    predict_no_contribution,
+    predict_with_contribution,
+)
 
 DB_DEFAULT = Path(__file__).resolve().parents[2] / "data" / "assets.db"
 
 _update_state = {"running": False, "version": 0}
+
+# --- 共通 JS: 円グラフ描画・ツールチップ ---
+_PIE_JS = """
+const tooltip = document.getElementById('pie-tooltip');
+function fmt(v) { return v.toLocaleString('ja-JP', {maximumFractionDigits:0}); }
+
+function hitTest(e, canvas, cx, cy, r, chartData) {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const dx = mx - cx, dy = my - cy;
+  if (dx * dx + dy * dy > r * r) return null;
+  let angle = Math.atan2(dy, dx);
+  const offset = -Math.PI / 2;
+  angle = angle - offset;
+  if (angle < 0) angle += 2 * Math.PI;
+  const total = chartData.reduce((s, d) => s + d.value, 0);
+  let cumAngle = 0;
+  for (const d of chartData) {
+    const sl = (d.value / total) * 2 * Math.PI;
+    if (angle >= cumAngle && angle < cumAngle + sl) {
+      return { label: d.label, value: d.value, pct: (d.value / total * 100).toFixed(1), details: d.details || [] };
+    }
+    cumAngle += sl;
+  }
+  return null;
+}
+
+function attachTooltip(canvas, cx, cy, r, chartData) {
+  canvas.addEventListener('mousemove', e => {
+    const hit = hitTest(e, canvas, cx, cy, r, chartData);
+    if (hit) {
+      let html = '<strong>' + hit.label + '</strong>　' + fmt(hit.value) + ' 円（' + hit.pct + '%）';
+      if (hit.details.length > 0) {
+        html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
+        const show = hit.details.slice(0, 8);
+        show.forEach(item => {
+          html += '<div style="display:flex;justify-content:space-between;gap:16px">'
+            + '<span>' + item.name + '</span><span>' + fmt(item.value) + ' 円</span></div>';
+        });
+        if (hit.details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (hit.details.length - 8) + ' 件</div>';
+        html += '</div>';
+      }
+      tooltip.innerHTML = html;
+      tooltip.classList.add('show');
+      requestAnimationFrame(() => {
+        const tw = tooltip.offsetWidth, th2 = tooltip.offsetHeight;
+        tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - tw - 16) + 'px';
+        tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - th2 - 16) + 'px';
+      });
+      canvas.style.cursor = 'pointer';
+    } else {
+      tooltip.classList.remove('show');
+      canvas.style.cursor = '';
+    }
+  });
+  canvas.addEventListener('mouseleave', () => {
+    tooltip.classList.remove('show');
+    canvas.style.cursor = '';
+  });
+}
+
+function drawPieChart(canvasId, legendId, chartData, size) {
+  const c = document.getElementById(canvasId);
+  if (!c || chartData.length === 0) return;
+  const x = c.getContext('2d');
+  const w = size / 2, h = size / 2, rad = w - 10;
+  let angle = -Math.PI / 2;
+  const t = chartData.reduce((s, d) => s + d.value, 0);
+  chartData.forEach(d => {
+    const sl = (d.value / t) * 2 * Math.PI;
+    x.beginPath(); x.moveTo(w, h); x.arc(w, h, rad, angle, angle + sl);
+    x.closePath(); x.fillStyle = d.color; x.fill();
+    angle += sl;
+  });
+  if (legendId) {
+    const leg = document.getElementById(legendId);
+    chartData.forEach(d => {
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="dot" style="background:' + d.color + '"></span>' + d.label;
+      leg.appendChild(li);
+    });
+  }
+  attachTooltip(c, w, h, rad, chartData);
+}
+
+// テーブル行ホバーツールチップ
+document.querySelectorAll('.has-tip').forEach(row => {
+  row.addEventListener('mousemove', e => {
+    const details = JSON.parse(row.dataset.details || '[]');
+    const label = row.dataset.label || '';
+    if (details.length === 0) return;
+    let html = '<strong>' + label + '</strong>';
+    html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
+    const show = details.slice(0, 8);
+    show.forEach(item => {
+      html += '<div style="display:flex;justify-content:space-between;gap:16px">'
+        + '<span>' + item.name + '</span><span>' + fmt(item.value) + ' 円</span></div>';
+    });
+    if (details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (details.length - 8) + ' 件</div>';
+    html += '</div>';
+    tooltip.innerHTML = html;
+    tooltip.classList.add('show');
+    requestAnimationFrame(() => {
+      const tw = tooltip.offsetWidth, th2 = tooltip.offsetHeight;
+      tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - tw - 16) + 'px';
+      tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - th2 - 16) + 'px';
+    });
+  });
+  row.addEventListener('mouseleave', () => {
+    tooltip.classList.remove('show');
+  });
+});
+"""
+
+# --- 共通 CSS: ナビゲーションツールバー ---
+_NAV_CSS = """
+  .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .nav-toolbar { display: flex; gap: 0; }
+  .nav-toolbar a {
+    color: #636e72; text-decoration: none; font-size: 0.85rem; font-weight: 600;
+    padding: 7px 16px; border: 1px solid #dfe6e9; background: #fff;
+  }
+  .nav-toolbar a:first-child { border-radius: 6px 0 0 6px; }
+  .nav-toolbar a:last-child { border-radius: 0 6px 6px 0; }
+  .nav-toolbar a:not(:first-child) { border-left: none; }
+  .nav-toolbar a:hover { background: #f1f2f6; color: #2d3436; }
+  .nav-toolbar a.active { background: #2881D7; color: #fff; border-color: #2881D7; }
+  .nav-toolbar a.active + a { border-left-color: #2881D7; }
+"""
+
+
+def _nav_html(active: str) -> str:
+    """ナビゲーションツールバーのHTMLを返す。"""
+    pages = [
+        ("/", "ダッシュボード"),
+        ("/cf", "家計簿分析"),
+        ("/plan", "ライフプラン"),
+        ("/settings", "設定"),
+    ]
+    links = []
+    for path, label in pages:
+        cls = ' class="active"' if path == active else ""
+        links.append(f'<a href="{path}"{cls}>{label}</a>')
+    return '<div class="nav-toolbar">' + "".join(links) + "</div>"
+
+
+# --- 共通 CSS: 折りたたみ ---
+_COLLAPSE_CSS = """
+  .collapse-btn {
+    background: none; border: none; cursor: pointer; font-size: 0.9rem;
+    color: #b2bec3; padding: 2px 6px; line-height: 1; flex-shrink: 0;
+  }
+  .collapse-btn:hover { color: #636e72; }
+  [data-card-id].collapsed > .card-body { display: none; }
+  [data-card-id].collapsed { padding-bottom: 8px; }
+"""
+
+# --- 共通 JS: 折りたたみ ---
+_COLLAPSE_JS = """
+// 折りたたみ
+(function() {
+  const saved = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
+  document.querySelectorAll('[data-card-id]').forEach(card => {
+    const id = card.dataset.cardId;
+    const body = card.querySelector('.card-body');
+    const btn = card.querySelector('.collapse-btn');
+    if (!body || !btn) return;
+    if (saved[id]) {
+      card.classList.add('collapsed');
+      btn.textContent = '\\u25B6';
+    }
+    btn.addEventListener('click', () => {
+      const isCollapsed = card.classList.toggle('collapsed');
+      btn.textContent = isCollapsed ? '\\u25B6' : '\\u25BC';
+      const s = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
+      if (isCollapsed) { s[id] = true; } else { delete s[id]; }
+      localStorage.setItem('collapsed_cards', JSON.stringify(s));
+    });
+  });
+})();
+"""
 
 
 def _get_dates(db_path: str) -> list[str]:
@@ -45,9 +247,7 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
             return {}
         date = row[0]
 
-    row = conn.execute(
-        "SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)
-    ).fetchone()
+    row = conn.execute("SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)).fetchone()
     if not row:
         conn.close()
         return {}
@@ -64,8 +264,18 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
     ]
 
     holdings = [
-        {"name": r[0], "code": r[1], "asset_class": r[2], "value": r[3], "quantity": r[4], "position": r[5],
-         "acquisition_price": r[6], "current_price": r[7], "unrealized_gain": r[8], "unrealized_gain_pct": r[9]}
+        {
+            "name": r[0],
+            "code": r[1],
+            "asset_class": r[2],
+            "value": r[3],
+            "quantity": r[4],
+            "position": r[5],
+            "acquisition_price": r[6],
+            "current_price": r[7],
+            "unrealized_gain": r[8],
+            "unrealized_gain_pct": r[9],
+        }
         for r in conn.execute(
             "SELECT name, symbol_or_code, asset_class, value, quantity, position, acquisition_price, current_price, unrealized_gain, unrealized_gain_pct FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
             (date,),
@@ -96,15 +306,17 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
                 acq_price = h.get("acquisition_price")
                 current_yield = (dps / cur_price * 100) if cur_price else None
                 acq_yield = (dps / acq_price * 100) if acq_price else None
-                dividends.append({
-                    "code": h["code"],
-                    "name": h["name"],
-                    "quantity": h["quantity"],
-                    "dps": dps,
-                    "annual": annual,
-                    "current_yield": current_yield,
-                    "acq_yield": acq_yield,
-                })
+                dividends.append(
+                    {
+                        "code": h["code"],
+                        "name": h["name"],
+                        "quantity": h["quantity"],
+                        "dps": dps,
+                        "annual": annual,
+                        "current_yield": current_yield,
+                        "acq_yield": acq_yield,
+                    }
+                )
     dividends.sort(key=lambda x: x["annual"], reverse=True)
 
     # 配当利回り別内訳（低配当0-2% / 中配当2-4% / 高配当4%超）
@@ -211,7 +423,7 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     # 日付セレクタ
     date_options = ""
     for d in dates:
-        sel = ' selected' if d == date else ''
+        sel = " selected" if d == date else ""
         date_options += f'<option value="{d}"{sel}>{d}</option>'
 
     # クラス別の内訳詳細を構築
@@ -222,7 +434,11 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
         if cls == "預金・現金・暗号資産":
             for a in accounts:
                 if a["asset_class"] == cls:
-                    lbl = f'{a["institution"]} / {a["name"]}' if a["institution"] and a["institution"] != a["name"] else a["name"]
+                    lbl = (
+                        f"{a['institution']} / {a['name']}"
+                        if a["institution"] and a["institution"] != a["name"]
+                        else a["name"]
+                    )
                     details.append({"name": lbl, "value": a["balance"]})
         else:
             for h in holdings:
@@ -242,19 +458,22 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
           <td><span class="dot" style="background:{color}"></span>{cls}</td>
           <td class="num">{amt:,.0f}円</td>
           <td class="num">{ratio:.1f}%</td>
-          <td><div class="bar" style="width:{ratio*2}px;background:{color}"></div></td>
+          <td><div class="bar" style="width:{ratio * 2}px;background:{color}"></div></td>
         </tr>"""
 
     # 円グラフ用データ
-    pie_data = json.dumps([
-        {"label": cls, "value": amt, "color": colors[i % len(colors)], "details": class_details[cls]}
-        for i, (cls, amt) in enumerate(by_class.items())
-    ], ensure_ascii=False)
+    pie_data = json.dumps(
+        [
+            {"label": cls, "value": amt, "color": colors[i % len(colors)], "details": class_details[cls]}
+            for i, (cls, amt) in enumerate(by_class.items())
+        ],
+        ensure_ascii=False,
+    )
 
     # 口座 rows
     acc_rows = ""
     for a in accounts:
-        label = f'{a["institution"]} / {a["name"]}' if a["institution"] and a["institution"] != a["name"] else a["name"]
+        label = f"{a['institution']} / {a['name']}" if a["institution"] and a["institution"] != a["name"] else a["name"]
         acc_rows += f'<tr><td>{label}</td><td class="num">{a["balance"]:,.0f}円</td></tr>'
 
     # 銘柄 rows (クラス別グループ + 前日比/前月比/前年比)
@@ -282,7 +501,7 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
         if ug is not None and ug != 0:
             ug_sign = "+" if ug >= 0 else ""
             ug_css = "plus" if ug >= 0 else "minus"
-            ugp_str = f' ({ugp:+.1f}%)' if ugp is not None else ""
+            ugp_str = f" ({ugp:+.1f}%)" if ugp is not None else ""
             gain_cell = f'<td class="num {ug_css}">{ug_sign}{ug:,.0f}円{ugp_str}</td>'
         else:
             gain_cell = '<td class="num diff-zero">-</td>'
@@ -297,12 +516,26 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
                 diff_cells += f'<td class="num {css}">{sign}{d:,.0f}</td>'
             else:
                 diff_cells += '<td class="num diff-zero">-</td>'
-        hold_rows += f'<tr><td>{code}{h["name"]}{qty}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
+        hold_rows += (
+            f'<tr><td>{code}{h["name"]}{qty}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
+        )
 
     # 業種別円グラフ用データ
-    sector_colors = ["#2881D7", "#DF3727", "#FCAD4C", "#0F7F30", "#008986",
-                     "#9C39B6", "#FF5266", "#80BD45", "#FF689A", "#1FBBDB",
-                     "#FD9441", "#6C5CE7", "#00B894"]
+    sector_colors = [
+        "#2881D7",
+        "#DF3727",
+        "#FCAD4C",
+        "#0F7F30",
+        "#008986",
+        "#9C39B6",
+        "#FF5266",
+        "#80BD45",
+        "#FF689A",
+        "#1FBBDB",
+        "#FD9441",
+        "#6C5CE7",
+        "#00B894",
+    ]
     # 業種別円グラフ（銘柄詳細付き）
     sector_holdings: dict[str, list] = data.get("_sector_holdings", {})
     if not sector_holdings:
@@ -310,11 +543,18 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
             if h["asset_class"] == "株式（現物）" and h["code"]:
                 sec = get_sector(h["code"])
                 sector_holdings.setdefault(sec, []).append({"name": h["name"], "value": h["value"]})
-    sector_pie_data = json.dumps([
-        {"label": sec, "value": amt, "color": sector_colors[i % len(sector_colors)],
-         "details": sorted(sector_holdings.get(sec, []), key=lambda x: x["value"], reverse=True)}
-        for i, (sec, amt) in enumerate(sector_totals.items())
-    ], ensure_ascii=False)
+    sector_pie_data = json.dumps(
+        [
+            {
+                "label": sec,
+                "value": amt,
+                "color": sector_colors[i % len(sector_colors)],
+                "details": sorted(sector_holdings.get(sec, []), key=lambda x: x["value"], reverse=True),
+            }
+            for i, (sec, amt) in enumerate(sector_totals.items())
+        ],
+        ensure_ascii=False,
+    )
 
     stock_total = sum(sector_totals.values())
     sector_rows = ""
@@ -338,8 +578,8 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     # 配当予測 rows
     div_rows = ""
     for d in dividends:
-        cur_y = f'{d["current_yield"]:.2f}%' if d.get("current_yield") is not None else "-"
-        acq_y = f'{d["acq_yield"]:.2f}%' if d.get("acq_yield") is not None else "-"
+        cur_y = f"{d['current_yield']:.2f}%" if d.get("current_yield") is not None else "-"
+        acq_y = f"{d['acq_yield']:.2f}%" if d.get("acq_yield") is not None else "-"
         div_rows += f'<tr><td><span class="code">{d["code"]}</span> {d["name"]}</td>'
         div_rows += f'<td class="num">{d["quantity"]:,.0f}</td>'
         div_rows += f'<td class="num">{d["dps"]:,.1f}円</td>'
@@ -364,11 +604,14 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
             yield_details["高配当 (4%超)"].append(item)
     for v in yield_details.values():
         v.sort(key=lambda x: x["value"], reverse=True)
-    yield_pie_data = json.dumps([
-        {"label": label, "value": amt, "color": yield_colors[i],
-         "details": yield_details.get(label, [])}
-        for i, (label, amt) in enumerate(yield_breakdown.items()) if amt > 0
-    ], ensure_ascii=False)
+    yield_pie_data = json.dumps(
+        [
+            {"label": label, "value": amt, "color": yield_colors[i], "details": yield_details.get(label, [])}
+            for i, (label, amt) in enumerate(yield_breakdown.items())
+            if amt > 0
+        ],
+        ensure_ascii=False,
+    )
     yield_total = sum(yield_breakdown.values())
     yield_breakdown_rows = ""
     for i, (label, amt) in enumerate(yield_breakdown.items()):
@@ -385,46 +628,46 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     # リスク指標カード HTML
     risk_cards_html = ""
     if vol is not None:
-        risk_cards_html += f'''
+        risk_cards_html += f"""
     <div class="compare-card">
       <h3>ボラティリティ（年率）</h3>
       <div class="diff" style="color:#2d3436">{vol * 100:.1f}%</div>
       <div class="compare-date">直近30日</div>
-    </div>'''
+    </div>"""
     else:
-        risk_cards_html += '''
+        risk_cards_html += """
     <div class="compare-card">
       <h3>ボラティリティ（年率）</h3>
       <div class="no-data">データ蓄積中</div>
-    </div>'''
+    </div>"""
 
     if mdd is not None:
-        risk_cards_html += f'''
+        risk_cards_html += f"""
     <div class="compare-card">
       <h3>最大ドローダウン</h3>
       <div class="diff minus">-{mdd:.1f}%</div>
       <div class="compare-date">全期間</div>
-    </div>'''
+    </div>"""
     else:
-        risk_cards_html += '''
+        risk_cards_html += """
     <div class="compare-card">
       <h3>最大ドローダウン</h3>
       <div class="no-data">データ蓄積中</div>
-    </div>'''
+    </div>"""
 
     if conc is not None and conc.get("concentration_pct", 0) > 0:
-        risk_cards_html += f'''
+        risk_cards_html += f"""
     <div class="compare-card">
       <h3>上位5銘柄集中度</h3>
       <div class="diff" style="color:#2d3436">{conc["concentration_pct"]:.1f}%</div>
       <div class="compare-date">総資産に対する割合</div>
-    </div>'''
+    </div>"""
     else:
-        risk_cards_html += '''
+        risk_cards_html += """
     <div class="compare-card">
       <h3>上位5銘柄集中度</h3>
       <div class="no-data">データ蓄積中</div>
-    </div>'''
+    </div>"""
 
     # 比較カード HTML 生成
     compare_cards_html = ""
@@ -432,7 +675,7 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
         if comp.total_diff is not None:
             sign = "+" if comp.total_diff >= 0 else ""
             css = "plus" if comp.total_diff >= 0 else "minus"
-            ratio_str = f'{sign}{comp.total_ratio:.2f}%' if comp.total_ratio is not None else ""
+            ratio_str = f"{sign}{comp.total_ratio:.2f}%" if comp.total_ratio is not None else ""
             # クラス別差分
             class_diff_html = ""
             if comp.by_class_diff:
@@ -440,21 +683,20 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
                     s = "+" if diff >= 0 else ""
                     c = "plus" if diff >= 0 else "minus"
                     class_diff_html += f'<div class="class-diff {c}">{cls_name} {s}{diff:,.0f}</div>'
-            compare_cards_html += f'''
+            compare_cards_html += f"""
     <div class="compare-card">
       <h3>{comp.label}</h3>
       <div class="diff {css}">{sign}{comp.total_diff:,.0f}円</div>
       <div class="ratio {css}">{ratio_str}</div>
       <div class="compare-date">vs {comp.compare_date}</div>
       {class_diff_html}
-    </div>'''
+    </div>"""
         else:
-            compare_cards_html += f'''
+            compare_cards_html += f"""
     <div class="compare-card">
       <h3>{comp.label}</h3>
       <div class="no-data">データ不足</div>
-    </div>'''
-
+    </div>"""
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -484,8 +726,8 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
   .date-picker .nav-btn:disabled {{ color: #b2bec3; cursor: default; background: #fff; }}
   .total {{ font-size: 1.4rem; font-weight: 700; color: #636e72; margin-bottom: 24px; }}
   .total strong {{ color: #2d3436; font-size: 1.8rem; }}
-  .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }}
-  .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
+  .grid {{ display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; align-items: flex-start; }}
+  .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); width: calc(50% - 10px); }}
   .card h2 {{ font-size: 1.1rem; margin-bottom: 12px; color: #2d3436; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
   th {{ text-align: left; padding: 8px 6px; border-bottom: 2px solid #dfe6e9; color: #636e72; font-weight: 600; }}
@@ -496,8 +738,9 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
   .group-header td {{ background: #f8f9fa; font-weight: 600; color: #636e72; padding: 10px 6px 6px; font-size: 0.85rem; }}
   .code {{ color: #636e72; font-size: 0.8rem; }}
   .qty {{ color: #636e72; font-size: 0.8rem; }}
-  .full {{ grid-column: 1 / -1; }}
-  canvas {{ max-width: 280px; margin: 0 auto; display: block; }}
+  .full {{ width: 100%; }}
+  .pie-wrap canvas {{ max-width: 280px; }}
+  canvas {{ margin: 0 auto; display: block; }}
   .pie-wrap {{ display: flex; align-items: center; gap: 20px; position: relative; }}
   .pie-tooltip {{
     position: fixed; pointer-events: none; z-index: 9999;
@@ -547,12 +790,7 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
   .card-header h2 {{ margin-bottom: 0; }}
   .hold-table th {{ white-space: nowrap; }}
   .hold-table td:nth-child(n+3) {{ font-size: 0.82rem; }}
-  .page-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }}
-  .nav-link {{
-    color: #2881D7; text-decoration: none; font-size: 0.9rem; font-weight: 600;
-    padding: 6px 14px; border: 1px solid #2881D7; border-radius: 6px;
-  }}
-  .nav-link:hover {{ background: #2881D7; color: #fff; }}
+  {_NAV_CSS}
   .ai-comment-card {{
     background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
     border: 1px solid #d4ddee; border-radius: 12px;
@@ -575,6 +813,7 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     padding: 4px 14px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
   }}
   #reload-banner button:hover {{ background: #f1f2f6; }}
+  {_COLLAPSE_CSS}
 </style>
 </head>
 <body>
@@ -585,10 +824,7 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
 <div class="container">
   <div class="page-header">
     <h1>資産ダッシュボード</h1>
-    <div style="display:flex;gap:8px">
-      <a href="/settings" class="nav-link" style="font-size:0.8rem;padding:6px 10px;border-color:#b2bec3;color:#636e72">設定</a>
-      <a href="/plan" class="nav-link">ライフプラン &rarr;</a>
-    </div>
+    {_nav_html("/")}
   </div>
   <div class="date-picker">
     <button class="nav-btn" id="prev-btn" title="前の日">&larr;</button>
@@ -598,8 +834,14 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     <button class="nav-btn" id="next-btn" title="次の日">&rarr;</button>
     <label>({len(dates)}日分のデータ)</label>
   </div>
-  <div class="total">現在の総資産: <strong>{total:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({date}時点)</span></div>
-  {f'<div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">{ai_comment}</div></div>' if ai_comment else ''}
+  <div class="total">現在の総資産: <strong>{total:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({
+        date
+    }時点)</span></div>
+  {
+        f'<div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">{ai_comment}</div></div>'
+        if ai_comment
+        else ""
+    }
 
   <div class="compare-cards">
     {compare_cards_html}
@@ -619,11 +861,13 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
     {risk_cards_html}
   </div>
   <div class="grid">
-    <div class="card">
+    <div class="card" data-card-id="dash-class">
       <div class="card-header">
         <h2>資産クラス別内訳</h2>
         <button class="info-btn" onclick="document.getElementById('class-info').classList.toggle('show')" title="資産クラスについて">?</button>
+        <button class="collapse-btn">&#x25BC;</button>
       </div>
+      <div class="card-body">
       <div class="info-panel" id="class-info">
         <ul>
           <li><strong>資産クラス</strong> — 資産を性質ごとにグループ分けしたものです。値動きの異なるクラスに分散することでリスクを抑えられます。</li>
@@ -639,21 +883,29 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
       <table style="margin-top:16px">
         {class_rows}
       </table>
+      </div>
     </div>
 
-    <div class="card">
-      <h2>口座一覧 ({len(accounts)})</h2>
+    <div class="card" data-card-id="dash-accounts">
+      <div class="card-header">
+        <h2>口座一覧 ({len(accounts)})</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
       <table>
         <tr><th>口座</th><th class="num">残高</th></tr>
         {acc_rows}
       </table>
+      </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-card-id="dash-sector">
       <div class="card-header">
         <h2>株式 業種別内訳</h2>
         <button class="info-btn" onclick="document.getElementById('sector-info').classList.toggle('show')" title="業種別内訳について">?</button>
+        <button class="collapse-btn">&#x25BC;</button>
       </div>
+      <div class="card-body">
       <div class="info-panel" id="sector-info">
         <ul>
           <li><strong>業種別内訳</strong> — 保有株式を東証の業種分類ごとに集計したものです。特定の業種に偏りすぎていないかを確認し、分散投資の参考にします。</li>
@@ -668,13 +920,16 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
         <tr><th>業種</th><th class="num">評価額</th><th class="num">比率</th><th class="num">年間配当</th><th class="num">利回り</th></tr>
         {sector_rows}
       </table>
+      </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-card-id="dash-dividend">
       <div class="card-header">
         <h2>年間配当予測</h2>
         <button class="info-btn" onclick="document.getElementById('div-info').classList.toggle('show')" title="配当予測について">?</button>
+        <button class="collapse-btn">&#x25BC;</button>
       </div>
+      <div class="card-body">
       <div class="info-panel" id="div-info">
         <ul>
           <li><strong>年間配当予測</strong> — 各銘柄の「予想1株配当 &times; 保有株数」を合計した金額です。実際の配当は業績により増減します。</li>
@@ -685,114 +940,42 @@ def _build_html(data: dict, dates: list[str], skip_update: bool = False, ai_comm
         </ul>
       </div>
       <div class="dividend-total">{total_dividend:,.0f}<span> 円/年</span></div>
-      <div class="dividend-monthly">月平均 {total_dividend/12:,.0f}円{_avg_yield_html(dividends)}</div>
-      {f"""<div style="margin:16px 0;display:flex;align-items:center;gap:16px">
+      <div class="dividend-monthly">月平均 {total_dividend / 12:,.0f}円{_avg_yield_html(dividends)}</div>
+      {
+        f'''<div style="margin:16px 0;display:flex;align-items:center;gap:16px">
         <canvas id="yield-pie" width="140" height="140"></canvas>
         <table style="font-size:0.85rem;width:auto">
           {yield_breakdown_rows}
         </table>
-      </div>""" if yield_total > 0 else ""}
+      </div>'''
+        if yield_total > 0
+        else ""
+    }
       <table style="margin-top:12px">
         <tr><th>銘柄</th><th class="num">保有数</th><th class="num">配当/株</th><th class="num">年間配当</th><th class="num">利回り</th><th class="num">取得利回り</th></tr>
         {div_rows}
       </table>
+      </div>
     </div>
 
-    <div class="card full">
-      <h2>保有銘柄 ({len(holdings)})</h2>
+    <div class="card full" data-card-id="dash-holdings">
+      <div class="card-header">
+        <h2>保有銘柄 ({len(holdings)})</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
       <table class="hold-table">
         <tr><th>銘柄</th><th class="num">評価額</th><th class="num">損益</th><th class="num">前日比</th><th class="num">前月比</th><th class="num">前年比</th></tr>
         {hold_rows}
       </table>
+      </div>
     </div>
   </div>
 </div>
 <div class="pie-tooltip" id="pie-tooltip"></div>
 
 <script>
-// ツールチップ
-const tooltip = document.getElementById('pie-tooltip');
-function fmt(v) {{ return v.toLocaleString('ja-JP', {{maximumFractionDigits:0}}); }}
-
-function hitTest(e, canvas, cx, cy, r, chartData) {{
-  const rect = canvas.getBoundingClientRect();
-  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-  const dx = mx - cx, dy = my - cy;
-  if (dx * dx + dy * dy > r * r) return null;
-  let angle = Math.atan2(dy, dx);
-  const offset = -Math.PI / 2;
-  angle = angle - offset;
-  if (angle < 0) angle += 2 * Math.PI;
-  const total = chartData.reduce((s, d) => s + d.value, 0);
-  let cumAngle = 0;
-  for (const d of chartData) {{
-    const sl = (d.value / total) * 2 * Math.PI;
-    if (angle >= cumAngle && angle < cumAngle + sl) {{
-      return {{ label: d.label, value: d.value, pct: (d.value / total * 100).toFixed(1), details: d.details || [] }};
-    }}
-    cumAngle += sl;
-  }}
-  return null;
-}}
-
-function attachTooltip(canvas, cx, cy, r, chartData) {{
-  canvas.addEventListener('mousemove', e => {{
-    const hit = hitTest(e, canvas, cx, cy, r, chartData);
-    if (hit) {{
-      let html = '<strong>' + hit.label + '</strong>　' + fmt(hit.value) + ' 円（' + hit.pct + '%）';
-      if (hit.details.length > 0) {{
-        html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
-        const show = hit.details.slice(0, 8);
-        show.forEach(item => {{
-          html += '<div style="display:flex;justify-content:space-between;gap:16px">'
-            + '<span>' + item.name + '</span><span>' + fmt(item.value) + ' 円</span></div>';
-        }});
-        if (hit.details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (hit.details.length - 8) + ' 件</div>';
-        html += '</div>';
-      }}
-      tooltip.innerHTML = html;
-      tooltip.classList.add('show');
-      requestAnimationFrame(() => {{
-        const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-        tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - tw - 16) + 'px';
-        tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - th - 16) + 'px';
-      }});
-      canvas.style.cursor = 'pointer';
-    }} else {{
-      tooltip.classList.remove('show');
-      canvas.style.cursor = '';
-    }}
-  }});
-  canvas.addEventListener('mouseleave', () => {{
-    tooltip.classList.remove('show');
-    canvas.style.cursor = '';
-  }});
-}}
-
-// 円グラフ描画
-function drawPieChart(canvasId, legendId, chartData, size) {{
-  const c = document.getElementById(canvasId);
-  if (!c || chartData.length === 0) return;
-  const x = c.getContext('2d');
-  const w = size / 2, h = size / 2, rad = w - 10;
-  let angle = -Math.PI / 2;
-  const t = chartData.reduce((s, d) => s + d.value, 0);
-  chartData.forEach(d => {{
-    const sl = (d.value / t) * 2 * Math.PI;
-    x.beginPath(); x.moveTo(w, h); x.arc(w, h, rad, angle, angle + sl);
-    x.closePath(); x.fillStyle = d.color; x.fill();
-    angle += sl;
-  }});
-  if (legendId) {{
-    const leg = document.getElementById(legendId);
-    chartData.forEach(d => {{
-      const li = document.createElement('li');
-      li.innerHTML = '<span class="dot" style="background:' + d.color + '"></span>' + d.label;
-      leg.appendChild(li);
-    }});
-  }}
-  attachTooltip(c, w, h, rad, chartData);
-}}
+{_PIE_JS}
 
 const data = {pie_data};
 drawPieChart('pie', 'legend', data, 220);
@@ -802,34 +985,6 @@ drawPieChart('sector-pie', 'sector-legend', sectorData, 220);
 
 const yieldData = {yield_pie_data};
 drawPieChart('yield-pie', null, yieldData, 140);
-
-// テーブル行ホバーツールチップ
-document.querySelectorAll('.has-tip').forEach(row => {{
-  row.addEventListener('mousemove', e => {{
-    const details = JSON.parse(row.dataset.details || '[]');
-    const label = row.dataset.label || '';
-    if (details.length === 0) return;
-    let html = '<strong>' + label + '</strong>';
-    html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
-    const show = details.slice(0, 8);
-    show.forEach(item => {{
-      html += '<div style="display:flex;justify-content:space-between;gap:16px">'
-        + '<span>' + item.name + '</span><span>' + fmt(item.value) + ' 円</span></div>';
-    }});
-    if (details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (details.length - 8) + ' 件</div>';
-    html += '</div>';
-    tooltip.innerHTML = html;
-    tooltip.classList.add('show');
-    requestAnimationFrame(() => {{
-      const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-      tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - tw - 16) + 'px';
-      tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - th - 16) + 'px';
-    }});
-  }});
-  row.addEventListener('mouseleave', () => {{
-    tooltip.classList.remove('show');
-  }});
-}});
 
 // 日付ナビゲーション
 const sel = document.getElementById('date-select');
@@ -845,7 +1000,9 @@ prevBtn.disabled = idx === dates.length - 1;
 prevBtn.onclick = () => {{ if (idx < dates.length - 1) location.href = '/?date=' + dates[idx + 1]; }};
 nextBtn.onclick = () => {{ if (idx > 0) location.href = '/?date=' + dates[idx - 1]; }};
 
-{'// reload polling' + f"""
+{
+        "// reload polling"
+        + f'''
 const loadedVersion = {_update_state["version"]};
 const pollId = setInterval(async () => {{
   try {{
@@ -857,7 +1014,11 @@ const pollId = setInterval(async () => {{
     }}
   }} catch(e) {{}}
 }}, 5000);
-""" if not skip_update else ''}
+'''
+        if not skip_update
+        else ""
+    }
+{_COLLAPSE_JS}
 </script>
 </body>
 </html>"""
@@ -879,50 +1040,297 @@ def _demo_data() -> dict:
 
     accounts = [
         {"name": "普通預金", "asset_class": "預金・現金・暗号資産", "balance": 2_150_000, "institution": "みずほ銀行"},
-        {"name": "普通預金", "asset_class": "預金・現金・暗号資産", "balance": 1_380_000, "institution": "三井住友銀行"},
-        {"name": "定期預金", "asset_class": "預金・現金・暗号資産", "balance": 1_000_000, "institution": "住信SBIネット銀行"},
+        {
+            "name": "普通預金",
+            "asset_class": "預金・現金・暗号資産",
+            "balance": 1_380_000,
+            "institution": "三井住友銀行",
+        },
+        {
+            "name": "定期預金",
+            "asset_class": "預金・現金・暗号資産",
+            "balance": 1_000_000,
+            "institution": "住信SBIネット銀行",
+        },
         {"name": "円預金", "asset_class": "預金・現金・暗号資産", "balance": 245_000, "institution": "楽天銀行"},
         {"name": "Suica", "asset_class": "預金・現金・暗号資産", "balance": 3_200, "institution": "モバイルSuica"},
         {"name": "預り金", "asset_class": "預金・現金・暗号資産", "balance": 41_800, "institution": "SBI証券"},
     ]
 
     holdings = [
-        {"name": "トヨタ自動車",      "code": "7203", "asset_class": "株式（現物）", "value": 1_260_000, "quantity": 300, "acquisition_price": 3_800, "current_price": 4_200, "unrealized_gain": 120_000, "unrealized_gain_pct": 10.5},
-        {"name": "ソニーグループ",    "code": "6758", "asset_class": "株式（現物）", "value": 980_000,   "quantity": 100, "acquisition_price": 8_500, "current_price": 9_800, "unrealized_gain": 130_000, "unrealized_gain_pct": 15.3},
-        {"name": "三菱商事",          "code": "8058", "asset_class": "株式（現物）", "value": 875_000,   "quantity": 100, "acquisition_price": 7_200, "current_price": 8_750, "unrealized_gain": 155_000, "unrealized_gain_pct": 21.5},
-        {"name": "信越化学工業",      "code": "4063", "asset_class": "株式（現物）", "value": 720_000,   "quantity": 100, "acquisition_price": 6_500, "current_price": 7_200, "unrealized_gain": 70_000, "unrealized_gain_pct": 10.8},
-        {"name": "日立製作所",        "code": "6501", "asset_class": "株式（現物）", "value": 685_000,   "quantity": 200, "acquisition_price": 2_800, "current_price": 3_425, "unrealized_gain": 125_000, "unrealized_gain_pct": 22.3},
-        {"name": "キーエンス",        "code": "6861", "asset_class": "株式（現物）", "value": 650_000,   "quantity": 10,  "acquisition_price": 58_000, "current_price": 65_000, "unrealized_gain": 70_000, "unrealized_gain_pct": 12.1},
-        {"name": "任天堂",            "code": "7974", "asset_class": "株式（現物）", "value": 580_000,   "quantity": 100, "acquisition_price": 5_200, "current_price": 5_800, "unrealized_gain": 60_000, "unrealized_gain_pct": 11.5},
-        {"name": "ダイキン工業",      "code": "6367", "asset_class": "株式（現物）", "value": 350_000,   "quantity": 100, "acquisition_price": 3_000, "current_price": 3_500, "unrealized_gain": 50_000, "unrealized_gain_pct": 16.7},
-        {"name": "INPEX",             "code": "1605", "asset_class": "株式（現物）", "value": 250_000,   "quantity": 500, "acquisition_price": 420,   "current_price": 500, "unrealized_gain": 40_000, "unrealized_gain_pct": 19.0},
-        {"name": "eMAXIS Slim 全世界株式(オルカン)",            "code": "", "asset_class": "投資信託", "value": 2_480_000, "quantity": 680000, "acquisition_price": None, "current_price": None, "unrealized_gain": 480_000, "unrealized_gain_pct": 24.0},
-        {"name": "eMAXIS Slim 米国株式(S&P500)",               "code": "", "asset_class": "投資信託", "value": 1_850_000, "quantity": 520000, "acquisition_price": None, "current_price": None, "unrealized_gain": 350_000, "unrealized_gain_pct": 23.3},
-        {"name": "ニッセイ外国株式インデックスファンド",        "code": "", "asset_class": "投資信託", "value": 850_000,   "quantity": 290000, "acquisition_price": None, "current_price": None, "unrealized_gain": 80_000, "unrealized_gain_pct": 10.4},
-        {"name": "不動産クラウドファンディング",                "code": "", "asset_class": "不動産",   "value": 1_200_000, "quantity": None, "acquisition_price": None, "current_price": None, "unrealized_gain": None, "unrealized_gain_pct": None},
-        {"name": "企業型確定拠出年金",                          "code": "", "asset_class": "年金",     "value": 2_800_000, "quantity": None, "acquisition_price": None, "current_price": None, "unrealized_gain": None, "unrealized_gain_pct": None},
-        {"name": "iDeCo（先進国株式）",                         "code": "", "asset_class": "年金",     "value": 850_000,   "quantity": None, "acquisition_price": None, "current_price": None, "unrealized_gain": None, "unrealized_gain_pct": None},
-        {"name": "個人年金保険",                                "code": "", "asset_class": "年金",     "value": 300_000,   "quantity": None, "acquisition_price": None, "current_price": None, "unrealized_gain": None, "unrealized_gain_pct": None},
+        {
+            "name": "トヨタ自動車",
+            "code": "7203",
+            "asset_class": "株式（現物）",
+            "value": 1_260_000,
+            "quantity": 300,
+            "acquisition_price": 3_800,
+            "current_price": 4_200,
+            "unrealized_gain": 120_000,
+            "unrealized_gain_pct": 10.5,
+        },
+        {
+            "name": "ソニーグループ",
+            "code": "6758",
+            "asset_class": "株式（現物）",
+            "value": 980_000,
+            "quantity": 100,
+            "acquisition_price": 8_500,
+            "current_price": 9_800,
+            "unrealized_gain": 130_000,
+            "unrealized_gain_pct": 15.3,
+        },
+        {
+            "name": "三菱商事",
+            "code": "8058",
+            "asset_class": "株式（現物）",
+            "value": 875_000,
+            "quantity": 100,
+            "acquisition_price": 7_200,
+            "current_price": 8_750,
+            "unrealized_gain": 155_000,
+            "unrealized_gain_pct": 21.5,
+        },
+        {
+            "name": "信越化学工業",
+            "code": "4063",
+            "asset_class": "株式（現物）",
+            "value": 720_000,
+            "quantity": 100,
+            "acquisition_price": 6_500,
+            "current_price": 7_200,
+            "unrealized_gain": 70_000,
+            "unrealized_gain_pct": 10.8,
+        },
+        {
+            "name": "日立製作所",
+            "code": "6501",
+            "asset_class": "株式（現物）",
+            "value": 685_000,
+            "quantity": 200,
+            "acquisition_price": 2_800,
+            "current_price": 3_425,
+            "unrealized_gain": 125_000,
+            "unrealized_gain_pct": 22.3,
+        },
+        {
+            "name": "キーエンス",
+            "code": "6861",
+            "asset_class": "株式（現物）",
+            "value": 650_000,
+            "quantity": 10,
+            "acquisition_price": 58_000,
+            "current_price": 65_000,
+            "unrealized_gain": 70_000,
+            "unrealized_gain_pct": 12.1,
+        },
+        {
+            "name": "任天堂",
+            "code": "7974",
+            "asset_class": "株式（現物）",
+            "value": 580_000,
+            "quantity": 100,
+            "acquisition_price": 5_200,
+            "current_price": 5_800,
+            "unrealized_gain": 60_000,
+            "unrealized_gain_pct": 11.5,
+        },
+        {
+            "name": "ダイキン工業",
+            "code": "6367",
+            "asset_class": "株式（現物）",
+            "value": 350_000,
+            "quantity": 100,
+            "acquisition_price": 3_000,
+            "current_price": 3_500,
+            "unrealized_gain": 50_000,
+            "unrealized_gain_pct": 16.7,
+        },
+        {
+            "name": "INPEX",
+            "code": "1605",
+            "asset_class": "株式（現物）",
+            "value": 250_000,
+            "quantity": 500,
+            "acquisition_price": 420,
+            "current_price": 500,
+            "unrealized_gain": 40_000,
+            "unrealized_gain_pct": 19.0,
+        },
+        {
+            "name": "eMAXIS Slim 全世界株式(オルカン)",
+            "code": "",
+            "asset_class": "投資信託",
+            "value": 2_480_000,
+            "quantity": 680000,
+            "acquisition_price": None,
+            "current_price": None,
+            "unrealized_gain": 480_000,
+            "unrealized_gain_pct": 24.0,
+        },
+        {
+            "name": "eMAXIS Slim 米国株式(S&P500)",
+            "code": "",
+            "asset_class": "投資信託",
+            "value": 1_850_000,
+            "quantity": 520000,
+            "acquisition_price": None,
+            "current_price": None,
+            "unrealized_gain": 350_000,
+            "unrealized_gain_pct": 23.3,
+        },
+        {
+            "name": "ニッセイ外国株式インデックスファンド",
+            "code": "",
+            "asset_class": "投資信託",
+            "value": 850_000,
+            "quantity": 290000,
+            "acquisition_price": None,
+            "current_price": None,
+            "unrealized_gain": 80_000,
+            "unrealized_gain_pct": 10.4,
+        },
+        {
+            "name": "不動産クラウドファンディング",
+            "code": "",
+            "asset_class": "不動産",
+            "value": 1_200_000,
+            "quantity": None,
+            "acquisition_price": None,
+            "current_price": None,
+            "unrealized_gain": None,
+            "unrealized_gain_pct": None,
+        },
+        {
+            "name": "企業型確定拠出年金",
+            "code": "",
+            "asset_class": "年金",
+            "value": 2_800_000,
+            "quantity": None,
+            "acquisition_price": None,
+            "current_price": None,
+            "unrealized_gain": None,
+            "unrealized_gain_pct": None,
+        },
+        {
+            "name": "iDeCo（先進国株式）",
+            "code": "",
+            "asset_class": "年金",
+            "value": 850_000,
+            "quantity": None,
+            "acquisition_price": None,
+            "current_price": None,
+            "unrealized_gain": None,
+            "unrealized_gain_pct": None,
+        },
+        {
+            "name": "個人年金保険",
+            "code": "",
+            "asset_class": "年金",
+            "value": 300_000,
+            "quantity": None,
+            "acquisition_price": None,
+            "current_price": None,
+            "unrealized_gain": None,
+            "unrealized_gain_pct": None,
+        },
     ]
 
     # 業種別
     demo_sectors = {
-        "輸送用機器": 1_260_000, "電気機器": 2_315_000, "卸売業": 875_000,
-        "化学": 720_000, "その他製品": 580_000, "機械": 350_000, "鉱業": 250_000,
+        "輸送用機器": 1_260_000,
+        "電気機器": 2_315_000,
+        "卸売業": 875_000,
+        "化学": 720_000,
+        "その他製品": 580_000,
+        "機械": 350_000,
+        "鉱業": 250_000,
     }
     demo_sectors = dict(sorted(demo_sectors.items(), key=lambda x: x[1], reverse=True))
 
     # 配当予測
     demo_dividends = [
-        {"code": "7203", "name": "トヨタ自動車",   "quantity": 300, "dps": 75,   "annual": 22_500, "current_yield": 75/4200*100,  "acq_yield": 75/3800*100},
-        {"code": "6758", "name": "ソニーグループ", "quantity": 100, "dps": 85,   "annual": 8_500,  "current_yield": 85/9800*100,  "acq_yield": 85/8500*100},
-        {"code": "8058", "name": "三菱商事",       "quantity": 100, "dps": 100,  "annual": 10_000, "current_yield": 100/8750*100, "acq_yield": 100/7200*100},
-        {"code": "4063", "name": "信越化学工業",   "quantity": 100, "dps": 120,  "annual": 12_000, "current_yield": 120/7200*100, "acq_yield": 120/6500*100},
-        {"code": "6501", "name": "日立製作所",     "quantity": 200, "dps": 52,   "annual": 10_400, "current_yield": 52/3425*100,  "acq_yield": 52/2800*100},
-        {"code": "6861", "name": "キーエンス",     "quantity": 10,  "dps": 300,  "annual": 3_000,  "current_yield": 300/65000*100,"acq_yield": 300/58000*100},
-        {"code": "7974", "name": "任天堂",         "quantity": 100, "dps": 183,  "annual": 18_300, "current_yield": 183/5800*100, "acq_yield": 183/5200*100},
-        {"code": "6367", "name": "ダイキン工業",   "quantity": 100, "dps": 100,  "annual": 10_000, "current_yield": 100/3500*100, "acq_yield": 100/3000*100},
-        {"code": "1605", "name": "INPEX",          "quantity": 500, "dps": 60,   "annual": 30_000, "current_yield": 60/500*100,   "acq_yield": 60/420*100},
+        {
+            "code": "7203",
+            "name": "トヨタ自動車",
+            "quantity": 300,
+            "dps": 75,
+            "annual": 22_500,
+            "current_yield": 75 / 4200 * 100,
+            "acq_yield": 75 / 3800 * 100,
+        },
+        {
+            "code": "6758",
+            "name": "ソニーグループ",
+            "quantity": 100,
+            "dps": 85,
+            "annual": 8_500,
+            "current_yield": 85 / 9800 * 100,
+            "acq_yield": 85 / 8500 * 100,
+        },
+        {
+            "code": "8058",
+            "name": "三菱商事",
+            "quantity": 100,
+            "dps": 100,
+            "annual": 10_000,
+            "current_yield": 100 / 8750 * 100,
+            "acq_yield": 100 / 7200 * 100,
+        },
+        {
+            "code": "4063",
+            "name": "信越化学工業",
+            "quantity": 100,
+            "dps": 120,
+            "annual": 12_000,
+            "current_yield": 120 / 7200 * 100,
+            "acq_yield": 120 / 6500 * 100,
+        },
+        {
+            "code": "6501",
+            "name": "日立製作所",
+            "quantity": 200,
+            "dps": 52,
+            "annual": 10_400,
+            "current_yield": 52 / 3425 * 100,
+            "acq_yield": 52 / 2800 * 100,
+        },
+        {
+            "code": "6861",
+            "name": "キーエンス",
+            "quantity": 10,
+            "dps": 300,
+            "annual": 3_000,
+            "current_yield": 300 / 65000 * 100,
+            "acq_yield": 300 / 58000 * 100,
+        },
+        {
+            "code": "7974",
+            "name": "任天堂",
+            "quantity": 100,
+            "dps": 183,
+            "annual": 18_300,
+            "current_yield": 183 / 5800 * 100,
+            "acq_yield": 183 / 5200 * 100,
+        },
+        {
+            "code": "6367",
+            "name": "ダイキン工業",
+            "quantity": 100,
+            "dps": 100,
+            "annual": 10_000,
+            "current_yield": 100 / 3500 * 100,
+            "acq_yield": 100 / 3000 * 100,
+        },
+        {
+            "code": "1605",
+            "name": "INPEX",
+            "quantity": 500,
+            "dps": 60,
+            "annual": 30_000,
+            "current_yield": 60 / 500 * 100,
+            "acq_yield": 60 / 420 * 100,
+        },
     ]
     demo_dividends.sort(key=lambda x: x["annual"], reverse=True)
 
@@ -935,70 +1343,92 @@ def _demo_data() -> dict:
 
     # holding_diffs は (asset_class, name, current_value) でルックアップされる
     daily_hdiffs = [
-        {"name": "トヨタ自動車",   "asset_class": "株式（現物）", "current": 1_260_000, "diff":  18_000},
-        {"name": "ソニーグループ", "asset_class": "株式（現物）", "current":   980_000, "diff":  12_500},
-        {"name": "三菱商事",       "asset_class": "株式（現物）", "current":   875_000, "diff":   8_200},
-        {"name": "信越化学工業",   "asset_class": "株式（現物）", "current":   720_000, "diff":  -5_400},
-        {"name": "日立製作所",     "asset_class": "株式（現物）", "current":   685_000, "diff":   9_800},
-        {"name": "キーエンス",     "asset_class": "株式（現物）", "current":   650_000, "diff":  -3_200},
-        {"name": "任天堂",         "asset_class": "株式（現物）", "current":   580_000, "diff":   4_100},
-        {"name": "ダイキン工業",   "asset_class": "株式（現物）", "current":   350_000, "diff":  -2_500},
-        {"name": "INPEX",          "asset_class": "株式（現物）", "current":   250_000, "diff":  -5_700},
-        {"name": "eMAXIS Slim 全世界株式(オルカン)",      "asset_class": "投資信託", "current": 2_480_000, "diff":  8_300},
-        {"name": "eMAXIS Slim 米国株式(S&P500)",         "asset_class": "投資信託", "current": 1_850_000, "diff":  5_200},
-        {"name": "ニッセイ外国株式インデックスファンド",  "asset_class": "投資信託", "current":   850_000, "diff":  -1_000},
+        {"name": "トヨタ自動車", "asset_class": "株式（現物）", "current": 1_260_000, "diff": 18_000},
+        {"name": "ソニーグループ", "asset_class": "株式（現物）", "current": 980_000, "diff": 12_500},
+        {"name": "三菱商事", "asset_class": "株式（現物）", "current": 875_000, "diff": 8_200},
+        {"name": "信越化学工業", "asset_class": "株式（現物）", "current": 720_000, "diff": -5_400},
+        {"name": "日立製作所", "asset_class": "株式（現物）", "current": 685_000, "diff": 9_800},
+        {"name": "キーエンス", "asset_class": "株式（現物）", "current": 650_000, "diff": -3_200},
+        {"name": "任天堂", "asset_class": "株式（現物）", "current": 580_000, "diff": 4_100},
+        {"name": "ダイキン工業", "asset_class": "株式（現物）", "current": 350_000, "diff": -2_500},
+        {"name": "INPEX", "asset_class": "株式（現物）", "current": 250_000, "diff": -5_700},
+        {"name": "eMAXIS Slim 全世界株式(オルカン)", "asset_class": "投資信託", "current": 2_480_000, "diff": 8_300},
+        {"name": "eMAXIS Slim 米国株式(S&P500)", "asset_class": "投資信託", "current": 1_850_000, "diff": 5_200},
+        {"name": "ニッセイ外国株式インデックスファンド", "asset_class": "投資信託", "current": 850_000, "diff": -1_000},
     ]
     monthly_hdiffs = [
-        {"name": "トヨタ自動車",   "asset_class": "株式（現物）", "current": 1_260_000, "diff":  72_000},
-        {"name": "ソニーグループ", "asset_class": "株式（現物）", "current":   980_000, "diff":  45_000},
-        {"name": "三菱商事",       "asset_class": "株式（現物）", "current":   875_000, "diff":  32_000},
-        {"name": "信越化学工業",   "asset_class": "株式（現物）", "current":   720_000, "diff": -18_000},
-        {"name": "日立製作所",     "asset_class": "株式（現物）", "current":   685_000, "diff":  28_000},
-        {"name": "キーエンス",     "asset_class": "株式（現物）", "current":   650_000, "diff":  15_000},
-        {"name": "任天堂",         "asset_class": "株式（現物）", "current":   580_000, "diff":  22_000},
-        {"name": "ダイキン工業",   "asset_class": "株式（現物）", "current":   350_000, "diff":  -8_000},
-        {"name": "INPEX",          "asset_class": "株式（現物）", "current":   250_000, "diff": -12_000},
-        {"name": "eMAXIS Slim 全世界株式(オルカン)",      "asset_class": "投資信託", "current": 2_480_000, "diff":  52_000},
-        {"name": "eMAXIS Slim 米国株式(S&P500)",         "asset_class": "投資信託", "current": 1_850_000, "diff":  38_000},
-        {"name": "ニッセイ外国株式インデックスファンド",  "asset_class": "投資信託", "current":   850_000, "diff":   5_000},
-        {"name": "企業型確定拠出年金",                    "asset_class": "年金",     "current": 2_800_000, "diff":  18_000},
-        {"name": "iDeCo（先進国株式）",                   "asset_class": "年金",     "current":   850_000, "diff":   7_000},
+        {"name": "トヨタ自動車", "asset_class": "株式（現物）", "current": 1_260_000, "diff": 72_000},
+        {"name": "ソニーグループ", "asset_class": "株式（現物）", "current": 980_000, "diff": 45_000},
+        {"name": "三菱商事", "asset_class": "株式（現物）", "current": 875_000, "diff": 32_000},
+        {"name": "信越化学工業", "asset_class": "株式（現物）", "current": 720_000, "diff": -18_000},
+        {"name": "日立製作所", "asset_class": "株式（現物）", "current": 685_000, "diff": 28_000},
+        {"name": "キーエンス", "asset_class": "株式（現物）", "current": 650_000, "diff": 15_000},
+        {"name": "任天堂", "asset_class": "株式（現物）", "current": 580_000, "diff": 22_000},
+        {"name": "ダイキン工業", "asset_class": "株式（現物）", "current": 350_000, "diff": -8_000},
+        {"name": "INPEX", "asset_class": "株式（現物）", "current": 250_000, "diff": -12_000},
+        {"name": "eMAXIS Slim 全世界株式(オルカン)", "asset_class": "投資信託", "current": 2_480_000, "diff": 52_000},
+        {"name": "eMAXIS Slim 米国株式(S&P500)", "asset_class": "投資信託", "current": 1_850_000, "diff": 38_000},
+        {"name": "ニッセイ外国株式インデックスファンド", "asset_class": "投資信託", "current": 850_000, "diff": 5_000},
+        {"name": "企業型確定拠出年金", "asset_class": "年金", "current": 2_800_000, "diff": 18_000},
+        {"name": "iDeCo（先進国株式）", "asset_class": "年金", "current": 850_000, "diff": 7_000},
     ]
     yearly_hdiffs = [
-        {"name": "トヨタ自動車",   "asset_class": "株式（現物）", "current": 1_260_000, "diff": 320_000},
-        {"name": "ソニーグループ", "asset_class": "株式（現物）", "current":   980_000, "diff": 215_000},
-        {"name": "三菱商事",       "asset_class": "株式（現物）", "current":   875_000, "diff": 195_000},
-        {"name": "信越化学工業",   "asset_class": "株式（現物）", "current":   720_000, "diff": 140_000},
-        {"name": "日立製作所",     "asset_class": "株式（現物）", "current":   685_000, "diff": 285_000},
-        {"name": "キーエンス",     "asset_class": "株式（現物）", "current":   650_000, "diff": 180_000},
-        {"name": "任天堂",         "asset_class": "株式（現物）", "current":   580_000, "diff": 125_000},
-        {"name": "ダイキン工業",   "asset_class": "株式（現物）", "current":   350_000, "diff":  60_000},
-        {"name": "INPEX",          "asset_class": "株式（現物）", "current":   250_000, "diff": 130_000},
-        {"name": "eMAXIS Slim 全世界株式(オルカン)",      "asset_class": "投資信託", "current": 2_480_000, "diff": 680_000},
-        {"name": "eMAXIS Slim 米国株式(S&P500)",         "asset_class": "投資信託", "current": 1_850_000, "diff": 520_000},
-        {"name": "ニッセイ外国株式インデックスファンド",  "asset_class": "投資信託", "current":   850_000, "diff":  80_000},
-        {"name": "企業型確定拠出年金",                    "asset_class": "年金",     "current": 2_800_000, "diff": 420_000},
-        {"name": "iDeCo（先進国株式）",                   "asset_class": "年金",     "current":   850_000, "diff": 160_000},
+        {"name": "トヨタ自動車", "asset_class": "株式（現物）", "current": 1_260_000, "diff": 320_000},
+        {"name": "ソニーグループ", "asset_class": "株式（現物）", "current": 980_000, "diff": 215_000},
+        {"name": "三菱商事", "asset_class": "株式（現物）", "current": 875_000, "diff": 195_000},
+        {"name": "信越化学工業", "asset_class": "株式（現物）", "current": 720_000, "diff": 140_000},
+        {"name": "日立製作所", "asset_class": "株式（現物）", "current": 685_000, "diff": 285_000},
+        {"name": "キーエンス", "asset_class": "株式（現物）", "current": 650_000, "diff": 180_000},
+        {"name": "任天堂", "asset_class": "株式（現物）", "current": 580_000, "diff": 125_000},
+        {"name": "ダイキン工業", "asset_class": "株式（現物）", "current": 350_000, "diff": 60_000},
+        {"name": "INPEX", "asset_class": "株式（現物）", "current": 250_000, "diff": 130_000},
+        {"name": "eMAXIS Slim 全世界株式(オルカン)", "asset_class": "投資信託", "current": 2_480_000, "diff": 680_000},
+        {"name": "eMAXIS Slim 米国株式(S&P500)", "asset_class": "投資信託", "current": 1_850_000, "diff": 520_000},
+        {"name": "ニッセイ外国株式インデックスファンド", "asset_class": "投資信託", "current": 850_000, "diff": 80_000},
+        {"name": "企業型確定拠出年金", "asset_class": "年金", "current": 2_800_000, "diff": 420_000},
+        {"name": "iDeCo（先進国株式）", "asset_class": "年金", "current": 850_000, "diff": 160_000},
     ]
 
     demo_comparisons = [
         ComparisonResult(
-            label="前日比", target_date=today, compare_date=yesterday,
-            total_diff=42_300, total_ratio=0.20,
+            label="前日比",
+            target_date=today,
+            compare_date=yesterday,
+            total_diff=42_300,
+            total_ratio=0.20,
             by_class_diff={"株式（現物）": 35_800, "投資信託": 12_500, "預金・現金・暗号資産": -6_000},
-            account_diffs=[], holding_diffs=daily_hdiffs,
+            account_diffs=[],
+            holding_diffs=daily_hdiffs,
         ),
         ComparisonResult(
-            label="前月比", target_date=today, compare_date=last_month,
-            total_diff=285_000, total_ratio=1.35,
-            by_class_diff={"株式（現物）": 180_000, "投資信託": 95_000, "年金": 25_000, "預金・現金・暗号資産": -15_000},
-            account_diffs=[], holding_diffs=monthly_hdiffs,
+            label="前月比",
+            target_date=today,
+            compare_date=last_month,
+            total_diff=285_000,
+            total_ratio=1.35,
+            by_class_diff={
+                "株式（現物）": 180_000,
+                "投資信託": 95_000,
+                "年金": 25_000,
+                "預金・現金・暗号資産": -15_000,
+            },
+            account_diffs=[],
+            holding_diffs=monthly_hdiffs,
         ),
         ComparisonResult(
-            label="前年比", target_date=today, compare_date=last_year,
-            total_diff=3_420_000, total_ratio=18.9,
-            by_class_diff={"株式（現物）": 1_650_000, "投資信託": 1_280_000, "年金": 580_000, "預金・現金・暗号資産": -90_000},
-            account_diffs=[], holding_diffs=yearly_hdiffs,
+            label="前年比",
+            target_date=today,
+            compare_date=last_year,
+            total_diff=3_420_000,
+            total_ratio=18.9,
+            by_class_diff={
+                "株式（現物）": 1_650_000,
+                "投資信託": 1_280_000,
+                "年金": 580_000,
+                "預金・現金・暗号資産": -90_000,
+            },
+            account_diffs=[],
+            holding_diffs=yearly_hdiffs,
         ),
     ]
 
@@ -1017,19 +1447,25 @@ def _demo_data() -> dict:
     # 業種別配当
     demo_sector_dividends = {
         "輸送用機器": {"value": 1_260_000, "dividend": 22_500, "yield": 22_500 / 1_260_000 * 100},
-        "電気機器":   {"value": 2_315_000, "dividend": 21_900, "yield": 21_900 / 2_315_000 * 100},
-        "卸売業":     {"value": 875_000,   "dividend": 10_000, "yield": 10_000 / 875_000 * 100},
-        "化学":       {"value": 720_000,   "dividend": 12_000, "yield": 12_000 / 720_000 * 100},
-        "その他製品": {"value": 580_000,   "dividend": 18_300, "yield": 18_300 / 580_000 * 100},
-        "機械":       {"value": 350_000,   "dividend": 10_000, "yield": 10_000 / 350_000 * 100},
-        "鉱業":       {"value": 250_000,   "dividend": 30_000, "yield": 30_000 / 250_000 * 100},
+        "電気機器": {"value": 2_315_000, "dividend": 21_900, "yield": 21_900 / 2_315_000 * 100},
+        "卸売業": {"value": 875_000, "dividend": 10_000, "yield": 10_000 / 875_000 * 100},
+        "化学": {"value": 720_000, "dividend": 12_000, "yield": 12_000 / 720_000 * 100},
+        "その他製品": {"value": 580_000, "dividend": 18_300, "yield": 18_300 / 580_000 * 100},
+        "機械": {"value": 350_000, "dividend": 10_000, "yield": 10_000 / 350_000 * 100},
+        "鉱業": {"value": 250_000, "dividend": 30_000, "yield": 30_000 / 250_000 * 100},
     }
 
     # 業種別→銘柄マッピング（デモ用）
     demo_sector_map = {
-        "7203": "輸送用機器", "6758": "電気機器", "8058": "卸売業",
-        "4063": "化学", "6501": "電気機器", "6861": "電気機器",
-        "7974": "その他製品", "6367": "機械", "1605": "鉱業",
+        "7203": "輸送用機器",
+        "6758": "電気機器",
+        "8058": "卸売業",
+        "4063": "化学",
+        "6501": "電気機器",
+        "6861": "電気機器",
+        "7974": "その他製品",
+        "6367": "機械",
+        "1605": "鉱業",
     }
     demo_sector_holdings: dict[str, list] = {}
     for h in holdings:
@@ -1064,9 +1500,7 @@ def _calc_monthly_totals(conn: sqlite3.Connection) -> list[dict]:
     各月の最終スナップショットを採用する。
     Returns: [{"year_month": "2026-02", "total": ...}, ...] 古い順
     """
-    rows = conn.execute(
-        "SELECT date, total_asset FROM snapshots ORDER BY date ASC"
-    ).fetchall()
+    rows = conn.execute("SELECT date, total_asset FROM snapshots ORDER BY date ASC").fetchall()
     if not rows:
         return []
 
@@ -1076,10 +1510,7 @@ def _calc_monthly_totals(conn: sqlite3.Connection) -> list[dict]:
         ym = date_str[:7]  # "YYYY-MM"
         monthly_end[ym] = total  # 後勝ちで最終日の値が残る
 
-    return [
-        {"year_month": ym, "total": monthly_end[ym]}
-        for ym in sorted(monthly_end.keys())
-    ]
+    return [{"year_month": ym, "total": monthly_end[ym]} for ym in sorted(monthly_end.keys())]
 
 
 def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> dict:
@@ -1119,6 +1550,10 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
             (date,),
         ).fetchall()
     ]
+
+    # 家計簿の実績貯蓄データ
+    cf_savings = get_cf_actual_savings(conn)
+
     conn.close()
 
     eq_pension, ins_pension = classify_pension_holdings(holdings_for_pension)
@@ -1138,15 +1573,15 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
 
     # 成長予測（追加投資なし）
     try:
-        predictions, pred_params = predict_no_contribution(
-            db_path, risk_value, safe_value, class_values=class_values)
+        predictions, pred_params = predict_no_contribution(db_path, risk_value, safe_value, class_values=class_values)
     except Exception:
         predictions, pred_params = [], {}
 
     # 成長予測（積立込み）
     try:
         predictions_c, pred_params_c = predict_with_contribution(
-            db_path, risk_value, safe_value, monthly_contribution, class_values=class_values)
+            db_path, risk_value, safe_value, monthly_contribution, class_values=class_values
+        )
     except Exception:
         predictions_c, pred_params_c = [], {}
 
@@ -1160,6 +1595,7 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
         "predictions_contrib": predictions_c,
         "pred_params_contrib": pred_params_c,
         "monthly_contribution": monthly_contribution,
+        "cf_savings": cf_savings,
     }
 
 
@@ -1212,6 +1648,13 @@ def _demo_plan_data() -> dict:
         "predictions_contrib": demo_predictions_c,
         "pred_params_contrib": demo_pred_params,
         "monthly_contribution": 50000,
+        "cf_savings": {
+            "avg_income": 388_333,
+            "avg_expense": 331_667,
+            "avg_savings": 56_667,
+            "savings_rate": 14.6,
+            "months_used": 6,
+        },
     }
 
 
@@ -1227,8 +1670,30 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     predictions = data.get("predictions", [])
     pred_params = data.get("pred_params", {})
     predictions_c = data.get("predictions_contrib", [])
-    pred_params_c = data.get("pred_params_contrib", {})
+    data.get("pred_params_contrib", {})  # reserved for future use
     monthly_contribution = data.get("monthly_contribution", 50000)
+
+    # --- 家計簿実績バナー ---
+    cf_savings = data.get("cf_savings")
+    cf_savings_html = ""
+    if cf_savings:
+        s = cf_savings
+        savings_sign = "+" if s["avg_savings"] >= 0 else ""
+        savings_color = "color:#e74c3c" if s["avg_savings"] >= 0 else "color:#2881D7"
+        cf_savings_html = f"""
+    <div class="card full" style="background:linear-gradient(135deg,#f0faf4 0%,#f5f6fa 100%);border:1px solid #b8e6c8">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="background:#0F7F30;color:#fff;font-size:0.7rem;font-weight:700;padding:2px 8px;border-radius:4px">家計簿実績</span>
+        <span style="font-size:0.8rem;color:#636e72">直近{s["months_used"]}ヶ月平均</span>
+      </div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+        <div><span style="font-size:0.8rem;color:#636e72">収入</span><div style="font-size:1.1rem;font-weight:700">{s["avg_income"] / 10000:.1f}万円</div></div>
+        <div><span style="font-size:0.8rem;color:#636e72">支出</span><div style="font-size:1.1rem;font-weight:700">{s["avg_expense"] / 10000:.1f}万円</div></div>
+        <div><span style="font-size:0.8rem;color:#636e72">貯蓄</span><div style="font-size:1.1rem;font-weight:700;{savings_color}">{savings_sign}{s["avg_savings"] / 10000:.1f}万円</div></div>
+        <div><span style="font-size:0.8rem;color:#636e72">貯蓄率</span><div style="font-size:1.1rem;font-weight:700">{s["savings_rate"]}%</div></div>
+      </div>
+      <div style="font-size:0.75rem;color:#b2bec3;margin-top:8px">※ 積立額設定の参考値としてご活用ください（自動変更はしません）</div>
+    </div>"""
 
     # --- セクション1: 月次資産推移 ---
     totals_chart_data = json.dumps(monthly_totals, ensure_ascii=False)
@@ -1247,13 +1712,13 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
         net = cf["income"] - cf["expense"]
         sign = "+" if net >= 0 else ""
         css = "plus" if net >= 0 else "minus"
-        cf_rows += f'''<tr>
+        cf_rows += f"""<tr>
           <td>{cf["year_month"]}</td>
           <td class="num">{cf["income"]:,.0f}円</td>
           <td class="num">{cf["expense"]:,.0f}円</td>
           <td class="num">{living:,.0f}円</td>
           <td class="num {css}">{sign}{net:,.0f}円</td>
-        </tr>'''
+        </tr>"""
 
     # --- セクション3: 成長予測（追加投資なし） ---
     pred_html = ""
@@ -1265,17 +1730,23 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
             pred_rows += f'<td class="num" style="font-weight:700">{p.p50:,.0f}円</td>'
             pred_rows += f'<td class="num">{p.p90:,.0f}円</td></tr>'
         is_est = pred_params.get("is_estimated", True)
-        note = "※ デフォルトパラメータ使用（データ蓄積中）" if is_est else f'※ {pred_params.get("data_points", 0)}日分のデータから推定'
+        note = (
+            "※ デフォルトパラメータ使用（データ蓄積中）"
+            if is_est
+            else f"※ {pred_params.get('data_points', 0)}日分のデータから推定"
+        )
         annual_ret = pred_params.get("annual_return", 0) * 100
         annual_vol = pred_params.get("annual_volatility", 0) * 100
         p_risk = pred_params.get("risk_value", 0)
         p_safe = pred_params.get("safe_value", 0)
-        pred_html = f'''
-    <div class="card">
+        pred_html = f"""
+    <div class="card" data-card-id="plan-pred">
       <div class="card-header">
         <h2>成長予測（追加投資なし）</h2>
         <button class="info-btn" onclick="document.getElementById('pred-info').classList.toggle('show')" title="予測手法について">?</button>
+        <button class="collapse-btn">&#x25BC;</button>
       </div>
+      <div class="card-body">
       <div class="info-panel" id="pred-info">
         <strong>モンテカルロ・シミュレーションとは</strong>
         <p>現在の資産を出発点に、将来の資産額を確率的にシミュレーションする手法です。</p>
@@ -1294,7 +1765,8 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
         {pred_rows}
       </table>
       <div class="pred-note">{note}<br>リスク資産 {p_risk:,.0f}円 + 安全資産 {p_safe:,.0f}円（固定）<br>期待リターン {annual_ret:.1f}%/年　ボラティリティ {annual_vol:.1f}%/年</div>
-    </div>'''
+      </div>
+    </div>"""
 
     # --- セクション4: 成長予測（積立込み） ---
     pred_contrib_html = ""
@@ -1307,8 +1779,12 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
             pred_c_rows += f'<td class="num">{p.p90:,.0f}円</td></tr>'
         mc_int = int(monthly_contribution)
         pred_contrib_html = f'''
-    <div class="card">
-      <h2>成長予測（積立込み）</h2>
+    <div class="card" data-card-id="plan-pred-c">
+      <div class="card-header">
+        <h2>成長予測（積立込み）</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
       <div class="contrib-form">
         <label>月額積立:</label>
         <input type="number" id="contrib-input" value="{mc_int}" step="10000" min="0">
@@ -1320,6 +1796,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
         {pred_c_rows}
       </table>
       <div class="pred-note">※ 上記の予測パラメータ + 毎月 {mc_int:,}円 の積立を加算</div>
+      </div>
     </div>'''
 
     return f"""<!DOCTYPE html>
@@ -1334,19 +1811,14 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          background: #f5f6fa; color: #2d3436; line-height: 1.6; }}
   .container {{ max-width: 1100px; margin: 0 auto; padding: 20px; }}
-  .page-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }}
+  {_NAV_CSS}
   h1 {{ font-size: 1.5rem; }}
-  .nav-link {{
-    color: #2881D7; text-decoration: none; font-size: 0.9rem; font-weight: 600;
-    padding: 6px 14px; border: 1px solid #2881D7; border-radius: 6px;
-  }}
-  .nav-link:hover {{ background: #2881D7; color: #fff; }}
   .total {{ font-size: 1.4rem; font-weight: 700; color: #636e72; margin-bottom: 24px; }}
   .total strong {{ color: #2d3436; font-size: 1.8rem; }}
-  .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }}
-  .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
+  .grid {{ display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; align-items: flex-start; }}
+  .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); width: calc(50% - 10px); }}
   .card h2 {{ font-size: 1.1rem; margin-bottom: 12px; color: #2d3436; }}
-  .full {{ grid-column: 1 / -1; }}
+  .full {{ width: 100%; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
   th {{ text-align: left; padding: 8px 6px; border-bottom: 2px solid #dfe6e9; color: #636e72; font-weight: 600; }}
   td {{ padding: 6px; border-bottom: 1px solid #f1f2f6; }}
@@ -1414,6 +1886,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     padding: 4px 14px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
   }}
   #reload-banner button:hover {{ background: #f1f2f6; }}
+  {_COLLAPSE_CSS}
 </style>
 </head>
 <body>
@@ -1424,29 +1897,55 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
 <div class="container">
   <div class="page-header">
     <h1>ライフプランニング</h1>
-    <a href="/" class="nav-link">&larr; ダッシュボード</a>
+    {_nav_html("/plan")}
   </div>
-  <div class="total">現在の総資産: <strong>{total_asset:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({date}時点)</span></div>
-  {f'<div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">{ai_comment}</div></div>' if ai_comment else ''}
+  <div class="total">現在の総資産: <strong>{total_asset:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({
+        date
+    }時点)</span></div>
+  {
+        f'<div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">{ai_comment}</div></div>'
+        if ai_comment
+        else ""
+    }
 
   <div class="grid">
-    <div class="card full">
-      <h2>月次資産推移</h2>
-      {'<canvas id="totals-chart" height="200"></canvas>' if monthly_totals else ''}
-      {f"""<table style="margin-top:16px">
+    <div class="card full" data-card-id="plan-totals">
+      <div class="card-header">
+        <h2>月次資産推移</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      {'<canvas id="totals-chart" height="200"></canvas>' if monthly_totals else ""}
+      {
+        f'''<table style="margin-top:16px">
         <tr><th>月</th><th class="num">月末総資産</th></tr>
         {totals_rows}
-      </table>""" if monthly_totals else '<div class="no-data">複数月のスナップショットが必要です。日次取得を続けるとデータが蓄積されます。</div>'}
+      </table>'''
+        if monthly_totals
+        else '<div class="no-data">複数月のスナップショットが必要です。日次取得を続けるとデータが蓄積されます。</div>'
+    }
+      </div>
     </div>
 
-    <div class="card full">
-      <h2>月次収支</h2>
-      {'<canvas id="cf-chart" height="200"></canvas>' if cashflows else ''}
-      {f"""<table style="margin-top:16px">
+    {cf_savings_html}
+
+    <div class="card full" data-card-id="plan-cashflow">
+      <div class="card-header">
+        <h2>月次収支</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      {'<canvas id="cf-chart" height="200"></canvas>' if cashflows else ""}
+      {
+        f'''<table style="margin-top:16px">
         <tr><th>月</th><th class="num">収入</th><th class="num">支出</th><th class="num">生活費</th><th class="num">収支</th></tr>
         {cf_rows}
       </table>
-      <div class="pred-note" style="margin-top:8px">※ 支出には積立投資・貯蓄性の振替を含みます。生活費 = 支出 - 月額積立({mc_int:,}円)</div>""" if cashflows else '<div class="no-data">月次収支データがありません。<code>python -m src.daily</code> を実行すると取得されます。</div>'}
+      <div class="pred-note" style="margin-top:8px">※ 支出には積立投資・貯蓄性の振替を含みます。生活費 = 支出 - 月額積立({mc_int:,}円)</div>'''
+        if cashflows
+        else '<div class="no-data">月次収支データがありません。<code>python -m src.daily</code> を実行すると取得されます。</div>'
+    }
+      </div>
     </div>
 
     {pred_html}
@@ -1591,7 +2090,9 @@ function updateContrib() {{
   location.href = url.toString();
 }}
 
-{'// reload polling' + f"""
+{
+        "// reload polling"
+        + f'''
 const loadedVersion = {_update_state["version"]};
 const pollId = setInterval(async () => {{
   try {{
@@ -1603,7 +2104,11 @@ const pollId = setInterval(async () => {{
     }}
   }} catch(e) {{}}
 }}, 5000);
-""" if not skip_update else ''}
+'''
+        if not skip_update
+        else ""
+    }
+{_COLLAPSE_JS}
 </script>
 </body>
 </html>"""
@@ -1612,6 +2117,7 @@ const pollId = setInterval(async () => {{
 def _build_settings_html(db_path: str, saved: str | None = None) -> str:
     """設定ページのHTMLを生成する。"""
     import os
+
     conn = init_db(db_path)
     db_key = get_setting(conn, "gemini_api_key", "")
     conn.close()
@@ -1627,7 +2133,11 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         source = ""
         display_key = ""
 
-    saved_msg = '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です — 数十秒後にダッシュボードを開くと表示されます。</div>' if saved else ''
+    saved_msg = (
+        '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です — 数十秒後にダッシュボードを開くと表示されます。</div>'
+        if saved
+        else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -1640,13 +2150,8 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          background: #f5f6fa; color: #2d3436; line-height: 1.6; }}
   .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-  .page-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }}
+  {_NAV_CSS}
   h1 {{ font-size: 1.5rem; }}
-  .nav-link {{
-    color: #2881D7; text-decoration: none; font-size: 0.9rem; font-weight: 600;
-    padding: 6px 14px; border: 1px solid #2881D7; border-radius: 6px;
-  }}
-  .nav-link:hover {{ background: #2881D7; color: #fff; }}
   .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; }}
   .card h2 {{ font-size: 1.1rem; margin-bottom: 12px; }}
   .field {{ margin-bottom: 16px; }}
@@ -1667,7 +2172,7 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
 <div class="container">
   <div class="page-header">
     <h1>設定</h1>
-    <a href="/" class="nav-link">&larr; ダッシュボード</a>
+    {_nav_html("/settings")}
   </div>
   {saved_msg}
   <div class="card">
@@ -1689,6 +2194,997 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
     </form>
   </div>
 </div>
+</body>
+</html>"""
+
+
+def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
+    """家計簿分析データを取得する。"""
+    conn = init_db(db_path)
+
+    # 利用可能月
+    available = get_cf_available_months(conn)
+    if not available:
+        conn.close()
+        return {}
+
+    # デフォルト月 = 最新月
+    if year_month is None:
+        year_month = available[0]["year_month"]
+
+    # カテゴリ集計
+    summary = get_cf_category_summary(conn, year_month)
+
+    # 月別推移
+    trend = get_cf_monthly_trend(conn, months=12)
+
+    # カテゴリ別月次推移
+    category_trend = get_cf_category_trend(conn, months=6)
+
+    # 固定費 vs 変動費
+    fixed_expenses = get_cf_fixed_expenses(conn, months=3)
+
+    # 収入内訳
+    income_breakdown = get_cf_income_breakdown(conn, year_month)
+
+    # 収入推移
+    income_trend = get_cf_income_trend(conn, months=6)
+
+    conn.close()
+
+    return {
+        "year_month": year_month,
+        "summary": summary,
+        "trend": trend,
+        "available_months": available,
+        "category_trend": category_trend,
+        "fixed_expenses": fixed_expenses,
+        "income_breakdown": income_breakdown,
+        "income_trend": income_trend,
+    }
+
+
+def _demo_cf_data() -> dict:
+    """家計簿分析ページ用のデモデータを生成する。"""
+    from datetime import date
+
+    today = date.today()
+    ym = f"{today.year}-{today.month:02d}"
+
+    major_categories = [
+        {"name": "食費", "total": 68_500},
+        {"name": "住宅", "total": 85_000},
+        {"name": "光熱・水道", "total": 18_200},
+        {"name": "通信費", "total": 12_800},
+        {"name": "交通費", "total": 15_600},
+        {"name": "日用品", "total": 8_900},
+        {"name": "趣味・娯楽", "total": 22_300},
+        {"name": "衣服・美容", "total": 14_500},
+        {"name": "健康・医療", "total": 5_800},
+        {"name": "教養・教育", "total": 4_200},
+        {"name": "保険", "total": 12_000},
+        {"name": "その他", "total": 6_700},
+    ]
+
+    minor_by_major = {
+        "食費": [
+            {"name": "食料品", "total": 42_000},
+            {"name": "外食", "total": 18_500},
+            {"name": "カフェ", "total": 8_000},
+        ],
+        "住宅": [
+            {"name": "家賃・地代", "total": 85_000},
+        ],
+        "光熱・水道": [
+            {"name": "電気代", "total": 8_500},
+            {"name": "ガス・灯油代", "total": 5_200},
+            {"name": "水道代", "total": 4_500},
+        ],
+        "趣味・娯楽": [
+            {"name": "書籍", "total": 5_800},
+            {"name": "サブスクリプション", "total": 4_500},
+            {"name": "ゲーム", "total": 6_000},
+            {"name": "旅行", "total": 6_000},
+        ],
+        "通信費": [
+            {"name": "携帯電話", "total": 8_800},
+            {"name": "インターネット", "total": 4_000},
+        ],
+        "衣服・美容": [
+            {"name": "衣服", "total": 9_500},
+            {"name": "美容院・理髪", "total": 5_000},
+        ],
+    }
+
+    top_expenses = [
+        {
+            "date": f"{ym}-01",
+            "description": "家賃",
+            "amount": 85_000,
+            "major_category": "住宅",
+            "minor_category": "家賃・地代",
+            "institution": "三井住友銀行",
+        },
+        {
+            "date": f"{ym}-05",
+            "description": "イオン",
+            "amount": 12_500,
+            "major_category": "食費",
+            "minor_category": "食料品",
+            "institution": "楽天カード",
+        },
+        {
+            "date": f"{ym}-07",
+            "description": "保険料",
+            "amount": 12_000,
+            "major_category": "保険",
+            "minor_category": "生命保険",
+            "institution": "みずほ銀行",
+        },
+        {
+            "date": f"{ym}-03",
+            "description": "ユニクロ",
+            "amount": 9_500,
+            "major_category": "衣服・美容",
+            "minor_category": "衣服",
+            "institution": "楽天カード",
+        },
+        {
+            "date": f"{ym}-10",
+            "description": "携帯電話料金",
+            "amount": 8_800,
+            "major_category": "通信費",
+            "minor_category": "携帯電話",
+            "institution": "みずほ銀行",
+        },
+        {
+            "date": f"{ym}-02",
+            "description": "電気代",
+            "amount": 8_500,
+            "major_category": "光熱・水道",
+            "minor_category": "電気代",
+            "institution": "三井住友銀行",
+        },
+        {
+            "date": f"{ym}-12",
+            "description": "定期券",
+            "amount": 8_200,
+            "major_category": "交通費",
+            "minor_category": "電車",
+            "institution": "楽天カード",
+        },
+        {
+            "date": f"{ym}-15",
+            "description": "Amazon",
+            "amount": 7_800,
+            "major_category": "日用品",
+            "minor_category": "日用品",
+            "institution": "Amazonカード",
+        },
+        {
+            "date": f"{ym}-08",
+            "description": "レストラン",
+            "amount": 6_800,
+            "major_category": "食費",
+            "minor_category": "外食",
+            "institution": "楽天カード",
+        },
+        {
+            "date": f"{ym}-20",
+            "description": "ゲームソフト",
+            "amount": 6_000,
+            "major_category": "趣味・娯楽",
+            "minor_category": "ゲーム",
+            "institution": "楽天カード",
+        },
+        {
+            "date": f"{ym}-14",
+            "description": "書籍",
+            "amount": 5_800,
+            "major_category": "趣味・娯楽",
+            "minor_category": "書籍",
+            "institution": "楽天カード",
+        },
+        {
+            "date": f"{ym}-06",
+            "description": "美容院",
+            "amount": 5_000,
+            "major_category": "衣服・美容",
+            "minor_category": "美容院・理髪",
+            "institution": "現金",
+        },
+        {
+            "date": f"{ym}-04",
+            "description": "ガス代",
+            "amount": 5_200,
+            "major_category": "光熱・水道",
+            "minor_category": "ガス・灯油代",
+            "institution": "三井住友銀行",
+        },
+        {
+            "date": f"{ym}-09",
+            "description": "サブスクリプション",
+            "amount": 4_500,
+            "major_category": "趣味・娯楽",
+            "minor_category": "サブスクリプション",
+            "institution": "楽天カード",
+        },
+        {
+            "date": f"{ym}-11",
+            "description": "水道代",
+            "amount": 4_500,
+            "major_category": "光熱・水道",
+            "minor_category": "水道代",
+            "institution": "三井住友銀行",
+        },
+    ]
+
+    total_expense = sum(c["total"] for c in major_categories)
+    total_income = 385_000
+
+    summary = {
+        "year_month": ym,
+        "total_expense": total_expense,
+        "total_income": total_income,
+        "balance": total_income - total_expense,
+        "major_categories": major_categories,
+        "minor_by_major": minor_by_major,
+        "top_expenses": top_expenses,
+    }
+
+    # 6ヶ月分の月別推移
+    trend = []
+    base_expense = 270_000
+    base_income = 380_000
+    import random
+
+    random.seed(42)
+    for i in range(6):
+        m = today.month - 5 + i
+        y = today.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        while m > 12:
+            m -= 12
+            y += 1
+        exp_var = random.randint(-30_000, 50_000)
+        inc_var = random.randint(-5_000, 15_000)
+        trend.append(
+            {
+                "year_month": f"{y}-{m:02d}",
+                "expense": base_expense + exp_var,
+                "income": base_income + inc_var,
+            }
+        )
+
+    available = [
+        {
+            "year_month": t["year_month"],
+            "has_data": True,
+            "fetched": today.isoformat(),
+            "row_count": random.randint(30, 80),
+        }
+        for t in reversed(trend)
+    ]
+
+    # カテゴリ別月次推移デモデータ
+    trend_months = [t["year_month"] for t in trend]
+    demo_cats = [
+        "住宅",
+        "食費",
+        "趣味・娯楽",
+        "光熱・水道",
+        "交通費",
+        "通信費",
+        "衣服・美容",
+        "保険",
+        "日用品",
+        "健康・医療",
+        "教養・教育",
+        "その他",
+    ]
+    demo_cat_bases = {
+        "住宅": 85_000,
+        "食費": 65_000,
+        "趣味・娯楽": 20_000,
+        "光熱・水道": 17_000,
+        "交通費": 14_000,
+        "通信費": 12_500,
+        "衣服・美容": 12_000,
+        "保険": 12_000,
+        "日用品": 8_000,
+        "健康・医療": 5_000,
+        "教養・教育": 4_000,
+        "その他": 6_000,
+    }
+    cat_by_month = {}
+    for tm in trend_months:
+        cat_by_month[tm] = {}
+        for cat, base in demo_cat_bases.items():
+            cat_by_month[tm][cat] = base + random.randint(-int(base * 0.15), int(base * 0.2))
+        cat_by_month[tm]["住宅"] = 85_000  # 家賃は固定
+
+    category_trend = {
+        "year_months": trend_months,
+        "categories": demo_cats,
+        "by_month": cat_by_month,
+    }
+
+    # 固定費 vs 変動費デモデータ
+    fixed_expenses = {
+        "fixed": [
+            {"major": "住宅", "minor": "家賃・地代", "avg_amount": 85_000, "latest": 85_000},
+            {"major": "保険", "minor": "生命保険", "avg_amount": 12_000, "latest": 12_000},
+            {"major": "通信費", "minor": "携帯電話", "avg_amount": 8_800, "latest": 8_800},
+            {"major": "通信費", "minor": "インターネット", "avg_amount": 4_000, "latest": 4_000},
+            {"major": "趣味・娯楽", "minor": "サブスクリプション", "avg_amount": 4_500, "latest": 4_500},
+        ],
+        "fixed_total": 114_300,
+        "variable_total": 160_200,
+        "fixed_ratio": 42,
+        "months_used": 3,
+    }
+
+    # 収入内訳デモデータ
+    income_breakdown = {
+        "items": [
+            {"name": "給与", "total": 350_000},
+            {"name": "副業", "total": 25_000},
+            {"name": "配当・利息", "total": 8_500},
+            {"name": "その他", "total": 1_500},
+        ],
+        "total": 385_000,
+    }
+
+    # 収入推移デモデータ
+    income_trend = [{"year_month": tm, "income": 380_000 + random.randint(-5_000, 15_000)} for tm in trend_months]
+
+    return {
+        "year_month": ym,
+        "summary": summary,
+        "trend": trend,
+        "available_months": available,
+        "category_trend": category_trend,
+        "fixed_expenses": fixed_expenses,
+        "income_breakdown": income_breakdown,
+        "income_trend": income_trend,
+    }
+
+
+def _build_cf_html(data: dict, skip_update: bool = False) -> str:
+    """家計簿分析ページの HTML を生成する。"""
+    if not data:
+        return "<html><body><h1>データがありません</h1><p><a href='/'>ダッシュボードに戻る</a></p></body></html>"
+
+    year_month = data["year_month"]
+    summary = data["summary"]
+    trend = data.get("trend", [])
+    available = data.get("available_months", [])
+
+    # 当月（途中データ）判定
+    from datetime import date as _date
+
+    _current_ym = _date.today().strftime("%Y-%m")
+    is_partial_month = year_month == _current_ym
+
+    total_expense = summary["total_expense"]
+    total_income = summary["total_income"]
+    balance = summary["balance"]
+    major_categories = summary["major_categories"]
+    minor_by_major = summary.get("minor_by_major", {})
+    top_expenses = summary.get("top_expenses", [])
+
+    # 月セレクタ
+    month_options = ""
+    for m in available:
+        sel = " selected" if m["year_month"] == year_month else ""
+        month_options += f'<option value="{m["year_month"]}"{sel}>{m["year_month"]}</option>'
+
+    # カテゴリ別円グラフデータ
+    colors = [
+        "#2881D7",
+        "#DF3727",
+        "#FCAD4C",
+        "#0F7F30",
+        "#008986",
+        "#9C39B6",
+        "#FF5266",
+        "#80BD45",
+        "#FF689A",
+        "#1FBBDB",
+        "#FD9441",
+        "#6C5CE7",
+        "#00B894",
+    ]
+    pie_data = json.dumps(
+        [
+            {
+                "label": c["name"],
+                "value": c["total"],
+                "color": colors[i % len(colors)],
+                "details": [{"name": m["name"], "value": m["total"]} for m in minor_by_major.get(c["name"], [])],
+            }
+            for i, c in enumerate(major_categories)
+        ],
+        ensure_ascii=False,
+    )
+
+    # カテゴリテーブル
+    cat_rows = ""
+    for i, c in enumerate(major_categories):
+        ratio = c["total"] / total_expense * 100 if total_expense else 0
+        color = colors[i % len(colors)]
+        details = minor_by_major.get(c["name"], [])
+        details_attr = json.dumps(details, ensure_ascii=False).replace("&", "&amp;").replace('"', "&quot;")
+        cat_rows += f"""
+        <tr class="has-tip" data-details="{details_attr}" data-label="{c["name"]}">
+          <td><span class="dot" style="background:{color}"></span>{c["name"]}</td>
+          <td class="num">{c["total"]:,.0f}円</td>
+          <td class="num">{ratio:.1f}%</td>
+          <td><div class="bar" style="width:{ratio * 2}px;background:{color}"></div></td>
+        </tr>"""
+
+    # 高額支出テーブル
+    top_rows = ""
+    for t in top_expenses:
+        top_rows += f"""<tr>
+          <td>{t["date"][5:]}</td>
+          <td>{t["description"]}</td>
+          <td class="num">{t["amount"]:,.0f}円</td>
+          <td>{t["major_category"]}</td>
+          <td style="color:#636e72;font-size:0.82rem">{t.get("institution", "")}</td>
+        </tr>"""
+
+    # 月別推移データ
+    trend_data = json.dumps(trend, ensure_ascii=False)
+
+    # ダウンロード管理テーブル
+    dl_rows = ""
+    for m in available:
+        fetched_date = m.get("fetched") or ""
+        row_count = m.get("row_count") or 0
+        if m["has_data"] and fetched_date:
+            status = f'<span style="color:#0F7F30">取得済</span> ({fetched_date}、{row_count}件)'
+        elif m["has_data"]:
+            status = f'<span style="color:#0F7F30">取得済</span> ({row_count}件)'
+        else:
+            status = '<span style="color:#b2bec3">未取得</span>'
+        dl_btn = (
+            ""
+            if m["has_data"]
+            else f'<button class="dl-btn" onclick="downloadMonth(\'{m["year_month"]}\', this)">ダウンロード</button>'
+        )
+        dl_rows += f"<tr><td>{m['year_month']}</td><td>{status}</td><td>{dl_btn}</td></tr>"
+
+    balance_sign = "+" if balance >= 0 else ""
+    balance_css = "plus" if balance >= 0 else "minus"
+
+    # --- カテゴリ別月次推移データ ---
+    cat_trend = data.get("category_trend", {})
+    cat_trend_months = cat_trend.get("year_months", [])
+    cat_trend_categories = cat_trend.get("categories", [])
+    cat_trend_by_month = cat_trend.get("by_month", {})
+    cat_trend_json = json.dumps(
+        {"months": cat_trend_months, "categories": cat_trend_categories, "by_month": cat_trend_by_month},
+        ensure_ascii=False,
+    )
+
+    # 差分テーブル
+    diff_rows = ""
+    if len(cat_trend_months) >= 2:
+        last_m = cat_trend_months[-1]
+        prev_m = cat_trend_months[-2]
+        last_data = cat_trend_by_month.get(last_m, {})
+        prev_data = cat_trend_by_month.get(prev_m, {})
+        for cat in cat_trend_categories:
+            cur = last_data.get(cat, 0)
+            prev = prev_data.get(cat, 0)
+            diff = cur - prev
+            if diff == 0 and cur == 0:
+                continue
+            diff_sign = "+" if diff > 0 else ""
+            diff_color = "color:#e74c3c" if diff > 0 else ("color:#2881D7" if diff < 0 else "")
+            diff_rows += f'<tr><td>{cat}</td><td class="num">{cur:,.0f}円</td><td class="num">{prev:,.0f}円</td><td class="num" style="{diff_color}">{diff_sign}{diff:,.0f}円</td></tr>'
+
+    cat_trend_html = ""
+    if cat_trend_months:
+        cat_trend_html = f"""
+    <div class="card full" data-card-id="cf-cat-trend">
+      <div class="card-header">
+        <h2>カテゴリ別月次推移</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <canvas id="cat-trend-chart" height="280"></canvas>
+        {
+            f'''<h3 style="font-size:0.95rem;margin:16px 0 8px;color:#636e72">{cat_trend_months[-1]} vs {cat_trend_months[-2]} 差分</h3>
+        <table>
+          <tr><th>カテゴリ</th><th class="num">当月</th><th class="num">前月</th><th class="num">差分</th></tr>
+          {diff_rows}
+        </table>'''
+            if len(cat_trend_months) >= 2
+            else ""
+        }
+      </div>
+    </div>"""
+
+    # --- 固定費 vs 変動費データ ---
+    fe = data.get("fixed_expenses", {})
+    fe_fixed = fe.get("fixed", [])
+    fe_fixed_total = fe.get("fixed_total", 0)
+    fe_variable_total = fe.get("variable_total", 0)
+    fe_ratio = fe.get("fixed_ratio", 0)
+    fe_months = fe.get("months_used", 0)
+
+    fe_rows = ""
+    for f in fe_fixed:
+        fe_rows += f'<tr><td>{f["major"]}</td><td>{f["minor"]}</td><td class="num">{f["avg_amount"]:,.0f}円</td></tr>'
+
+    fe_bar_w = fe_ratio
+    fe_html = f"""
+    <div class="card" data-card-id="cf-fixed">
+      <div class="card-header">
+        <h2>固定費 vs 変動費</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;gap:16px;margin-bottom:16px">
+          <div style="flex:1;text-align:center">
+            <div style="font-size:0.8rem;color:#636e72">固定費</div>
+            <div style="font-size:1.2rem;font-weight:700">{fe_fixed_total:,.0f}円</div>
+          </div>
+          <div style="flex:1;text-align:center">
+            <div style="font-size:0.8rem;color:#636e72">変動費</div>
+            <div style="font-size:1.2rem;font-weight:700">{fe_variable_total:,.0f}円</div>
+          </div>
+          <div style="flex:1;text-align:center">
+            <div style="font-size:0.8rem;color:#636e72">固定費率</div>
+            <div style="font-size:1.2rem;font-weight:700">{fe_ratio}%</div>
+          </div>
+        </div>
+        <div style="background:#f1f2f6;border-radius:8px;height:28px;overflow:hidden;margin-bottom:16px;display:flex">
+          <div style="background:#636e72;width:{fe_bar_w}%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.75rem;font-weight:600">{f"固定 {fe_ratio}%" if fe_ratio > 15 else ""}</div>
+          <div style="background:#2881D7;flex:1;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.75rem;font-weight:600">{f"変動 {100 - fe_ratio}%" if (100 - fe_ratio) > 15 else ""}</div>
+        </div>
+        {'<table><tr><th>大項目</th><th>中項目</th><th class="num">月平均額</th></tr>' + fe_rows + "</table>" if fe_fixed else '<div style="color:#b2bec3;padding:10px 0">固定費データなし（2ヶ月以上のデータが必要です）</div>'}
+        <div style="font-size:0.75rem;color:#b2bec3;margin-top:8px">※ 直近{fe_months}ヶ月で毎月出現＆金額ブレ30%以内を固定費と判定</div>
+      </div>
+    </div>"""
+
+    # --- 収入内訳データ ---
+    ib = data.get("income_breakdown", {})
+    ib_items = ib.get("items", [])
+    ib_total = ib.get("total", 0)
+
+    income_pie_data = json.dumps(
+        [
+            {"label": item["name"], "value": item["total"], "color": colors[i % len(colors)], "details": []}
+            for i, item in enumerate(ib_items)
+        ],
+        ensure_ascii=False,
+    )
+
+    # 収入安定度（CV）
+    it = data.get("income_trend", [])
+    if len(it) >= 2:
+        incomes_list = [d["income"] for d in it]
+        avg_inc = sum(incomes_list) / len(incomes_list)
+        if avg_inc > 0:
+            variance = sum((x - avg_inc) ** 2 for x in incomes_list) / len(incomes_list)
+            cv = (variance**0.5) / avg_inc * 100
+        else:
+            cv = 0
+        if cv < 10:
+            stability_label = "安定"
+            stability_color = "#0F7F30"
+        elif cv < 20:
+            stability_label = "やや変動"
+            stability_color = "#FCAD4C"
+        else:
+            stability_label = "変動大"
+            stability_color = "#DF3727"
+        stability_html = f'<div style="margin-top:12px;padding:8px 12px;background:#f8f9fa;border-radius:8px;font-size:0.85rem"><span style="color:#636e72">収入安定度:</span> <strong style="color:{stability_color}">{stability_label}</strong> <span style="color:#b2bec3;font-size:0.75rem">(CV={cv:.1f}%、直近{len(it)}ヶ月)</span></div>'
+    else:
+        stability_html = ""
+
+    ib_html = f"""
+    <div class="card" data-card-id="cf-income">
+      <div class="card-header">
+        <h2>収入の内訳</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        {'<div class="pie-wrap" style="margin:12px 0"><canvas id="income-pie" width="200" height="200"></canvas><ul class="pie-legend" id="income-legend"></ul></div>' if ib_items else '<div style="color:#b2bec3;padding:10px 0">収入データなし</div>'}
+        {f'<div style="text-align:center;font-size:0.9rem;color:#636e72;margin-bottom:8px">収入合計: <strong>{ib_total:,.0f}円</strong></div>' if ib_total else ""}
+        {stability_html}
+      </div>
+    </div>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
+<title>家計簿分析 - {year_month}</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f6fa; color: #2d3436; line-height: 1.6; }}
+  .container {{ max-width: 1100px; margin: 0 auto; padding: 20px; }}
+  {_NAV_CSS}
+  h1 {{ font-size: 1.5rem; }}
+  .month-picker {{ display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }}
+  .month-picker select {{
+    font-size: 0.9rem; padding: 4px 8px; border: 1px solid #dfe6e9;
+    border-radius: 6px; background: #fff; cursor: pointer;
+  }}
+  .month-picker .nav-btn {{
+    background: #fff; border: 1px solid #dfe6e9; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; font-size: 0.9rem; color: #2d3436;
+  }}
+  .month-picker .nav-btn:hover {{ background: #f1f2f6; }}
+  .month-picker .nav-btn:disabled {{ color: #b2bec3; cursor: default; background: #fff; }}
+  .summary-cards {{ display: flex; gap: 12px; margin-bottom: 20px; }}
+  .summary-card {{ flex: 1; background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; }}
+  .summary-card h3 {{ font-size: 0.85rem; color: #636e72; margin-bottom: 6px; font-weight: 600; }}
+  .summary-card .amount {{ font-size: 1.3rem; font-weight: 700; }}
+  .grid {{ display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; align-items: flex-start; }}
+  .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); width: calc(50% - 10px); }}
+  .card-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 0; }}
+  .card-header h2 {{ font-size: 1.1rem; color: #2d3436; margin: 0; }}
+  .full {{ width: 100%; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
+  th {{ text-align: left; padding: 8px 6px; border-bottom: 2px solid #dfe6e9; color: #636e72; font-weight: 600; }}
+  td {{ padding: 6px; border-bottom: 1px solid #f1f2f6; }}
+  .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }}
+  .bar {{ height: 16px; border-radius: 3px; min-width: 2px; }}
+  .plus {{ color: #e74c3c; }}
+  .minus {{ color: #2881D7; }}
+  .pie-wrap canvas {{ max-width: 280px; }}
+  canvas {{ margin: 0 auto; display: block; }}
+  .pie-wrap {{ display: flex; align-items: center; gap: 20px; position: relative; }}
+  .pie-tooltip {{
+    position: fixed; pointer-events: none; z-index: 9999;
+    background: rgba(45,52,54,0.92); color: #fff; border-radius: 8px;
+    padding: 8px 14px; font-size: 0.82rem; line-height: 1.5;
+    white-space: nowrap; opacity: 0; transition: opacity 0.15s ease;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }}
+  .pie-tooltip.show {{ opacity: 1; }}
+  .has-tip {{ cursor: pointer; }}
+  .has-tip:hover {{ background: #f0f4ff; }}
+  .pie-legend {{ font-size: 0.85rem; }}
+  .pie-legend li {{ list-style: none; margin-bottom: 4px; }}
+  .dl-btn {{
+    padding: 3px 10px; border: 1px solid #2881D7; border-radius: 4px;
+    background: #fff; color: #2881D7; font-size: 0.8rem; cursor: pointer;
+  }}
+  .dl-btn:hover {{ background: #2881D7; color: #fff; }}
+  .dl-btn:disabled {{ border-color: #b2bec3; color: #b2bec3; cursor: default; background: #fff; }}
+  {_COLLAPSE_CSS}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="page-header">
+    <h1>家計簿分析</h1>
+    {_nav_html("/cf")}
+  </div>
+  <div class="month-picker">
+    <button class="nav-btn" id="prev-month" title="前の月">&larr;</button>
+    <select id="month-select" onchange="location.href='/cf?month='+this.value">
+      {month_options}
+    </select>
+    <button class="nav-btn" id="next-month" title="次の月">&rarr;</button>
+  </div>
+  <div class="summary-cards">
+    <div class="summary-card">
+      <h3>支出合計</h3>
+      <div class="amount" style="color:#2881D7">{total_expense:,.0f}円</div>
+    </div>
+    <div class="summary-card">
+      <h3>収入合計</h3>
+      <div class="amount" style="color:#e74c3c">{total_income:,.0f}円</div>
+    </div>
+    <div class="summary-card">
+      <h3>収支</h3>
+      <div class="amount {balance_css}">{balance_sign}{balance:,.0f}円</div>
+    </div>
+  </div>
+  {'<div style="background:#FFF8E1;border:1px solid #FFD54F;border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:0.85rem;color:#795548">&#x26A0; 当月はまだ途中のデータです。給与など月末に反映される項目が含まれていない場合があります。</div>' if is_partial_month else ""}
+  <div class="grid">
+    <div class="card" data-card-id="cf-category">
+      <div class="card-header">
+        <h2>カテゴリ別支出</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div class="pie-wrap" style="margin:12px 0">
+          <canvas id="cf-pie" width="220" height="220"></canvas>
+          <ul class="pie-legend" id="cf-legend"></ul>
+        </div>
+        <table>
+          <tr><th>カテゴリ</th><th class="num">金額</th><th class="num">割合</th><th></th></tr>
+          {cat_rows}
+        </table>
+      </div>
+    </div>
+
+    <div class="card" data-card-id="cf-top">
+      <div class="card-header">
+        <h2>高額支出 TOP15</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <table>
+          <tr><th>日付</th><th>内容</th><th class="num">金額</th><th>カテゴリ</th><th>金融機関</th></tr>
+          {top_rows}
+        </table>
+      </div>
+    </div>
+
+    {ib_html}
+
+    {fe_html}
+
+    {cat_trend_html}
+
+    <div class="card full" data-card-id="cf-trend">
+      <div class="card-header">
+        <h2>月別支出推移</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        {'<canvas id="trend-chart" height="200"></canvas>' if trend else '<div style="color:#b2bec3;padding:20px 0">推移データがありません</div>'}
+      </div>
+    </div>
+
+    <div class="card full" data-card-id="cf-download">
+      <div class="card-header">
+        <h2>過去月ダウンロード管理</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <input type="month" id="manual-month" style="padding:4px 8px;border:1px solid #dfe6e9;border-radius:6px;font-size:0.9rem">
+          <button class="dl-btn" onclick="fetchManualMonth()">取得</button>
+          <span id="manual-msg" style="font-size:0.8rem;color:#636e72"></span>
+        </div>
+        <table>
+          <tr><th>月</th><th>ステータス</th><th></th></tr>
+          {dl_rows}
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="pie-tooltip" id="pie-tooltip"></div>
+
+<script>
+{_PIE_JS}
+
+const cfPieData = {pie_data};
+drawPieChart('cf-pie', 'cf-legend', cfPieData, 220);
+
+// 収入内訳円グラフ
+const incomePieData = {income_pie_data};
+drawPieChart('income-pie', 'income-legend', incomePieData, 200);
+
+// カテゴリ別月次推移（積み上げ棒グラフ）
+const catTrendData = {cat_trend_json};
+const catTrendCanvas = document.getElementById('cat-trend-chart');
+if (catTrendData.months.length > 0 && catTrendCanvas) {{
+  const ctx2 = catTrendCanvas.getContext('2d');
+  const W2 = catTrendCanvas.parentElement.clientWidth - 40;
+  catTrendCanvas.width = W2;
+  catTrendCanvas.height = 300;
+  catTrendCanvas.style.maxWidth = 'none';
+
+  const cMonths = catTrendData.months;
+  const cCats = catTrendData.categories;
+  const cByMonth = catTrendData.by_month;
+  const stackColors = {json.dumps(colors)};
+
+  // 各月の合計を計算
+  let maxStack = 0;
+  cMonths.forEach(m => {{
+    let total = 0;
+    cCats.forEach(c => {{ total += (cByMonth[m] || {{}})[c] || 0; }});
+    if (total > maxStack) maxStack = total;
+  }});
+  maxStack *= 1.1;
+
+  const p2 = {{ left: 70, right: 20, top: 40, bottom: 30 }};
+  const cW = W2 - p2.left - p2.right;
+  const cH = 300 - p2.top - p2.bottom;
+  const bGW = cW / cMonths.length;
+  const bW2 = bGW * 0.6;
+
+  // Y軸
+  ctx2.strokeStyle = '#f1f2f6';
+  ctx2.fillStyle = '#b2bec3';
+  ctx2.font = '11px sans-serif';
+  ctx2.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {{
+    const y = p2.top + cH * (1 - i/4);
+    const val = maxStack * i / 4;
+    ctx2.beginPath();
+    ctx2.moveTo(p2.left, y);
+    ctx2.lineTo(W2 - p2.right, y);
+    ctx2.stroke();
+    ctx2.fillText((val/10000).toFixed(0) + '万', p2.left - 6, y + 4);
+  }}
+
+  // 積み上げ棒グラフ
+  cMonths.forEach((m, mi) => {{
+    const x = p2.left + mi * bGW + (bGW - bW2) / 2;
+    let cumH = 0;
+    cCats.forEach((c, ci) => {{
+      const val = (cByMonth[m] || {{}})[c] || 0;
+      const h = (val / maxStack) * cH;
+      ctx2.fillStyle = stackColors[ci % stackColors.length];
+      ctx2.fillRect(x, p2.top + cH - cumH - h, bW2, h);
+      cumH += h;
+    }});
+    ctx2.fillStyle = '#636e72';
+    ctx2.font = '11px sans-serif';
+    ctx2.textAlign = 'center';
+    ctx2.fillText(m.substring(5), x + bW2/2, p2.top + cH + 18);
+  }});
+
+  // 凡例（上位6カテゴリ）
+  const legendCats = cCats.slice(0, 6);
+  let lx = p2.left;
+  legendCats.forEach((c, ci) => {{
+    ctx2.fillStyle = stackColors[ci % stackColors.length];
+    ctx2.fillRect(lx, 6, 10, 10);
+    ctx2.fillStyle = '#2d3436';
+    ctx2.font = '11px sans-serif';
+    ctx2.textAlign = 'left';
+    ctx2.fillText(c, lx + 13, 15);
+    lx += ctx2.measureText(c).width + 24;
+  }});
+  if (cCats.length > 6) {{
+    ctx2.fillStyle = '#b2bec3';
+    ctx2.fillText('…他' + (cCats.length - 6) + '件', lx, 15);
+  }}
+}}
+
+// 月ナビゲーション
+const msel = document.getElementById('month-select');
+const months = Array.from(msel.options).map(o => o.value);
+const midx = msel.selectedIndex;
+const prevM = document.getElementById('prev-month');
+const nextM = document.getElementById('next-month');
+nextM.disabled = midx === 0;
+prevM.disabled = midx === months.length - 1;
+prevM.onclick = () => {{ if (midx < months.length - 1) location.href = '/cf?month=' + months[midx + 1]; }};
+nextM.onclick = () => {{ if (midx > 0) location.href = '/cf?month=' + months[midx - 1]; }};
+
+// 月別推移棒グラフ
+const trendData = {trend_data};
+const trendCanvas = document.getElementById('trend-chart');
+if (trendData.length > 0 && trendCanvas) {{
+  const ctx = trendCanvas.getContext('2d');
+  const W = trendCanvas.parentElement.clientWidth - 40;
+  trendCanvas.width = W;
+  trendCanvas.height = 220;
+
+  const labels = trendData.map(d => d.year_month.substring(5));
+  const incomes = trendData.map(d => d.income);
+  const expenses = trendData.map(d => d.expense);
+  const maxVal = Math.max(...incomes, ...expenses) * 1.15;
+
+  const padding = {{ left: 70, right: 20, top: 20, bottom: 30 }};
+  const chartW = W - padding.left - padding.right;
+  const chartH = 220 - padding.top - padding.bottom;
+  const barGroupW = chartW / trendData.length;
+  const barW = barGroupW * 0.3;
+
+  // Y軸
+  ctx.strokeStyle = '#f1f2f6';
+  ctx.fillStyle = '#b2bec3';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {{
+    const y = padding.top + chartH * (1 - i/4);
+    const val = maxVal * i / 4;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(W - padding.right, y);
+    ctx.stroke();
+    ctx.fillText((val/10000).toFixed(0) + '万', padding.left - 6, y + 4);
+  }}
+
+  // 棒グラフ
+  trendData.forEach((d, i) => {{
+    const x = padding.left + i * barGroupW + barGroupW * 0.1;
+    const iH = (d.income / maxVal) * chartH;
+    const eH = (d.expense / maxVal) * chartH;
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillRect(x, padding.top + chartH - iH, barW, iH);
+    ctx.fillStyle = '#2881D7';
+    ctx.fillRect(x + barW + 2, padding.top + chartH - eH, barW, eH);
+    ctx.fillStyle = '#636e72';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(labels[i], x + barW + 1, padding.top + chartH + 18);
+  }});
+
+  // 凡例
+  ctx.fillStyle = '#e74c3c';
+  ctx.fillRect(padding.left, 4, 12, 12);
+  ctx.fillStyle = '#2d3436';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('収入', padding.left + 16, 14);
+  ctx.fillStyle = '#2881D7';
+  ctx.fillRect(padding.left + 55, 4, 12, 12);
+  ctx.fillStyle = '#2d3436';
+  ctx.fillText('支出', padding.left + 71, 14);
+}}
+
+// ダウンロード
+async function downloadMonth(ym, btn) {{
+  btn.disabled = true;
+  btn.textContent = '取得中...';
+  try {{
+    const r = await fetch('/api/cf/download', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{year_month: ym}})
+    }});
+    const result = await r.json();
+    if (result.ok) {{
+      btn.textContent = '完了';
+      setTimeout(() => location.reload(), 1000);
+    }} else {{
+      btn.textContent = 'エラー';
+      btn.disabled = false;
+    }}
+  }} catch(e) {{
+    btn.textContent = 'エラー';
+    btn.disabled = false;
+  }}
+}}
+
+async function fetchManualMonth() {{
+  const input = document.getElementById('manual-month');
+  const msg = document.getElementById('manual-msg');
+  const ym = input.value;
+  if (!ym) {{ msg.textContent = '年月を選択してください'; return; }}
+  // YYYY-MM format validation
+  const today = new Date();
+  const sel = new Date(ym + '-01');
+  if (sel > today) {{ msg.textContent = '未来の月は取得できません'; return; }}
+  msg.textContent = '取得中...';
+  msg.style.color = '#636e72';
+  try {{
+    const r = await fetch('/api/cf/download', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{year_month: ym}})
+    }});
+    const result = await r.json();
+    if (result.ok) {{
+      msg.textContent = '取得完了';
+      msg.style.color = '#0F7F30';
+      setTimeout(() => location.reload(), 1000);
+    }} else {{
+      msg.textContent = result.error || 'エラーが発生しました';
+      msg.style.color = '#DF3727';
+    }}
+  }} catch(e) {{
+    msg.textContent = 'エラーが発生しました';
+    msg.style.color = '#DF3727';
+  }}
+}}
+
+{_COLLAPSE_JS}
+</script>
 </body>
 </html>"""
 
@@ -1737,10 +3233,8 @@ class Handler(BaseHTTPRequestHandler):
             # contrib パラメータがあれば設定に保存、なければDB設定を使用
             contrib = None
             if "contrib" in params:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     contrib = float(params["contrib"][0])
-                except (ValueError, TypeError):
-                    pass
             if self.demo:
                 data = _demo_plan_data()
                 ai_comment = "直近6ヶ月で資産は約1,970万円から2,150万円へ着実に増加しており、月平均+30万円の成長ペースです。月次収支は概ね黒字を維持していますが、12月のように支出が膨らむ月もあるため、臨時出費への備えも意識しましょう。モンテカルロ・シミュレーションでは、月5万円の積立を継続した場合、5年後の中央値は約3,120万円と見込まれ、長期的な資産形成は順調と言えます。"
@@ -1783,6 +3277,33 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(html.encode())
 
+        elif parsed.path == "/cf":
+            month = params.get("month", [None])[0]
+            if self.demo:
+                data = _demo_cf_data()
+                if month:
+                    data["year_month"] = month
+            else:
+                data = _get_cf_data(self.db_path, month)
+            html = _build_cf_html(data, self.skip_update)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(html.encode())
+
+        elif parsed.path == "/api/cf/months":
+            if self.demo:
+                data = _demo_cf_data()
+                result = data.get("available_months", [])
+            else:
+                conn = init_db(self.db_path)
+                result = get_cf_available_months(conn)
+                conn.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode())
+
         elif parsed.path == "/settings":
             saved = params.get("saved", [None])[0]
             html = _build_settings_html(self.db_path, saved=saved)
@@ -1822,6 +3343,67 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(303)
             self.send_header("Location", "/settings?saved=1")
             self.end_headers()
+
+        elif parsed.path == "/api/cf/download":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+                ym = req.get("year_month", "")
+                # YYYY-MM → year, month
+                parts = ym.split("-")
+                year, month = int(parts[0]), int(parts[1])
+            except (json.JSONDecodeError, ValueError, IndexError):
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "invalid year_month"}).encode())
+                return
+
+            # バックグラウンドでダウンロード実行
+            db_path = self.db_path
+
+            def _download_cf():
+                import asyncio
+                from datetime import date as _d
+
+                from src.parser.cf_csv import parse_cf_csv
+                from src.scraper.fetch import RAW_DIR, create_context, fetch_cf_csv
+
+                try:
+                    raw_path = RAW_DIR / f"cf_{ym}"
+                    raw_path.mkdir(parents=True, exist_ok=True)
+
+                    async def _run():
+                        pw, browser, context = await create_context(headless=True, accept_downloads=True)
+                        try:
+                            page = await context.new_page()
+                            csv_path = await fetch_cf_csv(page, year, month, raw_path)
+                            return csv_path
+                        finally:
+                            await browser.close()
+                            await pw.stop()
+
+                    csv_path = asyncio.run(_run())
+                    if csv_path:
+                        transactions = parse_cf_csv(csv_path)
+                        if transactions:
+                            conn = init_db(db_path)
+                            today_str = _d.today().isoformat()
+                            save_cf_transactions(conn, transactions, today_str)
+                            save_cf_csv_month(conn, ym, today_str, len(transactions))
+                            conn.close()
+                            print(f"[cf] {ym}: {len(transactions)}件保存完了")
+                except Exception as e:
+                    print(f"[cf] {ym} ダウンロード失敗: {e}")
+
+            t = threading.Thread(target=_download_cf, daemon=True)
+            t.start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "year_month": ym}).encode())
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -1852,6 +3434,7 @@ def _should_update(db_path: str, max_age_hours: int = 6) -> bool:
 def _needs_dividend_update() -> bool:
     """dividends.json が存在しない or 当日取得でなければ True。"""
     from datetime import date as _date
+
     path = Path(__file__).resolve().parents[2] / "data" / "dividends.json"
     if not path.exists():
         return True
@@ -1873,11 +3456,14 @@ def _bg_worker(db_path: str) -> None:
     _update_state["running"] = True
     try:
         import asyncio
+
         from src.daily import run
+
         asyncio.run(run(headless=True))
 
         if _needs_dividend_update():
             from src.data.dividend_fetcher import update_all_dividends
+
             update_all_dividends()
 
         _generate_ai_comments(db_path)
@@ -1903,21 +3489,22 @@ def _start_bg_update(db_path: str) -> None:
 def _kill_existing(port: int) -> None:
     """指定ポートを使用している既存プロセスを停止する。"""
     import subprocess
+
     try:
-        result = subprocess.run(
-            ["lsof", "-ti", f":{port}"], capture_output=True, text=True
-        )
+        result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True)
         pids = result.stdout.strip().split()
         if pids:
             print(f"ポート {port} の既存プロセス (PID: {', '.join(pids)}) を停止します...")
             subprocess.run(["kill"] + pids)
             import time
+
             time.sleep(1)
     except FileNotFoundError:
         # lsof がない場合は fuser を試す
         try:
             subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
             import time
+
             time.sleep(1)
         except FileNotFoundError:
             pass
@@ -1928,8 +3515,7 @@ def main() -> None:
     parser.add_argument("--db", type=str, default=str(DB_DEFAULT))
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--demo", action="store_true", help="ダミーデータで表示（SNS共有用）")
-    parser.add_argument("--skip-update", action="store_true",
-                        help="起動時の自動更新をスキップ")
+    parser.add_argument("--skip-update", action="store_true", help="起動時の自動更新をスキップ")
     args = parser.parse_args()
 
     skip_update = args.demo or args.skip_update

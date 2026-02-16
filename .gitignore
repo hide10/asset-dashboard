@@ -4,6 +4,10 @@ raw/
 # SQLite database
 data/*.db
 
+# Cache data (contains portfolio-derived info)
+data/dividends.json
+data/sectors.json
+
 # Python
 __pycache__/
 *.pyc
@@ -16,9 +20,17 @@ venv/
 
 # Environment
 .env
+.env.*
 
 # Auth (session cookies - NEVER commit)
 .auth/
+**/storage_state*.json
+
+# Secrets / credentials
+*.pem
+*.key
+*.crt
+credentials*.json
 
 # IDE
 .vscode/

@@ -27,8 +27,8 @@ class HoldingData:
     value: float
     quantity: float | None = None
     acquisition_price: float | None = None  # 平均取得単価
-    current_price: float | None = None      # 現在値/基準価額
-    unrealized_gain: float | None = None    # 評価損益（円）
+    current_price: float | None = None  # 現在値/基準価額
+    unrealized_gain: float | None = None  # 評価損益（円）
     unrealized_gain_pct: float | None = None  # 評価損益率（%）
     asset_class: str = ""
     position: int = 0  # テーブル内の行位置（同名銘柄の区別用）
@@ -137,12 +137,14 @@ def _parse_depo_section(section: Tag) -> list[AccountData]:
             name = cells[0].get_text(strip=True)
             balance = _parse_yen(cells[1].get_text())
             institution = cells[2].get_text(strip=True)
-            accounts.append(AccountData(
-                account_name=name,
-                asset_class="預金・現金・暗号資産",
-                balance=balance,
-                institution=institution,
-            ))
+            accounts.append(
+                AccountData(
+                    account_name=name,
+                    asset_class="預金・現金・暗号資産",
+                    balance=balance,
+                    institution=institution,
+                )
+            )
     return accounts
 
 
@@ -168,17 +170,19 @@ def _parse_eq_section(section: Tag) -> list[HoldingData]:
             # cells[6] = 前日比（スキップ）, cells[7] = 評価損益, cells[8] = 評価損益率
             unrealized_gain = _parse_yen(cells[7].get_text()) if len(cells) > 7 else None
             unrealized_gain_pct = _parse_percent(cells[8].get_text()) if len(cells) > 8 else None
-            holdings.append(HoldingData(
-                symbol_or_code=code,
-                name=name,
-                value=value,
-                quantity=quantity,
-                acquisition_price=acquisition_price,
-                current_price=current_price,
-                unrealized_gain=unrealized_gain,
-                unrealized_gain_pct=unrealized_gain_pct,
-                asset_class="株式（現物）",
-            ))
+            holdings.append(
+                HoldingData(
+                    symbol_or_code=code,
+                    name=name,
+                    value=value,
+                    quantity=quantity,
+                    acquisition_price=acquisition_price,
+                    current_price=current_price,
+                    unrealized_gain=unrealized_gain,
+                    unrealized_gain_pct=unrealized_gain_pct,
+                    asset_class="株式（現物）",
+                )
+            )
     return holdings
 
 
@@ -203,17 +207,19 @@ def _parse_mf_section(section: Tag) -> list[HoldingData]:
             # cells[5] = 前日比（スキップ）, cells[6] = 評価損益, cells[7] = 評価損益率
             unrealized_gain = _parse_yen(cells[6].get_text()) if len(cells) > 6 else None
             unrealized_gain_pct = _parse_percent(cells[7].get_text()) if len(cells) > 7 else None
-            holdings.append(HoldingData(
-                symbol_or_code="",
-                name=name,
-                value=value,
-                quantity=quantity,
-                acquisition_price=acquisition_price,
-                current_price=current_price,
-                unrealized_gain=unrealized_gain,
-                unrealized_gain_pct=unrealized_gain_pct,
-                asset_class="投資信託",
-            ))
+            holdings.append(
+                HoldingData(
+                    symbol_or_code="",
+                    name=name,
+                    value=value,
+                    quantity=quantity,
+                    acquisition_price=acquisition_price,
+                    current_price=current_price,
+                    unrealized_gain=unrealized_gain,
+                    unrealized_gain_pct=unrealized_gain_pct,
+                    asset_class="投資信託",
+                )
+            )
     return holdings
 
 
@@ -229,12 +235,14 @@ def _parse_simple_section(section: Tag, asset_class: str, table_class: str) -> l
         if len(cells) >= 3:
             name = cells[0].get_text(strip=True)
             value = _parse_yen(cells[2].get_text())
-            holdings.append(HoldingData(
-                symbol_or_code="",
-                name=name,
-                value=value,
-                asset_class=asset_class,
-            ))
+            holdings.append(
+                HoldingData(
+                    symbol_or_code="",
+                    name=name,
+                    value=value,
+                    asset_class=asset_class,
+                )
+            )
     return holdings
 
 
@@ -255,13 +263,15 @@ def _parse_point_section(section: Tag) -> list[HoldingData]:
             name = cells[0].get_text(strip=True)
             quantity = _parse_number(cells[2].get_text())
             value = _parse_yen(cells[4].get_text())
-            holdings.append(HoldingData(
-                symbol_or_code="",
-                name=name,
-                value=value,
-                quantity=quantity,
-                asset_class="ポイント・マイル",
-            ))
+            holdings.append(
+                HoldingData(
+                    symbol_or_code="",
+                    name=name,
+                    value=value,
+                    quantity=quantity,
+                    asset_class="ポイント・マイル",
+                )
+            )
     return holdings
 
 

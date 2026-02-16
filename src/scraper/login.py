@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 from playwright.sync_api import sync_playwright
 
 AUTH_DIR = Path(__file__).resolve().parents[2] / ".auth"
@@ -28,8 +29,8 @@ def save_login_state() -> Path:
         page = context.new_page()
 
         page.goto(LOGIN_URL)
-        print(f"\nブラウザでマネーフォワードにログインしてください。")
-        print(f"ログイン完了後、ここでEnterを押してください...")
+        print("\nブラウザでマネーフォワードにログインしてください。")
+        print("ログイン完了後、ここでEnterを押してください...")
         input()
 
         # ログイン状態を確認

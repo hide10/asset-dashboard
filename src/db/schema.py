@@ -60,6 +60,28 @@ CREATE TABLE IF NOT EXISTS ai_comments (
     created_at TEXT NOT NULL,
     PRIMARY KEY (date, page)
 );
+
+CREATE TABLE IF NOT EXISTS cf_transactions (
+    id               TEXT PRIMARY KEY,
+    year_month       TEXT NOT NULL,        -- YYYY-MM
+    date             TEXT NOT NULL,        -- YYYY-MM-DD
+    description      TEXT NOT NULL,
+    amount           INTEGER NOT NULL,     -- 負=支出, 正=収入
+    institution      TEXT NOT NULL DEFAULT '',
+    major_category   TEXT NOT NULL DEFAULT '',
+    minor_category   TEXT NOT NULL DEFAULT '',
+    memo             TEXT NOT NULL DEFAULT '',
+    is_transfer      INTEGER NOT NULL DEFAULT 0,
+    is_target        INTEGER NOT NULL DEFAULT 1,
+    fetched          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cf_ym ON cf_transactions(year_month);
+
+CREATE TABLE IF NOT EXISTS cf_csv_months (
+    year_month  TEXT PRIMARY KEY,
+    fetched     TEXT NOT NULL,
+    row_count   INTEGER NOT NULL DEFAULT 0
+);
 """
 
 

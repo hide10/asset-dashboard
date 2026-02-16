@@ -19,19 +19,19 @@ _dividend_cache: dict | None = None
 _sector_cache: dict | None = None
 
 STOCK_MASTER: dict[str, dict] = {
-    "8053": {"name": "住友商事",     "sector": "卸売業",       "dividend": 125},
-    "8766": {"name": "東京海上HD",   "sector": "保険業",       "dividend": 159},
-    "4502": {"name": "武田薬品",     "sector": "医薬品",       "dividend": 196},
-    "8591": {"name": "オリックス",   "sector": "その他金融業", "dividend": 98.6},
-    "9433": {"name": "KDDI",         "sector": "情報・通信業", "dividend": 145},
-    "6918": {"name": "アバールデータ", "sector": "電気機器",   "dividend": 80},
-    "1928": {"name": "積水ハウス",   "sector": "建設業",       "dividend": 129},
-    "7762": {"name": "シチズン時計", "sector": "精密機器",     "dividend": 46},
-    "5401": {"name": "日本製鉄",     "sector": "鉄鋼",         "dividend": 160},
-    "9432": {"name": "NTT",          "sector": "情報・通信業", "dividend": 5.2},
-    "8200": {"name": "リンガーハット", "sector": "小売業",     "dividend": 15},
-    "1478": {"name": "iS高配当ETF",  "sector": "ETF",          "dividend": 500},
-    "4755": {"name": "楽天グループ", "sector": "サービス業",   "dividend": 4.5},
+    "8053": {"name": "住友商事", "sector": "卸売業", "dividend": 125},
+    "8766": {"name": "東京海上HD", "sector": "保険業", "dividend": 159},
+    "4502": {"name": "武田薬品", "sector": "医薬品", "dividend": 196},
+    "8591": {"name": "オリックス", "sector": "その他金融業", "dividend": 98.6},
+    "9433": {"name": "KDDI", "sector": "情報・通信業", "dividend": 145},
+    "6918": {"name": "アバールデータ", "sector": "電気機器", "dividend": 80},
+    "1928": {"name": "積水ハウス", "sector": "建設業", "dividend": 129},
+    "7762": {"name": "シチズン時計", "sector": "精密機器", "dividend": 46},
+    "5401": {"name": "日本製鉄", "sector": "鉄鋼", "dividend": 160},
+    "9432": {"name": "NTT", "sector": "情報・通信業", "dividend": 5.2},
+    "8200": {"name": "リンガーハット", "sector": "小売業", "dividend": 15},
+    "1478": {"name": "iS高配当ETF", "sector": "ETF", "dividend": 500},
+    "4755": {"name": "楽天グループ", "sector": "サービス業", "dividend": 4.5},
 }
 
 _YAHOO_URL = "https://finance.yahoo.co.jp/quote/{code}.T"

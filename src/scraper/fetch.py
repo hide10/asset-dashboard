@@ -12,11 +12,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import async_playwright, BrowserContext, Page, Response
+from playwright.async_api import Page, Response, async_playwright
 
 RAW_DIR = Path(__file__).resolve().parents[2] / "raw"
 PORTFOLIO_URL = "https://moneyforward.com/bs/portfolio"
 MONTHLY_URL = "https://moneyforward.com/cf/monthly"
+CF_CSV_URL = "https://moneyforward.com/cf/csv"
 AGGREGATION_URL = "https://moneyforward.com/aggregation_queue"
 DEFAULT_STORAGE_STATE = Path(__file__).resolve().parents[2] / ".auth" / "storage_state.json"
 
@@ -32,12 +33,14 @@ def _build_raw_path() -> Path:
 async def create_context(
     storage_state: str | None = None,
     headless: bool = False,
+    accept_downloads: bool = False,
 ) -> tuple:
     """Playwrightのブラウザコンテキストを作成する。
 
     Args:
         storage_state: storageState JSON のパス。
         headless: True にするとブラウザウィンドウを非表示で起動する。
+        accept_downloads: True にするとダウンロードを許可する。
 
     Returns:
         (playwright, browser, context) のタプル。
@@ -48,8 +51,7 @@ async def create_context(
 
     if not Path(storage_state).exists():
         raise FileNotFoundError(
-            f"storageStateが見つかりません: {storage_state}\n"
-            "先に python -m src.scraper.login でログインしてください。"
+            f"storageStateが見つかりません: {storage_state}\n先に python -m src.scraper.login でログインしてください。"
         )
 
     pw = await async_playwright().start()
@@ -61,6 +63,7 @@ async def create_context(
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/131.0.0.0 Safari/537.36"
         ),
+        accept_downloads=accept_downloads,
     )
     return pw, browser, context
 
@@ -77,11 +80,13 @@ async def fetch_page(page: Page) -> Path:
             if "application/json" in content_type:
                 try:
                     body = await response.json()
-                    api_responses.append({
-                        "url": url,
-                        "status": response.status,
-                        "body": body,
-                    })
+                    api_responses.append(
+                        {
+                            "url": url,
+                            "status": response.status,
+                            "body": body,
+                        }
+                    )
                 except Exception:
                     pass
 
@@ -137,11 +142,13 @@ async def fetch_monthly(page: Page, raw_path: Path) -> Path:
             if "application/json" in content_type:
                 try:
                     body = await response.json()
-                    api_responses.append({
-                        "url": url,
-                        "status": response.status,
-                        "body": body,
-                    })
+                    api_responses.append(
+                        {
+                            "url": url,
+                            "status": response.status,
+                            "body": body,
+                        }
+                    )
                 except Exception:
                     pass
 
@@ -206,6 +213,62 @@ async def request_aggregation(page: Page) -> None:
         print(f"一括更新リクエスト完了（status: {resp.status}）")
 
 
+async def fetch_cf_csv(page: Page, year: int, month: int, raw_path: Path) -> Path | None:
+    """家計簿CSVをダウンロードする。
+
+    Args:
+        page: Playwright ページ。
+        year: 対象年。
+        month: 対象月。
+        raw_path: 保存先ディレクトリ。
+
+    Returns:
+        保存した CSV ファイルパス。失敗時は None。
+    """
+    csv_url = f"{CF_CSV_URL}?from={year}/{month:02d}/01&month={month}&year={year}"
+    ym = f"{year}-{month:02d}"
+    save_path = raw_path / f"cf_{ym}.csv"
+
+    print(f"CF CSV ダウンロード中: {ym}")
+
+    # 方法1: expect_download でブラウザダウンロード
+    try:
+        async with page.expect_download(timeout=30000) as download_info:
+            await page.goto(csv_url, wait_until="commit", timeout=30000)
+        download = await download_info.value
+
+        # ログインリダイレクト検知
+        if "sign_in" in page.url:
+            print("  ログインページにリダイレクトされました")
+            return None
+
+        await download.save_as(str(save_path))
+        print(f"  CSV保存: {save_path}")
+        return save_path
+    except Exception as e:
+        print(f"  ダウンロード方式失敗 ({e})、直接取得を試みます...")
+
+    # 方法2: page.request.get でフォールバック
+    try:
+        resp = await page.request.get(csv_url)
+        if resp.status == 200:
+            content_type = resp.headers.get("content-type", "")
+            if "text" in content_type or "csv" in content_type or "octet" in content_type:
+                body = await resp.body()
+                save_path.write_bytes(body)
+                print(f"  CSV保存（直接取得）: {save_path}")
+                return save_path
+            else:
+                print(f"  予期しないContent-Type: {content_type}")
+                return None
+        else:
+            print(f"  HTTP {resp.status}")
+            return None
+    except Exception as e2:
+        print(f"  直接取得も失敗: {e2}")
+        return None
+
+
 async def fetch_assets(storage_state: str | None = None) -> Path:
     """資産画面を取得しrawデータを保存する（単体実行用）。"""
     pw, browser, context = await create_context(storage_state)
@@ -220,8 +283,7 @@ async def fetch_assets(storage_state: str | None = None) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="マネーフォワード資産データ取得")
-    parser.add_argument("--storage-state", type=str, default=None,
-                        help="Playwright storageState JSONファイルのパス")
+    parser.add_argument("--storage-state", type=str, default=None, help="Playwright storageState JSONファイルのパス")
     args = parser.parse_args()
     asyncio.run(fetch_assets(args.storage_state))
 

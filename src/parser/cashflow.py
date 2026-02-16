@@ -88,11 +88,13 @@ def parse_monthly(raw_dir: Path) -> list[CashflowMonth]:
         for i, ym in enumerate(year_months):
             income = incomes[i] if i < len(incomes) else 0.0
             expense = expenses[i] if i < len(expenses) else 0.0
-            results.append(CashflowMonth(
-                year_month=ym,
-                income=income,
-                expense=expense,
-            ))
+            results.append(
+                CashflowMonth(
+                    year_month=ym,
+                    income=income,
+                    expense=expense,
+                )
+            )
 
         return results
 

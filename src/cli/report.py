@@ -28,9 +28,7 @@ def print_report(db_path: str, date: str | None = None) -> None:
         date = row[0]
 
     # スナップショット取得
-    row = conn.execute(
-        "SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)
-    ).fetchone()
+    row = conn.execute("SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)).fetchone()
     if not row:
         print(f"{date} のデータがありません。")
         return
@@ -76,7 +74,7 @@ def print_report(db_path: str, date: str | None = None) -> None:
     print("-" * w)
     print(f"  口座一覧 ({len(accounts)}件)")
     print("-" * w)
-    for name, cls, balance, inst in accounts:
+    for name, _cls, balance, inst in accounts:
         label = f"{inst} / {name}" if inst and inst != name else name
         print(f"  {label:<36s}  {_fmt(balance):>12s}円")
     print()
@@ -99,10 +97,8 @@ def print_report(db_path: str, date: str | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="資産レポート表示")
-    parser.add_argument("--db", type=str, default=str(DB_DEFAULT),
-                        help="SQLiteデータベースのパス")
-    parser.add_argument("--date", type=str, default=None,
-                        help="対象日（YYYY-MM-DD）。省略時は最新")
+    parser.add_argument("--db", type=str, default=str(DB_DEFAULT), help="SQLiteデータベースのパス")
+    parser.add_argument("--date", type=str, default=None, help="対象日（YYYY-MM-DD）。省略時は最新")
     args = parser.parse_args()
     print_report(args.db, args.date)
 

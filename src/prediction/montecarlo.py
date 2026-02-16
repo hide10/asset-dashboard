@@ -15,7 +15,6 @@ import re
 import sqlite3
 from dataclasses import dataclass
 
-
 TRADING_DAYS_PER_YEAR = 252
 
 # リスク資産とみなす資産クラス（基本）
@@ -23,12 +22,12 @@ RISK_CLASSES = {"株式（現物）", "投資信託"}
 
 # 資産クラス別のデフォルトパラメータ（年率リターン, 年率ボラティリティ）
 CLASS_PARAMS: dict[str, tuple[float, float]] = {
-    "株式（現物）":       (0.07, 0.20),   # 国内株
-    "投資信託":           (0.08, 0.18),   # 先進国株投信が主
-    "年金（株式型）":     (0.08, 0.18),   # iDeCo・DC（株式運用）
-    "不動産":             (0.01, 0.05),
+    "株式（現物）": (0.07, 0.20),  # 国内株
+    "投資信託": (0.08, 0.18),  # 先進国株投信が主
+    "年金（株式型）": (0.08, 0.18),  # iDeCo・DC（株式運用）
+    "不動産": (0.01, 0.05),
     "預金・現金・暗号資産": (0.0, 0.0),
-    "年金（保険型）":     (0.01, 0.02),   # 個人年金保険等
+    "年金（保険型）": (0.01, 0.02),  # 個人年金保険等
 }
 
 # 年金の保有銘柄名から株式型を判定するパターン
@@ -83,6 +82,7 @@ def weighted_default_params(class_values: dict[str, float]) -> tuple[float, floa
 @dataclass
 class PredictionRange:
     """予測レンジ（P10/P50/P90）。"""
+
     years: int
     p10: float
     p50: float
@@ -92,9 +92,7 @@ class PredictionRange:
 def _get_daily_totals(db_path: str) -> list[tuple[str, float]]:
     """全日の(date, total_asset)を日付昇順で返す。"""
     conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT date, total_asset FROM snapshots ORDER BY date ASC"
-    ).fetchall()
+    rows = conn.execute("SELECT date, total_asset FROM snapshots ORDER BY date ASC").fetchall()
     conn.close()
     return rows
 
@@ -111,6 +109,7 @@ def _estimate_params(
         (annual_return, annual_volatility, is_estimated)
         is_estimated=True はデフォルト値を使用したことを意味する。
     """
+
     def _defaults() -> tuple[float, float]:
         if class_values:
             return weighted_default_params(class_values)
@@ -183,9 +182,7 @@ def _run_simulation(
         for _ in range(total_months):
             # 幾何ブラウン運動（対数正規）
             z = rng.gauss(0, 1)
-            monthly_growth = math.exp(
-                (monthly_return - 0.5 * monthly_vol ** 2) + monthly_vol * z
-            )
+            monthly_growth = math.exp((monthly_return - 0.5 * monthly_vol**2) + monthly_vol * z)
             value = value * monthly_growth + monthly_contribution
         # 安全資産を固定で加算
         results.append(value + safe_value)

@@ -39,6 +39,7 @@ def update_all_dividends(codes: list[str] | None = None) -> dict:
     """全銘柄の配当を取得し dividends.json に保存する。"""
     if codes is None:
         from src.data.stock_master import get_all_codes
+
         codes = get_all_codes()
 
     # 既存データを読み込む（マージ用）
@@ -73,6 +74,7 @@ def update_all_dividends(codes: list[str] | None = None) -> dict:
     # 業種情報も同時に取得・キャッシュ
     try:
         from src.data.stock_master import update_sectors
+
         update_sectors(codes)
     except Exception as e:
         print(f"[sector] 業種取得エラー: {e}")

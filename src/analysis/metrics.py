@@ -18,9 +18,7 @@ import sqlite3
 def asset_class_ratio(db_path: str, date: str) -> dict[str, float]:
     """資産クラス別の比率(%)を算出する。"""
     conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        "SELECT by_class_json FROM snapshots WHERE date = ?", (date,)
-    ).fetchone()
+    row = conn.execute("SELECT by_class_json FROM snapshots WHERE date = ?", (date,)).fetchone()
     conn.close()
     if not row:
         return {}
@@ -38,9 +36,7 @@ def concentration_top_n(db_path: str, date: str, n: int = 5) -> dict:
         "SELECT name, value FROM snapshot_holdings WHERE date = ? ORDER BY value DESC",
         (date,),
     ).fetchall()
-    total_row = conn.execute(
-        "SELECT total_asset FROM snapshots WHERE date = ?", (date,)
-    ).fetchone()
+    total_row = conn.execute("SELECT total_asset FROM snapshots WHERE date = ?", (date,)).fetchone()
     conn.close()
 
     if not holdings or not total_row:
@@ -60,9 +56,7 @@ def concentration_top_n(db_path: str, date: str, n: int = 5) -> dict:
 def daily_volatility(db_path: str, days: int = 30) -> float | None:
     """直近N日のボラティリティ（日次リターンの標準偏差、年率換算）を算出する。"""
     conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT total_asset FROM snapshots ORDER BY date DESC LIMIT ?", (days + 1,)
-    ).fetchall()
+    rows = conn.execute("SELECT total_asset FROM snapshots ORDER BY date DESC LIMIT ?", (days + 1,)).fetchall()
     conn.close()
 
     if len(rows) < 3:
@@ -89,9 +83,7 @@ def daily_volatility(db_path: str, days: int = 30) -> float | None:
 def max_drawdown(db_path: str) -> float | None:
     """最大ドローダウン(%)を算出する。"""
     conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT total_asset FROM snapshots ORDER BY date ASC"
-    ).fetchall()
+    rows = conn.execute("SELECT total_asset FROM snapshots ORDER BY date ASC").fetchall()
     conn.close()
 
     if len(rows) < 2:
@@ -114,9 +106,7 @@ def max_drawdown(db_path: str) -> float | None:
 def moving_average(db_path: str, window: int) -> list[tuple[str, float]]:
     """移動平均を算出する。[(date, ma_value), ...]"""
     conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT date, total_asset FROM snapshots ORDER BY date ASC"
-    ).fetchall()
+    rows = conn.execute("SELECT date, total_asset FROM snapshots ORDER BY date ASC").fetchall()
     conn.close()
 
     if len(rows) < window:

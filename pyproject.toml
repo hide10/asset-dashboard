@@ -10,10 +10,37 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-]
+dev = ["pytest>=7.0", "ruff>=0.9", "pre-commit>=4.0"]
 
 [project.scripts]
 mf-fetch = "src.scraper.fetch:main"
 mf-report = "src.cli.report:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "S"]
+ignore = [
+    "E501",   # line too long (managed by formatter)
+    "E741",   # ambiguous variable name
+    "SIM108", # ternary operator
+    "S101",   # assert usage
+    "S110",   # try-except-pass (best-effort ops)
+    "S311",   # pseudo-random generator
+    "S603",   # subprocess call (internal only)
+    "S607",   # partial executable path (internal only)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/db/repository.py" = ["S608"]  # SQL uses parameterized queries with ? placeholders
+"src/data/*.py" = ["S310"]         # URLs are hardcoded constants
+"src/web/server.py" = ["S104"]     # binding to 0.0.0.0 is intentional for LAN access
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
