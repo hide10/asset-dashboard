@@ -115,6 +115,23 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     return conn
 
 
+def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
+    """軽量な接続取得（スキーマチェック・マイグレーションなし）。
+
+    init_db() で初期化済みの DB に対して使う。
+    PRAGMA 設定のみ行い、毎リクエストのオーバーヘッドを削減する。
+    """
+    if db_path is None:
+        db_path = DEFAULT_DB_PATH
+    db_path = Path(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
 if __name__ == "__main__":
     connection = init_db()
     print(f"Database initialized at {DEFAULT_DB_PATH}")

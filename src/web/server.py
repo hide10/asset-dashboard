@@ -40,7 +40,7 @@ from src.db.repository import (
     save_cf_transactions,
     save_setting,
 )
-from src.db.schema import init_db
+from src.db.schema import get_connection, init_db
 from src.prediction.montecarlo import (
     RISK_CLASSES,
     PredictionRange,
@@ -249,7 +249,7 @@ _COLLAPSE_JS = """
 
 def _get_dates(db_path: str) -> list[str]:
     """利用可能な日付一覧を返す（新しい順）。"""
-    conn = init_db(db_path)
+    conn = get_connection(db_path)
     try:
         rows = conn.execute("SELECT date FROM snapshots ORDER BY date DESC").fetchall()
         return [r[0] for r in rows]
@@ -258,7 +258,7 @@ def _get_dates(db_path: str) -> list[str]:
 
 
 def _get_data(db_path: str, date: str | None = None) -> dict:
-    conn = init_db(db_path)
+    conn = get_connection(db_path)
     try:
         if date is None:
             row = conn.execute("SELECT date FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
@@ -1534,7 +1534,7 @@ def _calc_monthly_totals(conn: sqlite3.Connection) -> list[dict]:
 
 def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> dict:
     """月次収支 + 成長予測データを取得する。"""
-    conn = init_db(db_path)
+    conn = get_connection(db_path)
     try:
         # 積立額: 引数指定があればDBに保存、なければDBから読む
         if monthly_contribution is not None:
@@ -2293,7 +2293,7 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
     """設定ページのHTMLを生成する。"""
     import os
 
-    conn = init_db(db_path)
+    conn = get_connection(db_path)
     try:
         db_key = get_setting(conn, "gemini_api_key", "")
     finally:
@@ -2377,7 +2377,7 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
 
 def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
     """家計簿分析データを取得する。"""
-    conn = init_db(db_path)
+    conn = get_connection(db_path)
     try:
         # 利用可能月
         available = get_cf_available_months(conn)
@@ -3590,7 +3590,7 @@ class Handler(BaseHTTPRequestHandler):
                 ai_comment = None
                 if data:
                     try:
-                        conn = init_db(self.db_path)
+                        conn = get_connection(self.db_path)
                         try:
                             ai_comment = get_comment(conn, data["date"], "lifeplan")
                         finally:
@@ -3612,7 +3612,7 @@ class Handler(BaseHTTPRequestHandler):
                 ai_comment = None
                 if data:
                     try:
-                        conn = init_db(self.db_path)
+                        conn = get_connection(self.db_path)
                         try:
                             ai_comment = get_comment(conn, data["date"], "dashboard")
                         finally:
@@ -3638,7 +3638,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = _demo_cf_data()
                 result = data.get("available_months", [])
             else:
-                conn = init_db(self.db_path)
+                conn = get_connection(self.db_path)
                 try:
                     result = get_cf_available_months(conn)
                 finally:
@@ -3685,7 +3685,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length).decode()
             post_params = parse_qs(body)
             api_key = post_params.get("gemini_api_key", [""])[0].strip()
-            conn = init_db(self.db_path)
+            conn = get_connection(self.db_path)
             try:
                 if api_key:
                     save_setting(conn, "gemini_api_key", api_key)
@@ -3796,7 +3796,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": "invalid amount"}).encode())
                 return
 
-            conn = init_db(self.db_path)
+            conn = get_connection(self.db_path)
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 budgets = get_budgets(conn)
@@ -3948,6 +3948,10 @@ def main() -> None:
     parser.add_argument("--demo", action="store_true", help="ダミーデータで表示（SNS共有用）")
     parser.add_argument("--skip-update", action="store_true", help="起動時の自動更新をスキップ")
     args = parser.parse_args()
+
+    # 起動時にスキーマ初期化・マイグレーションを1回だけ実行
+    conn = init_db(args.db)
+    conn.close()
 
     skip_update = args.demo or args.skip_update
     if not skip_update:
