@@ -3858,7 +3858,11 @@ class Handler(BaseHTTPRequestHandler):
                         pass
             # セッション切れチェック
             session_expired = None
-            if not self.demo:
+            if self.demo:
+                # デモモード: ?session_expired=1 で強制表示（見た目確認用）
+                if params.get("session_expired", [""])[0]:
+                    session_expired = "demo"
+            else:
                 try:
                     conn = get_connection(self.db_path)
                     try:

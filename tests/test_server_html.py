@@ -429,6 +429,26 @@ class TestDownloadStatus:
         assert "取得済" in html
 
 
+class TestSessionExpiredBanner:
+    """セッション切れバナーの表示テスト。"""
+
+    def test_banner_shown_when_expired(self):
+        data = _demo_data()
+        html = _build_html(data, [data["date"]], session_expired="2026-02-17T12:00:00")
+        assert "セッション切れ" in html
+        assert "再ログイン" in html
+
+    def test_banner_hidden_when_not_expired(self):
+        data = _demo_data()
+        html = _build_html(data, [data["date"]], session_expired=None)
+        assert "セッション切れ" not in html
+
+    def test_banner_hidden_when_empty_string(self):
+        data = _demo_data()
+        html = _build_html(data, [data["date"]], session_expired="")
+        assert "セッション切れ" not in html
+
+
 class TestAiChatExport:
     """AIチャット用データエクスポートが設定ページに表示される。"""
 
