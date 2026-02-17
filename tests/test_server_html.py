@@ -247,6 +247,42 @@ class TestDailyAssets:
             assert f">{label}</button>" in self.html
 
 
+# --- 予算設定と予算対比表示 (#2) ---
+
+
+class TestBudget:
+    """予算列・消化率バー・予算残りサマリーが正しく表示される。"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.data = _demo_cf_data()
+        self.html = _build_cf_html(self.data)
+
+    def test_budget_column_exists(self):
+        """テーブルに「予算」ヘッダがある。"""
+        assert "<th" in self.html
+        assert "予算" in self.html
+
+    def test_budget_progress_bar(self):
+        """消化率バーが存在する。"""
+        assert "budget-bar" in self.html
+        assert "budget-bar-bg" in self.html
+
+    def test_budget_remaining_summary(self):
+        """予算残りサマリーカードが存在する。"""
+        assert "予算残り" in self.html
+        assert 'data-testid="budget-remaining"' in self.html
+
+    def test_budget_cell_click_editable(self):
+        """予算セルにクリック編集用のdata属性とクラスがある。"""
+        assert "budget-cell" in self.html
+        assert 'data-category="食費"' in self.html
+
+    def test_budget_save_api_in_js(self):
+        """JavaScriptに予算保存APIの呼び出しがある。"""
+        assert "/api/cf/budget" in self.html
+
+
 # --- デモデータ構造 ---
 
 
@@ -286,6 +322,13 @@ class TestDemoData:
         ib = d["income_breakdown"]
         assert len(ib["items"]) > 0
         assert ib["total"] > 0
+
+    def test_cf_demo_has_budgets(self):
+        d = _demo_cf_data()
+        assert "budgets" in d
+        assert isinstance(d["budgets"], dict)
+        assert len(d["budgets"]) > 0
+        assert "食費" in d["budgets"]
 
     def test_plan_demo_has_savings(self):
         d = _demo_plan_data()
