@@ -29,6 +29,7 @@ from src.db.repository import (
     get_cf_available_months,
     get_cf_category_summary,
     get_cf_category_trend,
+    get_cf_dividend_history,
     get_cf_fixed_expenses,
     get_cf_income_breakdown,
     get_cf_income_trend,
@@ -1606,6 +1607,9 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
 
         # 日次資産推移
         daily_assets = get_daily_assets(conn, months=6)
+
+        # 配当実績
+        dividend_history = get_cf_dividend_history(conn)
     finally:
         conn.close()
 
@@ -1650,6 +1654,7 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
         "monthly_contribution": monthly_contribution,
         "cf_savings": cf_savings,
         "daily_assets": daily_assets,
+        "dividend_history": dividend_history,
     }
 
 
@@ -1739,6 +1744,19 @@ def _demo_plan_data() -> dict:
             "months_used": 6,
         },
         "daily_assets": demo_daily,
+        "dividend_history": {
+            "monthly": [
+                {"year_month": "2025-03", "amount": 12500},
+                {"year_month": "2025-06", "amount": 18200},
+                {"year_month": "2025-09", "amount": 15800},
+                {"year_month": "2025-12", "amount": 22300},
+                {"year_month": "2026-01", "amount": 5200},
+            ],
+            "annual": [
+                {"year": "2025", "amount": 68800},
+                {"year": "2026", "amount": 5200},
+            ],
+        },
     }
 
 
@@ -1756,6 +1774,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     data.get("pred_params_contrib", {})  # reserved for future use
     monthly_contribution = data.get("monthly_contribution", 50000)
     daily_assets = data.get("daily_assets", [])
+    dividend_history = data.get("dividend_history", {})
 
     # --- 家計簿実績バナー ---
     cf_savings = data.get("cf_savings")
@@ -1818,6 +1837,35 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
           <td class="num">{living:,.0f}円</td>
           <td class="num {css}">{sign}{net:,.0f}円</td>
         </tr>"""
+
+    # --- セクション2.5: 配当実績 ---
+    div_monthly = dividend_history.get("monthly", [])
+    div_annual = dividend_history.get("annual", [])
+    div_html = ""
+    if div_monthly:
+        div_chart_data = json.dumps(div_monthly, ensure_ascii=False)
+        div_annual_rows = ""
+        for a in div_annual:
+            div_annual_rows += f'<tr><td>{a["year"]}年</td><td class="num">{a["amount"]:,.0f}円</td></tr>'
+        div_total = sum(a["amount"] for a in div_annual)
+        div_html = f"""
+    <div class="card" data-card-id="plan-dividends">
+      <div class="card-header">
+        <h2>配当・分配金実績</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <canvas id="div-chart" height="200"></canvas>
+      <table style="margin-top:12px">
+        <tr><th>年</th><th class="num">受取額</th></tr>
+        {div_annual_rows}
+        <tr style="border-top:2px solid #dfe6e9;font-weight:700"><td>合計</td><td class="num">{div_total:,.0f}円</td></tr>
+      </table>
+      <div class="pred-note" style="margin-top:8px">※ 家計簿の「配当」「分配金」「利息」カテゴリから集計</div>
+      </div>
+    </div>"""
+    else:
+        div_chart_data = "[]"
 
     # --- セクション3: 成長予測（追加投資なし） ---
     pred_html = ""
@@ -2045,6 +2093,8 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
     }
       </div>
     </div>
+
+    {div_html}
 
     {pred_html}
 
@@ -2295,6 +2345,67 @@ function updateContrib() {{
   url.searchParams.set('contrib', v);
   location.href = url.toString();
 }}
+
+// --- 配当実績チャート ---
+(function() {{
+  const divData = {div_chart_data};
+  const divCanvas = document.getElementById('div-chart');
+  if (!divData.length || !divCanvas) return;
+  const ctx = divCanvas.getContext('2d');
+  const W = divCanvas.parentElement.clientWidth - 40;
+  divCanvas.width = W;
+  divCanvas.height = 200;
+  ctx.clearRect(0, 0, W, 200);
+
+  const padding = {{ left: 70, right: 20, top: 20, bottom: 40 }};
+  const chartW = W - padding.left - padding.right;
+  const chartH = 200 - padding.top - padding.bottom;
+
+  const maxAmt = Math.max(...divData.map(d => d.amount));
+  const barW = Math.min(30, chartW / divData.length * 0.7);
+  const gap = (chartW - barW * divData.length) / (divData.length + 1);
+
+  // Y軸グリッド
+  ctx.strokeStyle = '#f1f2f6';
+  ctx.fillStyle = '#b2bec3';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {{
+    const y = padding.top + chartH * (1 - i/4);
+    const val = maxAmt * i / 4;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(W - padding.right, y);
+    ctx.stroke();
+    ctx.fillText(val >= 10000 ? (val/10000).toFixed(1) + '万' : val.toLocaleString(), padding.left - 6, y + 4);
+  }}
+
+  // バー描画
+  ctx.fillStyle = '#0F7F30';
+  ctx.textAlign = 'center';
+  divData.forEach((d, i) => {{
+    const x = padding.left + gap + i * (barW + gap);
+    const h = (d.amount / maxAmt) * chartH;
+    const y = padding.top + chartH - h;
+    ctx.fillStyle = '#0F7F30';
+    ctx.fillRect(x, y, barW, h);
+    // ラベル
+    ctx.fillStyle = '#636e72';
+    ctx.font = '10px sans-serif';
+    const label = d.year_month.slice(2).replace('-', '/');
+    ctx.save();
+    ctx.translate(x + barW/2, padding.top + chartH + 12);
+    ctx.rotate(-0.5);
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+    // 金額
+    ctx.fillStyle = '#2d3436';
+    ctx.font = '10px sans-serif';
+    if (h > 20) {{
+      ctx.fillText(d.amount >= 10000 ? (d.amount/10000).toFixed(1) + '万' : d.amount.toLocaleString(), x + barW/2, y - 4);
+    }}
+  }});
+}})()
 
 {
         "// reload polling"

@@ -497,3 +497,25 @@ def get_cf_available_months(conn: sqlite3.Connection) -> list[dict]:
             }
         )
     return result
+
+
+def get_cf_dividend_history(conn: sqlite3.Connection) -> dict:
+    """配当・分配金の月別・年別実績を返す。"""
+    rows = conn.execute(
+        """SELECT year_month, SUM(amount) as total
+           FROM cf_transactions
+           WHERE is_transfer=0 AND is_target=1 AND amount>0
+             AND (minor_category LIKE '%配当%' OR minor_category LIKE '%分配%'
+                  OR minor_category LIKE '%利息%')
+           GROUP BY year_month ORDER BY year_month ASC"""
+    ).fetchall()
+    monthly = [{"year_month": r[0], "amount": r[1]} for r in rows]
+
+    # 年別集計
+    yearly: dict[str, int] = {}
+    for m in monthly:
+        year = m["year_month"][:4]
+        yearly[year] = yearly.get(year, 0) + m["amount"]
+    annual = [{"year": y, "amount": a} for y, a in sorted(yearly.items())]
+
+    return {"monthly": monthly, "annual": annual}

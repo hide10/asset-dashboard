@@ -7,6 +7,7 @@ from src.db.repository import (
     get_cf_available_months,
     get_cf_category_summary,
     get_cf_category_trend,
+    get_cf_dividend_history,
     get_cf_fixed_expenses,
     get_cf_income_breakdown,
     get_cf_income_trend,
@@ -46,6 +47,10 @@ def conn(tmp_path):
         ("tx24", "2025-12", "2025-12-15", "携帯", -8500, "銀行A", "通信費", "携帯電話", "", 0, 1, "2025-12-15"),
         ("tx25", "2025-12", "2025-12-20", "保険", -12000, "銀行A", "保険", "生命保険", "", 0, 1, "2025-12-15"),
         ("tx26", "2025-12", "2025-12-25", "給与", 360000, "銀行A", "収入", "給与", "", 0, 1, "2025-12-15"),
+        # 配当・分配金
+        ("tx31", "2025-10", "2025-10-15", "住友商事 配当", 12500, "証券A", "収入", "配当金", "", 0, 1, "2025-10-15"),
+        ("tx32", "2025-12", "2025-12-10", "ETF分配金", 8200, "証券A", "収入", "分配金", "", 0, 1, "2025-12-15"),
+        ("tx33", "2025-12", "2025-12-20", "定期預金利息", 1500, "銀行B", "収入", "利息", "", 0, 1, "2025-12-15"),
     ]
     c.executemany(
         """INSERT INTO cf_transactions
@@ -63,10 +68,10 @@ class TestCfCategorySummary:
     def test_basic(self, conn):
         result = get_cf_category_summary(conn, "2025-10")
         assert result["year_month"] == "2025-10"
-        assert result["total_income"] == 380000
+        assert result["total_income"] == 392500  # 給与350000+副業30000+配当12500
         # 支出: 85000+15000+8000+8800+12000 = 128800
         assert result["total_expense"] == 128800
-        assert result["balance"] == 380000 - 128800
+        assert result["balance"] == 392500 - 128800
 
     def test_excludes_transfers(self, conn):
         result = get_cf_category_summary(conn, "2025-10")
@@ -146,13 +151,13 @@ class TestCfIncomeBreakdown:
         names = [i["name"] for i in result["items"]]
         assert "給与" in names
         assert "副業" in names
-        assert result["total"] == 380000
+        assert result["total"] == 392500  # 給与350000+副業30000+配当12500
 
-    def test_no_income_month(self, conn):
-        # 2025-12には副業がない
+    def test_no_side_income_month(self, conn):
+        # 2025-12には副業がない（給与+分配金+利息）
         result = get_cf_income_breakdown(conn, "2025-12")
-        assert result["total"] == 360000
-        assert len(result["items"]) == 1
+        assert result["total"] == 369700  # 給与360000+分配金8200+利息1500
+        assert len(result["items"]) == 3
 
 
 class TestCfIncomeTrend:
@@ -161,7 +166,7 @@ class TestCfIncomeTrend:
         assert len(result) == 3
         # 古い順
         assert result[0]["year_month"] == "2025-10"
-        assert result[0]["income"] == 380000
+        assert result[0]["income"] == 392500  # 給与350000+副業30000+配当12500
 
     def test_limit(self, conn):
         result = get_cf_income_trend(conn, months=2)
@@ -220,4 +225,29 @@ class TestCfAvailableMonths:
         c = init_db(str(tmp_path / "empty.db"))
         result = get_cf_available_months(c)
         assert result == []
+        c.close()
+
+
+class TestCfDividendHistory:
+    def test_monthly(self, conn):
+        result = get_cf_dividend_history(conn)
+        monthly = result["monthly"]
+        assert len(monthly) == 2  # 2025-10, 2025-12
+        assert monthly[0]["year_month"] == "2025-10"
+        assert monthly[0]["amount"] == 12500
+        assert monthly[1]["year_month"] == "2025-12"
+        assert monthly[1]["amount"] == 8200 + 1500  # 分配金 + 利息
+
+    def test_annual(self, conn):
+        result = get_cf_dividend_history(conn)
+        annual = result["annual"]
+        assert len(annual) == 1
+        assert annual[0]["year"] == "2025"
+        assert annual[0]["amount"] == 12500 + 8200 + 1500
+
+    def test_empty_db(self, tmp_path):
+        c = init_db(str(tmp_path / "empty.db"))
+        result = get_cf_dividend_history(c)
+        assert result["monthly"] == []
+        assert result["annual"] == []
         c.close()

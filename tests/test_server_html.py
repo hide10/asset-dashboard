@@ -343,6 +343,21 @@ class TestDemoData:
         assert "total" in d["daily_assets"][0]
         assert "by_class" in d["daily_assets"][0]
 
+    def test_plan_demo_has_dividend_history(self):
+        d = _demo_plan_data()
+        assert "dividend_history" in d
+        dh = d["dividend_history"]
+        assert len(dh["monthly"]) > 0
+        assert len(dh["annual"]) > 0
+        assert "year_month" in dh["monthly"][0]
+        assert "amount" in dh["monthly"][0]
+
+    def test_plan_dividend_card(self):
+        html = _build_plan_html(_demo_plan_data())
+        assert "配当・分配金実績" in html
+        assert 'data-card-id="plan-dividends"' in html
+        assert "div-chart" in html
+
 
 # --- Flex レイアウト（カード独立高さ） ---
 
