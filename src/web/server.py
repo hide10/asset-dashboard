@@ -221,6 +221,25 @@ _COLLAPSE_CSS = """
   [data-card-id].collapsed { padding-bottom: 8px; }
 """
 
+_RESPONSIVE_CSS = """
+  @media (max-width: 768px) {
+    .container { padding: 10px; }
+    .grid { gap: 12px; }
+    .card, .card.full { width: 100% !important; }
+    .page-header { flex-direction: column; gap: 8px; align-items: flex-start; }
+    .nav-toolbar a { padding: 6px 10px; font-size: 0.78rem; }
+    .summary-cards { flex-direction: column; }
+    .summary-card { min-width: auto; }
+    .pie-wrap { flex-direction: column; align-items: center; }
+    table { font-size: 0.8rem; }
+    .card-body { overflow-x: auto; }
+    .compare-cards { flex-direction: column; }
+    .compare-card { min-width: auto; }
+    h1 { font-size: 1.2rem; }
+    canvas { max-width: 100%; height: auto !important; }
+  }
+"""
+
 # --- 共通 JS: 折りたたみ ---
 _COLLAPSE_JS = """
 // 折りたたみ
@@ -832,6 +851,7 @@ def _build_html(
   }}
   #reload-banner button:hover {{ background: #f1f2f6; }}
   {_COLLAPSE_CSS}
+  {_RESPONSIVE_CSS}
 </style>
 </head>
 <body>
@@ -1970,6 +1990,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
   }}
   #reload-banner button:hover {{ background: #f1f2f6; }}
   {_COLLAPSE_CSS}
+  {_RESPONSIVE_CSS}
 </style>
 </head>
 <body>
@@ -3138,6 +3159,7 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
   .budget-pct {{ font-size: 0.78rem; margin-left: 4px; font-weight: 600; }}
   .progress-cell {{ white-space: nowrap; }}
   {_COLLAPSE_CSS}
+  {_RESPONSIVE_CSS}
 </style>
 </head>
 <body>
