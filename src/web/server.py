@@ -3800,6 +3800,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 budgets = get_budgets(conn)
+                old_value = budgets.get(category)
                 if amount > 0:
                     if category not in budgets and len(budgets) >= 50:
                         self.send_response(400)
@@ -3811,7 +3812,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     budgets.pop(category, None)
                 save_budgets(conn, budgets)
-                logger.info("予算更新: %s = %d", category, amount)
+                logger.info("予算更新: %s = %d (旧値: %s)", category, amount, old_value)
             except Exception as e:
                 logger.error("予算更新失敗: %s", e)
                 self.send_response(500)
