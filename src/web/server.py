@@ -2832,21 +2832,20 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
           <td class="progress-cell">{progress_html}</td>
         </tr>"""
 
-    # 予算残りサマリー
-    budget_remaining_html = ""
-    if budgets:
-        budget_total = 0
-        actual_total = 0
-        cat_totals = {c["name"]: c["total"] for c in major_categories}
-        for cat, amt in budgets.items():
-            if amt > 0:
-                budget_total += amt
-                actual_total += cat_totals.get(cat, 0)
-        remaining = budget_total - actual_total
-        remaining_color = "#0F7F30" if remaining >= 0 else "#DF3727"
-        remaining_sign = "+" if remaining >= 0 else ""
-        budget_remaining_html = f"""
-    <div class="summary-card" data-testid="budget-remaining">
+    # 予算残りサマリー（常にレンダリング、予算未設定時は非表示）
+    budget_total = 0
+    actual_total = 0
+    cat_totals = {c["name"]: c["total"] for c in major_categories}
+    for cat, amt in budgets.items():
+        if amt > 0:
+            budget_total += amt
+            actual_total += cat_totals.get(cat, 0)
+    remaining = budget_total - actual_total
+    remaining_color = "#0F7F30" if remaining >= 0 else "#DF3727"
+    remaining_sign = "+" if remaining >= 0 else ""
+    budget_display_style = "" if budget_total > 0 else "display:none"
+    budget_remaining_html = f"""
+    <div class="summary-card" data-testid="budget-remaining" style="{budget_display_style}">
       <h3>予算残り</h3>
       <div class="amount" style="color:{remaining_color}">{remaining_sign}{remaining:,.0f}円</div>
     </div>"""
@@ -3427,6 +3426,15 @@ async function fetchManualMonth() {{
   }}
 }}
 
+// トースト通知
+function showToast(msg, isError) {{
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;top:20px;right:20px;padding:10px 20px;border-radius:8px;color:#fff;font-size:0.85rem;font-weight:600;z-index:9999;transition:opacity 0.3s;background:' + (isError ? '#DF3727' : '#0F7F30');
+  document.body.appendChild(t);
+  setTimeout(() => {{ t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }}, 3000);
+}}
+
 // 予算クリック編集
 document.querySelectorAll('.budget-cell').forEach(cell => {{
   cell.addEventListener('click', function(e) {{
@@ -3438,18 +3446,26 @@ document.querySelectorAll('.budget-cell').forEach(cell => {{
     input.type = 'number';
     input.value = amt;
     input.placeholder = '予算額';
+    let saving = false;
     this.textContent = '';
     this.appendChild(input);
     input.focus();
     input.select();
     const save = async () => {{
+      if (saving) return;
+      if (!cell.contains(input)) return;
+      saving = true;
       const val = parseInt(input.value) || 0;
       try {{
-        await fetch('/api/cf/budget', {{
+        const res = await fetch('/api/cf/budget', {{
           method: 'POST',
           headers: {{'Content-Type': 'application/json'}},
           body: JSON.stringify({{category: cat, amount: val}})
         }});
+        const result = await res.json();
+        if (!res.ok || !result.ok) {{
+          throw new Error(result.error || 'サーバーエラー');
+        }}
         cell.dataset.amount = val;
         if (val > 0) {{
           cell.textContent = val.toLocaleString('ja-JP') + '円';
@@ -3472,6 +3488,7 @@ document.querySelectorAll('.budget-cell').forEach(cell => {{
         updateBudgetRemaining();
       }} catch(err) {{
         cell.innerHTML = orig;
+        showToast('予算の保存に失敗しました: ' + err.message, true);
       }}
     }};
     input.addEventListener('keydown', function(ev) {{
@@ -3500,6 +3517,7 @@ function updateBudgetRemaining() {{
     const sign = remaining >= 0 ? '+' : '';
     amountEl.textContent = sign + remaining.toLocaleString('ja-JP') + '円';
     amountEl.style.color = remaining >= 0 ? '#0F7F30' : '#DF3727';
+    card.style.display = budgetTotal > 0 ? '' : 'none';
   }}
 }}
 
