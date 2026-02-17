@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import html as html_mod
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime
@@ -21,6 +23,7 @@ from src.analysis.compare import ComparisonResult, get_all_comparisons
 from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
 from src.data.stock_master import get_dividend, get_sector
 from src.db.repository import (
+    get_budgets,
     get_cashflows,
     get_cf_actual_savings,
     get_cf_available_months,
@@ -32,6 +35,7 @@ from src.db.repository import (
     get_cf_monthly_trend,
     get_daily_assets,
     get_setting,
+    save_budgets,
     save_cf_csv_month,
     save_cf_transactions,
     save_setting,
@@ -45,11 +49,21 @@ from src.prediction.montecarlo import (
     predict_with_contribution,
 )
 
+logger = logging.getLogger(__name__)
+
 DB_DEFAULT = Path(__file__).resolve().parents[2] / "data" / "assets.db"
 
 _update_state = {"running": False, "version": 0}
 
+
+def _h(s: str) -> str:
+    """HTML エスケープのショートカット。"""
+    return html_mod.escape(str(s))
+
+
 # --- 共通 JS: 円グラフ描画・ツールチップ ---
+_ESC_JS = """function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }"""
+
 _PIE_JS = """
 const tooltip = document.getElementById('pie-tooltip');
 function fmt(v) { return v.toLocaleString('ja-JP', {maximumFractionDigits:0}); }
@@ -79,13 +93,13 @@ function attachTooltip(canvas, cx, cy, r, chartData) {
   canvas.addEventListener('mousemove', e => {
     const hit = hitTest(e, canvas, cx, cy, r, chartData);
     if (hit) {
-      let html = '<strong>' + hit.label + '</strong>　' + fmt(hit.value) + ' 円（' + hit.pct + '%）';
+      let html = '<strong>' + esc(hit.label) + '</strong>　' + fmt(hit.value) + ' 円（' + hit.pct + '%）';
       if (hit.details.length > 0) {
         html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
         const show = hit.details.slice(0, 8);
         show.forEach(item => {
           html += '<div style="display:flex;justify-content:space-between;gap:16px">'
-            + '<span>' + item.name + '</span><span>' + fmt(item.value) + ' 円</span></div>';
+            + '<span>' + esc(item.name) + '</span><span>' + fmt(item.value) + ' 円</span></div>';
         });
         if (hit.details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (hit.details.length - 8) + ' 件</div>';
         html += '</div>';
@@ -126,7 +140,7 @@ function drawPieChart(canvasId, legendId, chartData, size) {
     const leg = document.getElementById(legendId);
     chartData.forEach(d => {
       const li = document.createElement('li');
-      li.innerHTML = '<span class="dot" style="background:' + d.color + '"></span>' + d.label;
+      li.innerHTML = '<span class="dot" style="background:' + esc(d.color) + '"></span>' + esc(d.label);
       leg.appendChild(li);
     });
   }
@@ -139,12 +153,12 @@ document.querySelectorAll('.has-tip').forEach(row => {
     const details = JSON.parse(row.dataset.details || '[]');
     const label = row.dataset.label || '';
     if (details.length === 0) return;
-    let html = '<strong>' + label + '</strong>';
+    let html = '<strong>' + esc(label) + '</strong>';
     html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
     const show = details.slice(0, 8);
     show.forEach(item => {
       html += '<div style="display:flex;justify-content:space-between;gap:16px">'
-        + '<span>' + item.name + '</span><span>' + fmt(item.value) + ' 円</span></div>';
+        + '<span>' + esc(item.name) + '</span><span>' + fmt(item.value) + ' 円</span></div>';
     });
     if (details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (details.length - 8) + ' 件</div>';
     html += '</div>';
@@ -236,56 +250,57 @@ _COLLAPSE_JS = """
 def _get_dates(db_path: str) -> list[str]:
     """利用可能な日付一覧を返す（新しい順）。"""
     conn = init_db(db_path)
-    rows = conn.execute("SELECT date FROM snapshots ORDER BY date DESC").fetchall()
-    conn.close()
-    return [r[0] for r in rows]
+    try:
+        rows = conn.execute("SELECT date FROM snapshots ORDER BY date DESC").fetchall()
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
 
 
 def _get_data(db_path: str, date: str | None = None) -> dict:
     conn = init_db(db_path)
-    if date is None:
-        row = conn.execute("SELECT date FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
+    try:
+        if date is None:
+            row = conn.execute("SELECT date FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
+            if not row:
+                return {}
+            date = row[0]
+
+        row = conn.execute("SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)).fetchone()
         if not row:
-            conn.close()
             return {}
-        date = row[0]
 
-    row = conn.execute("SELECT total_asset, by_class_json FROM snapshots WHERE date = ?", (date,)).fetchone()
-    if not row:
+        total_asset = row[0]
+        by_class = json.loads(row[1])
+
+        accounts = [
+            {"name": r[0], "asset_class": r[1], "balance": r[2], "institution": r[3]}
+            for r in conn.execute(
+                "SELECT account_name, asset_class, balance, institution FROM snapshot_accounts WHERE date = ? ORDER BY balance DESC",
+                (date,),
+            ).fetchall()
+        ]
+
+        holdings = [
+            {
+                "name": r[0],
+                "code": r[1],
+                "asset_class": r[2],
+                "value": r[3],
+                "quantity": r[4],
+                "position": r[5],
+                "acquisition_price": r[6],
+                "current_price": r[7],
+                "unrealized_gain": r[8],
+                "unrealized_gain_pct": r[9],
+            }
+            for r in conn.execute(
+                "SELECT name, symbol_or_code, asset_class, value, quantity, position, acquisition_price, current_price, unrealized_gain, unrealized_gain_pct FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
+                (date,),
+            ).fetchall()
+        ]
+    finally:
         conn.close()
-        return {}
-
-    total_asset = row[0]
-    by_class = json.loads(row[1])
-
-    accounts = [
-        {"name": r[0], "asset_class": r[1], "balance": r[2], "institution": r[3]}
-        for r in conn.execute(
-            "SELECT account_name, asset_class, balance, institution FROM snapshot_accounts WHERE date = ? ORDER BY balance DESC",
-            (date,),
-        ).fetchall()
-    ]
-
-    holdings = [
-        {
-            "name": r[0],
-            "code": r[1],
-            "asset_class": r[2],
-            "value": r[3],
-            "quantity": r[4],
-            "position": r[5],
-            "acquisition_price": r[6],
-            "current_price": r[7],
-            "unrealized_gain": r[8],
-            "unrealized_gain_pct": r[9],
-        }
-        for r in conn.execute(
-            "SELECT name, symbol_or_code, asset_class, value, quantity, position, acquisition_price, current_price, unrealized_gain, unrealized_gain_pct FROM snapshot_holdings WHERE date = ? ORDER BY asset_class, value DESC",
-            (date,),
-        ).fetchall()
-    ]
-
-    conn.close()
 
     # 業種別集計（株式のみ）
     sector_totals: dict[str, float] = {}
@@ -457,10 +472,10 @@ def _build_html(
     for i, (cls, amt) in enumerate(by_class.items()):
         ratio = amt / total * 100 if total else 0
         color = colors[i % len(colors)]
-        details_attr = json.dumps(class_details[cls], ensure_ascii=False).replace("&", "&amp;").replace('"', "&quot;")
+        details_attr = _h(json.dumps(class_details[cls], ensure_ascii=False))
         class_rows += f"""
-        <tr class="has-tip" data-details="{details_attr}" data-label="{cls}">
-          <td><span class="dot" style="background:{color}"></span>{cls}</td>
+        <tr class="has-tip" data-details="{details_attr}" data-label="{_h(cls)}">
+          <td><span class="dot" style="background:{color}"></span>{_h(cls)}</td>
           <td class="num">{amt:,.0f}円</td>
           <td class="num">{ratio:.1f}%</td>
           <td><div class="bar" style="width:{ratio * 2}px;background:{color}"></div></td>
@@ -521,9 +536,7 @@ def _build_html(
                 diff_cells += f'<td class="num {css}">{sign}{d:,.0f}</td>'
             else:
                 diff_cells += '<td class="num diff-zero">-</td>'
-        hold_rows += (
-            f'<tr><td>{code}{h["name"]}{qty}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
-        )
+        hold_rows += f'<tr><td>{code}{_h(h["name"])}{qty}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
 
     # 業種別円グラフ用データ
     sector_colors = [
@@ -570,10 +583,10 @@ def _build_html(
         sec_div = sd.get("dividend", 0)
         sec_yield = sd.get("yield", 0)
         sec_details = sorted(sector_holdings.get(sec, []), key=lambda x: x["value"], reverse=True)
-        details_attr = json.dumps(sec_details, ensure_ascii=False).replace("&", "&amp;").replace('"', "&quot;")
+        details_attr = _h(json.dumps(sec_details, ensure_ascii=False))
         sector_rows += f"""
-        <tr class="has-tip" data-details="{details_attr}" data-label="{sec}">
-          <td><span class="dot" style="background:{color}"></span>{sec}</td>
+        <tr class="has-tip" data-details="{details_attr}" data-label="{_h(sec)}">
+          <td><span class="dot" style="background:{color}"></span>{_h(sec)}</td>
           <td class="num">{amt:,.0f}円</td>
           <td class="num">{ratio:.1f}%</td>
           <td class="num">{sec_div:,.0f}円</td>
@@ -585,7 +598,7 @@ def _build_html(
     for d in dividends:
         cur_y = f"{d['current_yield']:.2f}%" if d.get("current_yield") is not None else "-"
         acq_y = f"{d['acq_yield']:.2f}%" if d.get("acq_yield") is not None else "-"
-        div_rows += f'<tr><td><span class="code">{d["code"]}</span> {d["name"]}</td>'
+        div_rows += f'<tr><td><span class="code">{_h(d["code"])}</span> {_h(d["name"])}</td>'
         div_rows += f'<td class="num">{d["quantity"]:,.0f}</td>'
         div_rows += f'<td class="num">{d["dps"]:,.1f}円</td>'
         div_rows += f'<td class="num">{d["annual"]:,.0f}円</td>'
@@ -980,6 +993,7 @@ def _build_html(
 <div class="pie-tooltip" id="pie-tooltip"></div>
 
 <script>
+{_ESC_JS}
 {_PIE_JS}
 
 const data = {pie_data};
@@ -1521,48 +1535,49 @@ def _calc_monthly_totals(conn: sqlite3.Connection) -> list[dict]:
 def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> dict:
     """月次収支 + 成長予測データを取得する。"""
     conn = init_db(db_path)
+    try:
+        # 積立額: 引数指定があればDBに保存、なければDBから読む
+        if monthly_contribution is not None:
+            save_setting(conn, "monthly_contribution", str(int(monthly_contribution)))
+        else:
+            monthly_contribution = float(get_setting(conn, "monthly_contribution", "50000"))
 
-    # 積立額: 引数指定があればDBに保存、なければDBから読む
-    if monthly_contribution is not None:
-        save_setting(conn, "monthly_contribution", str(int(monthly_contribution)))
-    else:
-        monthly_contribution = float(get_setting(conn, "monthly_contribution", "50000"))
+        # 最新スナップショット情報を取得
+        row = conn.execute(
+            "SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return {}
 
-    # 最新スナップショット情報を取得
-    row = conn.execute("SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
-    if not row:
+        date = row[0]
+        total_asset = row[1]
+        by_class = json.loads(row[2])
+
+        # 月次収支データ（テーブルが無い場合も init_db で作成済み）
+        cashflows = get_cashflows(conn, limit=12)
+
+        # 古い順に並び替え
+        cashflows.reverse()
+
+        # 月末スナップショットから月次資産推移を算出
+        monthly_totals = _calc_monthly_totals(conn)
+
+        # 年金の株式型を判定してリスク資産に移す
+        holdings_for_pension = [
+            {"name": r[0], "asset_class": r[1], "value": r[2]}
+            for r in conn.execute(
+                "SELECT name, asset_class, value FROM snapshot_holdings WHERE date = ? AND asset_class = '年金'",
+                (date,),
+            ).fetchall()
+        ]
+
+        # 家計簿の実績貯蓄データ
+        cf_savings = get_cf_actual_savings(conn)
+
+        # 日次資産推移
+        daily_assets = get_daily_assets(conn, months=6)
+    finally:
         conn.close()
-        return {}
-
-    date = row[0]
-    total_asset = row[1]
-    by_class = json.loads(row[2])
-
-    # 月次収支データ（テーブルが無い場合も init_db で作成済み）
-    cashflows = get_cashflows(conn, limit=12)
-
-    # 古い順に並び替え
-    cashflows.reverse()
-
-    # 月末スナップショットから月次資産推移を算出
-    monthly_totals = _calc_monthly_totals(conn)
-
-    # 年金の株式型を判定してリスク資産に移す
-    holdings_for_pension = [
-        {"name": r[0], "asset_class": r[1], "value": r[2]}
-        for r in conn.execute(
-            "SELECT name, asset_class, value FROM snapshot_holdings WHERE date = ? AND asset_class = '年金'",
-            (date,),
-        ).fetchall()
-    ]
-
-    # 家計簿の実績貯蓄データ
-    cf_savings = get_cf_actual_savings(conn)
-
-    # 日次資産推移
-    daily_assets = get_daily_assets(conn, months=6)
-
-    conn.close()
 
     eq_pension, ins_pension = classify_pension_holdings(holdings_for_pension)
 
@@ -2008,6 +2023,7 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
 <div class="daily-tooltip" id="daily-tooltip"></div>
 
 <script>
+{_ESC_JS}
 // --- 日次資産推移（実績）チャート ---
 const dailyAllData = {daily_chart_data};
 const dailyCanvas = document.getElementById('daily-chart');
@@ -2131,11 +2147,11 @@ function drawDailyChart(data) {{
     const idx = Math.round((mx - padding.left) / (chartW / (data.length - 1 || 1)));
     if (idx < 0 || idx >= data.length) {{ dailyTooltip.classList.remove('show'); return; }}
     const d = data[idx];
-    let html = '<strong>' + d.date + '</strong><br>総資産: ' + (d.total / 10000).toLocaleString('ja-JP', {{maximumFractionDigits:0}}) + '万円';
+    let html = '<strong>' + esc(d.date) + '</strong><br>総資産: ' + (d.total / 10000).toLocaleString('ja-JP', {{maximumFractionDigits:0}}) + '万円';
     if (d.by_class) {{
       html += '<div style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.2);padding-top:4px">';
       Object.entries(d.by_class).forEach(([k, v]) => {{
-        html += '<div style="display:flex;justify-content:space-between;gap:12px"><span>' + k + '</span><span>' + (v/10000).toLocaleString('ja-JP', {{maximumFractionDigits:0}}) + '万</span></div>';
+        html += '<div style="display:flex;justify-content:space-between;gap:12px"><span>' + esc(k) + '</span><span>' + (v/10000).toLocaleString('ja-JP', {{maximumFractionDigits:0}}) + '万</span></div>';
       }});
       html += '</div>';
     }}
@@ -2278,8 +2294,10 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
     import os
 
     conn = init_db(db_path)
-    db_key = get_setting(conn, "gemini_api_key", "")
-    conn.close()
+    try:
+        db_key = get_setting(conn, "gemini_api_key", "")
+    finally:
+        conn.close()
     env_key = os.environ.get("GEMINI_API_KEY", "")
     # 表示用マスク
     if env_key:
@@ -2360,36 +2378,38 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
 def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
     """家計簿分析データを取得する。"""
     conn = init_db(db_path)
+    try:
+        # 利用可能月
+        available = get_cf_available_months(conn)
+        if not available:
+            return {}
 
-    # 利用可能月
-    available = get_cf_available_months(conn)
-    if not available:
+        # デフォルト月 = 最新月
+        if year_month is None:
+            year_month = available[0]["year_month"]
+
+        # カテゴリ集計
+        summary = get_cf_category_summary(conn, year_month)
+
+        # 月別推移
+        trend = get_cf_monthly_trend(conn, months=12)
+
+        # カテゴリ別月次推移
+        category_trend = get_cf_category_trend(conn, months=6)
+
+        # 固定費 vs 変動費
+        fixed_expenses = get_cf_fixed_expenses(conn, months=3)
+
+        # 収入内訳
+        income_breakdown = get_cf_income_breakdown(conn, year_month)
+
+        # 収入推移
+        income_trend = get_cf_income_trend(conn, months=6)
+
+        # 予算
+        budgets = get_budgets(conn)
+    finally:
         conn.close()
-        return {}
-
-    # デフォルト月 = 最新月
-    if year_month is None:
-        year_month = available[0]["year_month"]
-
-    # カテゴリ集計
-    summary = get_cf_category_summary(conn, year_month)
-
-    # 月別推移
-    trend = get_cf_monthly_trend(conn, months=12)
-
-    # カテゴリ別月次推移
-    category_trend = get_cf_category_trend(conn, months=6)
-
-    # 固定費 vs 変動費
-    fixed_expenses = get_cf_fixed_expenses(conn, months=3)
-
-    # 収入内訳
-    income_breakdown = get_cf_income_breakdown(conn, year_month)
-
-    # 収入推移
-    income_trend = get_cf_income_trend(conn, months=6)
-
-    conn.close()
 
     return {
         "year_month": year_month,
@@ -2400,6 +2420,7 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
         "fixed_expenses": fixed_expenses,
         "income_breakdown": income_breakdown,
         "income_trend": income_trend,
+        "budgets": budgets,
     }
 
 
@@ -2699,6 +2720,16 @@ def _demo_cf_data() -> dict:
     # 収入推移デモデータ
     income_trend = [{"year_month": tm, "income": 380_000 + random.randint(-5_000, 15_000)} for tm in trend_months]
 
+    # 予算デモデータ
+    budgets = {
+        "食費": 70_000,
+        "住宅": 90_000,
+        "光熱・水道": 20_000,
+        "通信費": 15_000,
+        "趣味・娯楽": 30_000,
+        "日用品": 10_000,
+    }
+
     return {
         "year_month": ym,
         "summary": summary,
@@ -2708,6 +2739,7 @@ def _demo_cf_data() -> dict:
         "fixed_expenses": fixed_expenses,
         "income_breakdown": income_breakdown,
         "income_trend": income_trend,
+        "budgets": budgets,
     }
 
 
@@ -2733,12 +2765,13 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
     major_categories = summary["major_categories"]
     minor_by_major = summary.get("minor_by_major", {})
     top_expenses = summary.get("top_expenses", [])
+    budgets = data.get("budgets", {})
 
     # 月セレクタ
     month_options = ""
     for m in available:
         sel = " selected" if m["year_month"] == year_month else ""
-        month_options += f'<option value="{m["year_month"]}"{sel}>{m["year_month"]}</option>'
+        month_options += f'<option value="{_h(m["year_month"])}"{sel}>{_h(m["year_month"])}</option>'
 
     # カテゴリ別円グラフデータ
     colors = [
@@ -2769,30 +2802,64 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
         ensure_ascii=False,
     )
 
-    # カテゴリテーブル
+    # カテゴリテーブル（予算列付き）
     cat_rows = ""
     for i, c in enumerate(major_categories):
-        ratio = c["total"] / total_expense * 100 if total_expense else 0
         color = colors[i % len(colors)]
         details = minor_by_major.get(c["name"], [])
-        details_attr = json.dumps(details, ensure_ascii=False).replace("&", "&amp;").replace('"', "&quot;")
+        details_attr = _h(json.dumps(details, ensure_ascii=False))
+        budget = budgets.get(c["name"])
+        safe_name = _h(c["name"])
+        if budget and budget > 0:
+            budget_display = f"{budget:,.0f}円"
+            usage_pct = c["total"] / budget * 100
+            if usage_pct < 80:
+                bar_color = "#2881D7"
+            elif usage_pct <= 100:
+                bar_color = "#FFD54F"
+            else:
+                bar_color = "#DF3727"
+            bar_width = min(usage_pct, 100)
+            progress_html = f'<div class="budget-bar-bg"><div class="budget-bar" style="width:{bar_width}%;background:{bar_color}"></div></div><span class="budget-pct" style="color:{bar_color}">{usage_pct:.0f}%</span>'
+        else:
+            budget_display = "—"
+            progress_html = ""
         cat_rows += f"""
-        <tr class="has-tip" data-details="{details_attr}" data-label="{c["name"]}">
-          <td><span class="dot" style="background:{color}"></span>{c["name"]}</td>
+        <tr class="has-tip" data-details="{details_attr}" data-label="{safe_name}">
+          <td><span class="dot" style="background:{color}"></span>{safe_name}</td>
           <td class="num">{c["total"]:,.0f}円</td>
-          <td class="num">{ratio:.1f}%</td>
-          <td><div class="bar" style="width:{ratio * 2}px;background:{color}"></div></td>
+          <td class="num budget-cell" data-category="{safe_name}" data-amount="{budget or 0}">{budget_display}</td>
+          <td class="progress-cell">{progress_html}</td>
         </tr>"""
+
+    # 予算残りサマリー
+    budget_remaining_html = ""
+    if budgets:
+        budget_total = 0
+        actual_total = 0
+        cat_totals = {c["name"]: c["total"] for c in major_categories}
+        for cat, amt in budgets.items():
+            if amt > 0:
+                budget_total += amt
+                actual_total += cat_totals.get(cat, 0)
+        remaining = budget_total - actual_total
+        remaining_color = "#0F7F30" if remaining >= 0 else "#DF3727"
+        remaining_sign = "+" if remaining >= 0 else ""
+        budget_remaining_html = f"""
+    <div class="summary-card" data-testid="budget-remaining">
+      <h3>予算残り</h3>
+      <div class="amount" style="color:{remaining_color}">{remaining_sign}{remaining:,.0f}円</div>
+    </div>"""
 
     # 高額支出テーブル
     top_rows = ""
     for t in top_expenses:
         top_rows += f"""<tr>
-          <td>{t["date"][5:]}</td>
-          <td>{t["description"]}</td>
+          <td>{_h(t["date"][5:])}</td>
+          <td>{_h(t["description"])}</td>
           <td class="num">{t["amount"]:,.0f}円</td>
-          <td>{t["major_category"]}</td>
-          <td style="color:#636e72;font-size:0.82rem">{t.get("institution", "")}</td>
+          <td>{_h(t["major_category"])}</td>
+          <td style="color:#636e72;font-size:0.82rem">{_h(t.get("institution", ""))}</td>
         </tr>"""
 
     # 月別推移データ
@@ -2803,8 +2870,9 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
     for m in available:
         fetched_date = m.get("fetched") or ""
         row_count = m.get("row_count") or 0
+        safe_ym = _h(m["year_month"])
         if m["has_data"] and fetched_date:
-            status = f'<span style="color:#0F7F30">取得済</span> ({fetched_date}、{row_count}件)'
+            status = f'<span style="color:#0F7F30">取得済</span> ({_h(fetched_date)}、{row_count}件)'
         elif m["has_data"]:
             status = f'<span style="color:#0F7F30">取得済</span> ({row_count}件)'
         else:
@@ -2812,9 +2880,9 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
         dl_btn = (
             ""
             if m["has_data"]
-            else f'<button class="dl-btn" onclick="downloadMonth(\'{m["year_month"]}\', this)">ダウンロード</button>'
+            else f'<button class="dl-btn" onclick="downloadMonth(this.dataset.ym, this)" data-ym="{safe_ym}">ダウンロード</button>'
         )
-        dl_rows += f"<tr><td>{m['year_month']}</td><td>{status}</td><td>{dl_btn}</td></tr>"
+        dl_rows += f"<tr><td>{safe_ym}</td><td>{status}</td><td>{dl_btn}</td></tr>"
 
     balance_sign = "+" if balance >= 0 else ""
     balance_css = "plus" if balance >= 0 else "minus"
@@ -2844,7 +2912,7 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
                 continue
             diff_sign = "+" if diff > 0 else ""
             diff_color = "color:#e74c3c" if diff > 0 else ("color:#2881D7" if diff < 0 else "")
-            diff_rows += f'<tr><td>{cat}</td><td class="num">{cur:,.0f}円</td><td class="num">{prev:,.0f}円</td><td class="num" style="{diff_color}">{diff_sign}{diff:,.0f}円</td></tr>'
+            diff_rows += f'<tr><td>{_h(cat)}</td><td class="num">{cur:,.0f}円</td><td class="num">{prev:,.0f}円</td><td class="num" style="{diff_color}">{diff_sign}{diff:,.0f}円</td></tr>'
 
     cat_trend_html = ""
     if cat_trend_months:
@@ -2878,7 +2946,9 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
 
     fe_rows = ""
     for f in fe_fixed:
-        fe_rows += f'<tr><td>{f["major"]}</td><td>{f["minor"]}</td><td class="num">{f["avg_amount"]:,.0f}円</td></tr>'
+        fe_rows += (
+            f'<tr><td>{_h(f["major"])}</td><td>{_h(f["minor"])}</td><td class="num">{f["avg_amount"]:,.0f}円</td></tr>'
+        )
 
     fe_bar_w = fe_ratio
     fe_html = f"""
@@ -3023,6 +3093,19 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
   }}
   .dl-btn:hover {{ background: #2881D7; color: #fff; }}
   .dl-btn:disabled {{ border-color: #b2bec3; color: #b2bec3; cursor: default; background: #fff; }}
+  .budget-cell {{ cursor: pointer; color: #636e72; }}
+  .budget-cell:hover {{ background: #f0f4ff; }}
+  .budget-cell input {{
+    width: 90px; padding: 2px 4px; border: 1px solid #2881D7; border-radius: 4px;
+    font-size: 0.85rem; text-align: right; outline: none;
+  }}
+  .budget-bar-bg {{
+    display: inline-block; width: 80px; height: 12px; background: #f1f2f6;
+    border-radius: 6px; overflow: hidden; vertical-align: middle;
+  }}
+  .budget-bar {{ height: 100%; border-radius: 6px; transition: width 0.3s; }}
+  .budget-pct {{ font-size: 0.78rem; margin-left: 4px; font-weight: 600; }}
+  .progress-cell {{ white-space: nowrap; }}
   {_COLLAPSE_CSS}
 </style>
 </head>
@@ -3052,6 +3135,7 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
       <h3>収支</h3>
       <div class="amount {balance_css}">{balance_sign}{balance:,.0f}円</div>
     </div>
+    {budget_remaining_html}
   </div>
   {'<div style="background:#FFF8E1;border:1px solid #FFD54F;border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:0.85rem;color:#795548">&#x26A0; 当月はまだ途中のデータです。給与など月末に反映される項目が含まれていない場合があります。</div>' if is_partial_month else ""}
   <div class="grid">
@@ -3066,7 +3150,7 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
           <ul class="pie-legend" id="cf-legend"></ul>
         </div>
         <table>
-          <tr><th>カテゴリ</th><th class="num">金額</th><th class="num">割合</th><th></th></tr>
+          <tr><th>カテゴリ</th><th class="num">金額</th><th class="num">予算</th><th>消化率</th></tr>
           {cat_rows}
         </table>
       </div>
@@ -3123,6 +3207,7 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
 <div class="pie-tooltip" id="pie-tooltip"></div>
 
 <script>
+{_ESC_JS}
 {_PIE_JS}
 
 const cfPieData = {pie_data};
@@ -3342,6 +3427,82 @@ async function fetchManualMonth() {{
   }}
 }}
 
+// 予算クリック編集
+document.querySelectorAll('.budget-cell').forEach(cell => {{
+  cell.addEventListener('click', function(e) {{
+    if (this.querySelector('input')) return;
+    const cat = this.dataset.category;
+    const amt = parseInt(this.dataset.amount) || '';
+    const orig = this.innerHTML;
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.value = amt;
+    input.placeholder = '予算額';
+    this.textContent = '';
+    this.appendChild(input);
+    input.focus();
+    input.select();
+    const save = async () => {{
+      const val = parseInt(input.value) || 0;
+      try {{
+        await fetch('/api/cf/budget', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{category: cat, amount: val}})
+        }});
+        cell.dataset.amount = val;
+        if (val > 0) {{
+          cell.textContent = val.toLocaleString('ja-JP') + '円';
+        }} else {{
+          cell.textContent = '\u2014';
+        }}
+        // 消化率バーを更新
+        const progressCell = cell.nextElementSibling;
+        const amountText = cell.previousElementSibling.textContent;
+        const actual = parseInt(amountText.replace(/[^0-9]/g, '')) || 0;
+        if (val > 0) {{
+          const pct = actual / val * 100;
+          const barW = Math.min(pct, 100);
+          const barColor = pct < 80 ? '#2881D7' : pct <= 100 ? '#FFD54F' : '#DF3727';
+          progressCell.innerHTML = '<div class="budget-bar-bg"><div class="budget-bar" style="width:' + barW + '%;background:' + barColor + '"></div></div><span class="budget-pct" style="color:' + barColor + '">' + Math.round(pct) + '%</span>';
+        }} else {{
+          progressCell.innerHTML = '';
+        }}
+        // 予算残りサマリー更新
+        updateBudgetRemaining();
+      }} catch(err) {{
+        cell.innerHTML = orig;
+      }}
+    }};
+    input.addEventListener('keydown', function(ev) {{
+      if (ev.key === 'Enter') {{ ev.preventDefault(); save(); }}
+      if (ev.key === 'Escape') {{ cell.innerHTML = orig; }}
+    }});
+    input.addEventListener('blur', save);
+  }});
+}});
+
+function updateBudgetRemaining() {{
+  const cells = document.querySelectorAll('.budget-cell');
+  let budgetTotal = 0, actualTotal = 0;
+  cells.forEach(c => {{
+    const amt = parseInt(c.dataset.amount) || 0;
+    if (amt > 0) {{
+      budgetTotal += amt;
+      const actualText = c.previousElementSibling.textContent;
+      actualTotal += parseInt(actualText.replace(/[^0-9]/g, '')) || 0;
+    }}
+  }});
+  const card = document.querySelector('[data-testid="budget-remaining"]');
+  if (card) {{
+    const remaining = budgetTotal - actualTotal;
+    const amountEl = card.querySelector('.amount');
+    const sign = remaining >= 0 ? '+' : '';
+    amountEl.textContent = sign + remaining.toLocaleString('ja-JP') + '円';
+    amountEl.style.color = remaining >= 0 ? '#0F7F30' : '#DF3727';
+  }}
+}}
+
 {_COLLAPSE_JS}
 </script>
 </body>
@@ -3412,8 +3573,10 @@ class Handler(BaseHTTPRequestHandler):
                 if data:
                     try:
                         conn = init_db(self.db_path)
-                        ai_comment = get_comment(conn, data["date"], "lifeplan")
-                        conn.close()
+                        try:
+                            ai_comment = get_comment(conn, data["date"], "lifeplan")
+                        finally:
+                            conn.close()
                     except Exception:
                         pass
             html = _build_plan_html(data, self.skip_update, ai_comment=ai_comment)
@@ -3432,8 +3595,10 @@ class Handler(BaseHTTPRequestHandler):
                 if data:
                     try:
                         conn = init_db(self.db_path)
-                        ai_comment = get_comment(conn, data["date"], "dashboard")
-                        conn.close()
+                        try:
+                            ai_comment = get_comment(conn, data["date"], "dashboard")
+                        finally:
+                            conn.close()
                     except Exception:
                         pass
             html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment)
@@ -3456,8 +3621,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = data.get("available_months", [])
             else:
                 conn = init_db(self.db_path)
-                result = get_cf_available_months(conn)
-                conn.close()
+                try:
+                    result = get_cf_available_months(conn)
+                finally:
+                    conn.close()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -3478,7 +3645,22 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"<html><body><h1>404 Not Found</h1></body></html>")
 
+    def _check_origin(self) -> bool:
+        """Origin ヘッダを検証し、ローカルホストからのリクエストのみ許可する。"""
+        origin = self.headers.get("Origin", "")
+        referer = self.headers.get("Referer", "")
+        source = origin or referer
+        if source and not any(source.startswith(p) for p in ("http://localhost", "http://127.0.0.1")):
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": "forbidden"}).encode())
+            return False
+        return True
+
     def do_POST(self) -> None:
+        if not self._check_origin():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/settings":
             length = int(self.headers.get("Content-Length", 0))
@@ -3486,12 +3668,14 @@ class Handler(BaseHTTPRequestHandler):
             post_params = parse_qs(body)
             api_key = post_params.get("gemini_api_key", [""])[0].strip()
             conn = init_db(self.db_path)
-            if api_key:
-                save_setting(conn, "gemini_api_key", api_key)
-            else:
-                conn.execute("DELETE FROM settings WHERE key = 'gemini_api_key'")
-                conn.commit()
-            conn.close()
+            try:
+                if api_key:
+                    save_setting(conn, "gemini_api_key", api_key)
+                else:
+                    conn.execute("DELETE FROM settings WHERE key = 'gemini_api_key'")
+                    conn.commit()
+            finally:
+                conn.close()
             # キーが設定されたら即座にAIコメント生成を試みる（バックグラウンド）
             if api_key:
                 t = threading.Thread(target=_generate_ai_comments, args=(self.db_path,), daemon=True)
@@ -3545,13 +3729,15 @@ class Handler(BaseHTTPRequestHandler):
                         transactions = parse_cf_csv(csv_path)
                         if transactions:
                             conn = init_db(db_path)
-                            today_str = _d.today().isoformat()
-                            save_cf_transactions(conn, transactions, today_str)
-                            save_cf_csv_month(conn, ym, today_str, len(transactions))
-                            conn.close()
-                            print(f"[cf] {ym}: {len(transactions)}件保存完了")
+                            try:
+                                today_str = _d.today().isoformat()
+                                save_cf_transactions(conn, transactions, today_str)
+                                save_cf_csv_month(conn, ym, today_str, len(transactions))
+                            finally:
+                                conn.close()
+                            logger.info("[cf] %s: %d件保存完了", ym, len(transactions))
                 except Exception as e:
-                    print(f"[cf] {ym} ダウンロード失敗: {e}")
+                    logger.error("[cf] %s ダウンロード失敗: %s", ym, e)
 
             t = threading.Thread(target=_download_cf, daemon=True)
             t.start()
@@ -3559,6 +3745,69 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True, "year_month": ym}).encode())
+
+        elif parsed.path == "/api/cf/budget":
+            length = int(self.headers.get("Content-Length", 0))
+            if length > 65536:
+                self.send_response(413)
+                self.end_headers()
+                return
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+                category = str(req.get("category", "")).strip()
+                amount = int(req.get("amount", 0) or 0)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "invalid request"}).encode())
+                return
+
+            # 入力検証
+            if not category or len(category) > 50:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "invalid category"}).encode())
+                return
+            if amount < 0 or amount > 100_000_000:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "invalid amount"}).encode())
+                return
+
+            conn = init_db(self.db_path)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                budgets = get_budgets(conn)
+                if amount > 0:
+                    if category not in budgets and len(budgets) >= 50:
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"ok": False, "error": "too many budgets"}).encode())
+                        return
+                    budgets[category] = amount
+                else:
+                    budgets.pop(category, None)
+                save_budgets(conn, budgets)
+                logger.info("予算更新: %s = %d", category, amount)
+            except Exception as e:
+                logger.error("予算更新失敗: %s", e)
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "internal error"}).encode())
+                return
+            finally:
+                conn.close()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
 
         else:
             self.send_response(404)
@@ -3576,9 +3825,11 @@ def _should_update(db_path: str, max_age_hours: int = 6) -> bool:
     - snapshots が0件なら False（初回セットアップ未完了の可能性）
     """
     conn = init_db(db_path)
-    last = get_setting(conn, "last_fetch_at")
-    has_snapshots = conn.execute("SELECT 1 FROM snapshots LIMIT 1").fetchone() is not None
-    conn.close()
+    try:
+        last = get_setting(conn, "last_fetch_at")
+        has_snapshots = conn.execute("SELECT 1 FROM snapshots LIMIT 1").fetchone() is not None
+    finally:
+        conn.close()
 
     if last is None:
         return has_snapshots
@@ -3604,7 +3855,7 @@ def _generate_ai_comments(db_path: str) -> None:
     try:
         generate_comments(db_path)
     except Exception as e:
-        print(f"[ai] AI分析エラー: {e}")
+        logger.error("[ai] AI分析エラー: %s", e)
 
 
 def _bg_worker(db_path: str) -> None:
@@ -3625,9 +3876,9 @@ def _bg_worker(db_path: str) -> None:
         _generate_ai_comments(db_path)
 
         _update_state["version"] += 1
-        print("[auto] バックグラウンド更新完了")
+        logger.info("[auto] バックグラウンド更新完了")
     except Exception as e:
-        print(f"[auto] バックグラウンド更新失敗: {e}")
+        logger.error("[auto] バックグラウンド更新失敗: %s", e)
     finally:
         _update_state["running"] = False
 
@@ -3635,11 +3886,11 @@ def _bg_worker(db_path: str) -> None:
 def _start_bg_update(db_path: str) -> None:
     """必要に応じてバックグラウンドでデータ更新を開始する。"""
     if _should_update(db_path):
-        print("[auto] バックグラウンドでデータ更新を開始します...")
+        logger.info("[auto] バックグラウンドでデータ更新を開始します...")
         t = threading.Thread(target=_bg_worker, args=(db_path,), daemon=True)
         t.start()
     else:
-        print("[auto] データは最新です — スキップ")
+        logger.info("[auto] データは最新です — スキップ")
 
 
 def _kill_existing(port: int) -> None:
@@ -3650,7 +3901,7 @@ def _kill_existing(port: int) -> None:
         result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True)
         pids = result.stdout.strip().split()
         if pids:
-            print(f"ポート {port} の既存プロセス (PID: {', '.join(pids)}) を停止します...")
+            logger.info("ポート %d の既存プロセス (PID: %s) を停止します...", port, ", ".join(pids))
             subprocess.run(["kill"] + pids)
             import time
 
@@ -3667,6 +3918,12 @@ def _kill_existing(port: int) -> None:
 
 
 def main() -> None:
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+    )
+
     parser = argparse.ArgumentParser(description="資産ダッシュボード")
     parser.add_argument("--db", type=str, default=str(DB_DEFAULT))
     parser.add_argument("--port", type=int, default=8080)
@@ -3683,19 +3940,19 @@ def main() -> None:
     Handler.skip_update = skip_update
 
     try:
-        server = HTTPServer(("0.0.0.0", args.port), Handler)
+        server = HTTPServer(("127.0.0.1", args.port), Handler)
     except OSError as e:
         if "Address already in use" in str(e):
             _kill_existing(args.port)
-            server = HTTPServer(("0.0.0.0", args.port), Handler)
+            server = HTTPServer(("127.0.0.1", args.port), Handler)
         else:
             raise
     mode = " [DEMO MODE]" if args.demo else ""
-    print(f"Dashboard{mode}: http://localhost:{args.port}")
+    logger.info("Dashboard%s: http://localhost:%d", mode, args.port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nサーバー停止")
+        logger.info("サーバー停止")
         server.shutdown()
 
 

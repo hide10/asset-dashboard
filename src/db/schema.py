@@ -94,6 +94,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 
     conn = sqlite3.connect(str(db_path))
     conn.executescript(SCHEMA_SQL)
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
 

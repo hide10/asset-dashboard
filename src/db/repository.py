@@ -129,6 +129,20 @@ def save_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.commit()
 
 
+def get_budgets(conn: sqlite3.Connection) -> dict[str, int]:
+    """月間予算を取得する。"""
+    raw = get_setting(conn, "monthly_budgets", "{}")
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def save_budgets(conn: sqlite3.Connection, budgets: dict[str, int]) -> None:
+    """月間予算を保存する。"""
+    save_setting(conn, "monthly_budgets", json.dumps(budgets, ensure_ascii=False))
+
+
 # --- CF (家計簿) ---
 
 
