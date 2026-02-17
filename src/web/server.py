@@ -2743,7 +2743,7 @@ def _demo_cf_data() -> dict:
     }
 
 
-def _build_cf_html(data: dict, skip_update: bool = False) -> str:
+def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None = None) -> str:
     """家計簿分析ページの HTML を生成する。"""
     if not data:
         return "<html><body><h1>データがありません</h1><p><a href='/'>ダッシュボードに戻る</a></p></body></html>"
@@ -3092,6 +3092,17 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
   }}
   .dl-btn:hover {{ background: #2881D7; color: #fff; }}
   .dl-btn:disabled {{ border-color: #b2bec3; color: #b2bec3; cursor: default; background: #fff; }}
+  .ai-comment-card {{
+    display: flex; gap: 12px; align-items: flex-start;
+    background: linear-gradient(135deg, #f0f7ff 0%, #f5f0ff 100%);
+    border: 1px solid #d0d7f7; border-radius: 12px;
+    padding: 14px 18px; margin-bottom: 16px;
+    font-size: 0.88rem; line-height: 1.6; color: #2d3436;
+  }}
+  .ai-icon {{
+    background: #2881D7; color: #fff; font-weight: 800; font-size: 0.75rem;
+    border-radius: 6px; padding: 3px 7px; flex-shrink: 0;
+  }}
   .budget-cell {{ cursor: pointer; color: #636e72; }}
   .budget-cell:hover {{ background: #f0f4ff; }}
   .budget-cell input {{
@@ -3136,7 +3147,16 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
     </div>
     {budget_remaining_html}
   </div>
-  {'<div style="background:#FFF8E1;border:1px solid #FFD54F;border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:0.85rem;color:#795548">&#x26A0; 当月はまだ途中のデータです。給与など月末に反映される項目が含まれていない場合があります。</div>' if is_partial_month else ""}
+  {
+        f'<div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">{ai_comment}</div></div>'
+        if ai_comment
+        else ""
+    }
+  {
+        '<div style="background:#FFF8E1;border:1px solid #FFD54F;border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:0.85rem;color:#795548">&#x26A0; 当月はまだ途中のデータです。給与など月末に反映される項目が含まれていない場合があります。</div>'
+        if is_partial_month
+        else ""
+    }
   <div class="grid">
     <div class="card" data-card-id="cf-category">
       <div class="card-header">
@@ -3180,7 +3200,11 @@ def _build_cf_html(data: dict, skip_update: bool = False) -> str:
         <button class="collapse-btn">&#x25BC;</button>
       </div>
       <div class="card-body">
-        {'<canvas id="trend-chart" height="200"></canvas>' if trend else '<div style="color:#b2bec3;padding:20px 0">推移データがありません</div>'}
+        {
+        '<canvas id="trend-chart" height="200"></canvas>'
+        if trend
+        else '<div style="color:#b2bec3;padding:20px 0">推移データがありません</div>'
+    }
       </div>
     </div>
 
@@ -3626,11 +3650,22 @@ class Handler(BaseHTTPRequestHandler):
             month = params.get("month", [None])[0]
             if self.demo:
                 data = _demo_cf_data()
+                ai_comment = "今月の支出は食費と日用品が予算を若干上回っていますが、全体では収支プラスを維持しています。固定費率は約40%と標準的で、通信費や保険の見直し余地があります。来月は食費の予算管理を意識すると、さらに貯蓄率を改善できるでしょう。"
                 if month:
                     data["year_month"] = month
             else:
                 data = _get_cf_data(self.db_path, month)
-            html = _build_cf_html(data, self.skip_update)
+                ai_comment = None
+                if data:
+                    try:
+                        conn = get_connection(self.db_path)
+                        try:
+                            ai_comment = get_comment(conn, data["year_month"], "cf")
+                        finally:
+                            conn.close()
+                    except Exception:
+                        pass
+            html = _build_cf_html(data, self.skip_update, ai_comment=ai_comment)
             self._send_html(html)
 
         elif parsed.path == "/api/cf/months":

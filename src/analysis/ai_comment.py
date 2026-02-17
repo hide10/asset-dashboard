@@ -1,18 +1,28 @@
 """Gemini APIを使ったAI分析コメント生成。
 
 Gemini 2.5 Flash 無料枠（250リクエスト/日）を使用。
-この機能は最大2回/日（dashboard + lifeplan）で十分に収まる。
+この機能は最大3回/日（dashboard + lifeplan + cf）で十分に収まる。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 from datetime import datetime
 
-from src.db.repository import get_cashflows, get_setting
+from src.db.repository import (
+    get_budgets,
+    get_cashflows,
+    get_cf_category_summary,
+    get_cf_fixed_expenses,
+    get_cf_monthly_trend,
+    get_setting,
+)
 from src.db.schema import init_db
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # APIキー取得
@@ -221,6 +231,70 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
 資産推移のトレンド、収支バランス、将来の見通しなどに触れてください。日本語で回答してください。"""
 
 
+def _build_cf_prompt(db_path: str, year_month: str) -> str:
+    """家計簿分析用のプロンプトを組み立てる。"""
+    conn = init_db(db_path)
+    try:
+        summary = get_cf_category_summary(conn, year_month)
+        trend = get_cf_monthly_trend(conn, months=6)
+        fixed = get_cf_fixed_expenses(conn, months=3)
+        budgets = get_budgets(conn)
+    finally:
+        conn.close()
+
+    if not summary:
+        return ""
+
+    # カテゴリ別支出
+    cat_lines = []
+    for c in summary["major_categories"]:
+        budget_info = ""
+        if budgets.get(c["name"]):
+            pct = c["total"] / budgets[c["name"]] * 100
+            budget_info = f" (予算{budgets[c['name']]:,.0f}円, 消化率{pct:.0f}%)"
+        cat_lines.append(f"  {c['name']}: {c['total']:,.0f}円{budget_info}")
+
+    # 月別推移
+    trend_lines = []
+    for t in trend[-6:]:
+        net = t["income"] - t["expense"]
+        sign = "+" if net >= 0 else ""
+        trend_lines.append(
+            f"  {t['year_month']}: 収入{t['income']:,.0f}円 / 支出{t['expense']:,.0f}円 / 収支{sign}{net:,.0f}円"
+        )
+
+    # 固定費
+    fixed_lines = [f"  {f['major']}/{f['minor']}: {f['avg_amount']:,.0f}円" for f in fixed.get("fixed", [])[:5]]
+
+    # 高額支出
+    top_lines = [
+        f"  {t['date'][5:]}: {t['description']} {t['amount']:,.0f}円" for t in summary.get("top_expenses", [])[:5]
+    ]
+
+    data_text = f"""【家計簿データ ({year_month})】
+■ 支出合計: {summary["total_expense"]:,.0f}円
+■ 収入合計: {summary["total_income"]:,.0f}円
+■ 収支: {summary["balance"]:+,.0f}円
+
+■ カテゴリ別支出:
+{chr(10).join(cat_lines) if cat_lines else "  データなし"}
+
+■ 月別推移（直近6ヶ月）:
+{chr(10).join(trend_lines) if trend_lines else "  データなし"}
+
+■ 固定費（上位5件）:
+{chr(10).join(fixed_lines) if fixed_lines else "  データなし"}
+固定費率: {fixed.get("fixed_ratio", 0)}%
+
+■ 高額支出（上位5件）:
+{chr(10).join(top_lines) if top_lines else "  データなし"}"""
+
+    return f"""{data_text}
+
+あなたは家計アドバイザーです。上記の家計簿データを分析し、3〜4文で簡潔にコメントしてください。
+支出の傾向、前月との比較、予算の消化状況、改善ポイントなどに触れてください。日本語で回答してください。"""
+
+
 # ---------------------------------------------------------------------------
 # Gemini API呼び出し
 # ---------------------------------------------------------------------------
@@ -244,42 +318,52 @@ def _call_gemini(api_key: str, prompt: str) -> str:
 
 
 def generate_comments(db_path: str) -> None:
-    """ダッシュボード・ライフプラン両方のAIコメントを生成・保存する。
+    """ダッシュボード・ライフプラン・家計簿のAIコメントを生成・保存する。
 
     同じ日付+ページのコメントが既存なら再生成しない。
     """
     api_key = _get_api_key(db_path)
     if not api_key:
-        print("[ai] APIキー未設定 — AI分析スキップ")
+        logger.info("[ai] APIキー未設定 — AI分析スキップ")
         return
 
     conn = init_db(db_path)
-    row = conn.execute("SELECT date FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
-    if not row:
+    try:
+        row = conn.execute("SELECT date FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
+        if not row:
+            logger.info("[ai] スナップショットなし — AI分析スキップ")
+            return
+        date = row[0]
+
+        # CF の最新年月を取得
+        cf_row = conn.execute(
+            "SELECT DISTINCT year_month FROM cf_transactions ORDER BY year_month DESC LIMIT 1"
+        ).fetchone()
+        cf_ym = cf_row[0] if cf_row else None
+
+        targets: list[tuple[str, str, object]] = [
+            ("dashboard", date, lambda: _build_dashboard_prompt(db_path, date)),
+            ("lifeplan", date, lambda: _build_lifeplan_prompt(db_path, date)),
+        ]
+        if cf_ym:
+            targets.append(("cf", cf_ym, lambda: _build_cf_prompt(db_path, cf_ym)))
+
+        for page, key, build_prompt in targets:
+            existing = get_comment(conn, key, page)
+            if existing:
+                logger.info("[ai] %s コメント既存 (%s) — スキップ", page, key)
+                continue
+
+            prompt = build_prompt()
+            if not prompt:
+                logger.info("[ai] %s プロンプト生成失敗 — スキップ", page)
+                continue
+
+            try:
+                comment = _call_gemini(api_key, prompt)
+                save_comment(conn, key, page, comment)
+                logger.info("[ai] %s コメント生成・保存完了 (%s)", page, key)
+            except Exception as e:
+                logger.error("[ai] %s コメント生成失敗: %s", page, e)
+    finally:
         conn.close()
-        print("[ai] スナップショットなし — AI分析スキップ")
-        return
-    date = row[0]
-
-    for page, build_prompt in [
-        ("dashboard", lambda: _build_dashboard_prompt(db_path, date)),
-        ("lifeplan", lambda: _build_lifeplan_prompt(db_path, date)),
-    ]:
-        existing = get_comment(conn, date, page)
-        if existing:
-            print(f"[ai] {page} コメント既存 ({date}) — スキップ")
-            continue
-
-        prompt = build_prompt()
-        if not prompt:
-            print(f"[ai] {page} プロンプト生成失敗 — スキップ")
-            continue
-
-        try:
-            comment = _call_gemini(api_key, prompt)
-            save_comment(conn, date, page, comment)
-            print(f"[ai] {page} コメント生成・保存完了 ({date})")
-        except Exception as e:
-            print(f"[ai] {page} コメント生成失敗: {e}")
-
-    conn.close()
