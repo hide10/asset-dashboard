@@ -2533,7 +2533,49 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
       </div>
     </div>
   </div>
+  <div class="card">
+    <h2>AIチャット用データ</h2>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      ChatGPT / Claude 等にコピペで渡せるMarkdown形式のデータ+プロンプトを生成します。
+    </p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:0.85rem;width:140px">資産分析</span>
+        <button class="btn" style="font-size:0.8rem;padding:5px 12px" onclick="copyAiPrompt('asset',this)">コピー</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:0.85rem;width:140px">家計簿分析</span>
+        <button class="btn" style="font-size:0.8rem;padding:5px 12px" onclick="copyAiPrompt('cf',this)">コピー</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:0.85rem;width:140px">ライフプラン</span>
+        <button class="btn" style="font-size:0.8rem;padding:5px 12px" onclick="copyAiPrompt('plan',this)">コピー</button>
+      </div>
+    </div>
+    <div id="ai-preview" style="display:none;margin-top:12px;background:#f8f9fa;border-radius:8px;padding:12px;font-size:0.8rem;white-space:pre-wrap;max-height:300px;overflow-y:auto;border:1px solid #dfe6e9"></div>
+  </div>
 </div>
+<script>
+async function copyAiPrompt(type, btn) {{
+  btn.textContent = '取得中...';
+  btn.disabled = true;
+  try {{
+    const res = await fetch('/api/ai-prompt?type=' + type);
+    const text = await res.text();
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'コピー済み!';
+    btn.style.background = '#0F7F30';
+    const preview = document.getElementById('ai-preview');
+    preview.textContent = text;
+    preview.style.display = 'block';
+    setTimeout(() => {{ btn.textContent = 'コピー'; btn.style.background = ''; btn.disabled = false; }}, 2000);
+  }} catch(e) {{
+    btn.textContent = 'エラー';
+    btn.style.background = '#e74c3c';
+    setTimeout(() => {{ btn.textContent = 'コピー'; btn.style.background = ''; btn.disabled = false; }}, 2000);
+  }}
+}}
+</script>
 </body>
 </html>"""
 
@@ -3974,6 +4016,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(buf.getvalue().encode("utf-8-sig"))
 
+        elif parsed.path == "/api/ai-prompt":
+            prompt_type = params.get("type", ["asset"])[0]
+            text = self._build_ai_prompt(prompt_type)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(text.encode())
+
         elif parsed.path == "/favicon.ico":
             self.send_response(204)
             self.end_headers()
@@ -3983,6 +4033,164 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"<html><body><h1>404 Not Found</h1></body></html>")
+
+    def _build_ai_prompt(self, prompt_type: str) -> str:
+        """AIチャット用のMarkdownプロンプトを生成する。"""
+        conn = get_connection(self.db_path)
+        try:
+            if prompt_type == "asset":
+                return self._ai_prompt_asset(conn)
+            elif prompt_type == "cf":
+                return self._ai_prompt_cf(conn)
+            elif prompt_type == "plan":
+                return self._ai_prompt_plan(conn)
+            else:
+                return "不明なタイプです。"
+        finally:
+            conn.close()
+
+    def _ai_prompt_asset(self, conn: sqlite3.Connection) -> str:
+        """資産分析用プロンプトを生成する。"""
+        row = conn.execute(
+            "SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return "資産データがありません。"
+        date, total, by_class_json = row[0], row[1], row[2]
+        by_class = json.loads(by_class_json)
+
+        lines = [
+            f"# 資産データ（{date}時点）",
+            "",
+            f"総資産: **{total:,.0f}円**",
+            "",
+            "## 資産クラス別内訳",
+            "",
+            "| 資産クラス | 金額 | 割合 |",
+            "|---|---:|---:|",
+        ]
+        for cls, amt in sorted(by_class.items(), key=lambda x: x[1], reverse=True):
+            pct = amt / total * 100 if total else 0
+            lines.append(f"| {cls} | {amt:,.0f}円 | {pct:.1f}% |")
+
+        # 保有銘柄
+        holdings = conn.execute(
+            "SELECT name, symbol_or_code, asset_class, value, quantity, unrealized_gain, unrealized_gain_pct FROM snapshot_holdings WHERE date = ? ORDER BY value DESC LIMIT 20",
+            (date,),
+        ).fetchall()
+        if holdings:
+            lines += [
+                "",
+                "## 保有銘柄（上位20件）",
+                "",
+                "| 銘柄 | 資産クラス | 評価額 | 損益 | 損益率 |",
+                "|---|---|---:|---:|---:|",
+            ]
+            for h in holdings:
+                name, code, ac, val, qty, gain, gain_pct = h
+                gain_s = f"{gain:+,.0f}円" if gain is not None else "-"
+                pct_s = f"{gain_pct:+.1f}%" if gain_pct is not None else "-"
+                lines.append(f"| {name} | {ac} | {val:,.0f}円 | {gain_s} | {pct_s} |")
+
+        lines += [
+            "",
+            "---",
+            "",
+            "上記は私の資産ポートフォリオです。以下の観点で分析・アドバイスをお願いします：",
+            "1. ポートフォリオのバランス評価",
+            "2. リスク分散の状況",
+            "3. 改善提案",
+        ]
+        return "\n".join(lines)
+
+    def _ai_prompt_cf(self, conn: sqlite3.Connection) -> str:
+        """家計簿分析用プロンプトを生成する。"""
+        cf_row = conn.execute(
+            "SELECT DISTINCT year_month FROM cf_transactions ORDER BY year_month DESC LIMIT 1"
+        ).fetchone()
+        if not cf_row:
+            return "家計簿データがありません。"
+        ym = cf_row[0]
+
+        summary = get_cf_category_summary(conn, ym)
+        if not summary:
+            return "家計簿データがありません。"
+
+        lines = [
+            f"# 家計簿データ（{ym}）",
+            "",
+            f"- 収入合計: **{summary['total_income']:,.0f}円**",
+            f"- 支出合計: **{summary['total_expense']:,.0f}円**",
+            f"- 収支: **{summary['balance']:+,.0f}円**",
+            "",
+        ]
+
+        lines += ["## カテゴリ別支出", "", "| カテゴリ | 金額 | 割合 |", "|---|---:|---:|"]
+        for c in summary["major_categories"]:
+            pct = c["total"] / summary["total_expense"] * 100 if summary["total_expense"] else 0
+            lines.append(f"| {c['name']} | {c['total']:,.0f}円 | {pct:.1f}% |")
+
+        # 月別推移
+        trend = get_cf_monthly_trend(conn, months=6)
+        if trend:
+            lines += ["", "## 月別推移（直近6ヶ月）", "", "| 月 | 収入 | 支出 | 収支 |", "|---|---:|---:|---:|"]
+            for t in trend[-6:]:
+                net = t["income"] - t["expense"]
+                lines.append(f"| {t['year_month']} | {t['income']:,.0f}円 | {t['expense']:,.0f}円 | {net:+,.0f}円 |")
+
+        lines += [
+            "",
+            "---",
+            "",
+            "上記は私の家計簿データです。以下の観点で分析・アドバイスをお願いします：",
+            "1. 支出の傾向と改善ポイント",
+            "2. 前月との比較（増減の要因）",
+            "3. 節約の具体的提案",
+        ]
+        return "\n".join(lines)
+
+    def _ai_prompt_plan(self, conn: sqlite3.Connection) -> str:
+        """ライフプラン用プロンプトを生成する。"""
+        row = conn.execute(
+            "SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return "資産データがありません。"
+        date, total = row[0], row[1]
+
+        # 月次資産推移
+        monthly_rows = conn.execute("SELECT date, total_asset FROM snapshots ORDER BY date ASC").fetchall()
+        monthly_end: dict[str, float] = {}
+        for d, t in monthly_rows:
+            monthly_end[d[:7]] = t
+
+        # 月次収支
+        cashflows = get_cashflows(conn, limit=6)
+        cashflows.reverse()
+
+        lines = [f"# ライフプランデータ（{date}時点）", "", f"現在の総資産: **{total:,.0f}円**", ""]
+
+        if monthly_end:
+            lines += ["## 月次資産推移", "", "| 月 | 総資産 |", "|---|---:|"]
+            for ym, t in sorted(monthly_end.items())[-6:]:
+                lines.append(f"| {ym} | {t:,.0f}円 |")
+
+        if cashflows:
+            lines += ["", "## 月次収支", "", "| 月 | 収入 | 支出 | 収支 |", "|---|---:|---:|---:|"]
+            for cf in cashflows:
+                net = cf["income"] - cf["expense"]
+                lines.append(f"| {cf['year_month']} | {cf['income']:,.0f}円 | {cf['expense']:,.0f}円 | {net:+,.0f}円 |")
+
+        lines += [
+            "",
+            "---",
+            "",
+            "上記は私の資産・収支データです。以下の観点でライフプランのアドバイスをお願いします：",
+            "1. 資産形成の進捗評価",
+            "2. 収支バランスの改善点",
+            "3. 将来の資産目標に向けた提案",
+        ]
+        return "\n".join(lines)
 
     def _check_origin(self) -> bool:
         """Origin ヘッダを検証し、ローカルホストからのリクエストのみ許可する。"""

@@ -427,3 +427,18 @@ class TestDownloadStatus:
         """取得済みの月に日付が表示される。"""
         html = _build_cf_html(_demo_cf_data())
         assert "取得済" in html
+
+
+class TestAiChatExport:
+    """AIチャット用データエクスポートが設定ページに表示される。"""
+
+    def test_settings_has_ai_chat_section(self):
+        html = _build_settings_html("dummy_db", saved=False)
+        assert "AIチャット用データ" in html
+
+    def test_settings_has_copy_buttons(self):
+        html = _build_settings_html("dummy_db", saved=False)
+        assert "copyAiPrompt" in html
+        assert "資産分析" in html
+        assert "家計簿分析" in html
+        assert "ライフプラン" in html
