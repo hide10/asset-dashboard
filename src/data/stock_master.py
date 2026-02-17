@@ -34,8 +34,43 @@ STOCK_MASTER: dict[str, dict] = {
     "4755": {"name": "楽天グループ", "sector": "サービス業", "dividend": 4.5},
 }
 
+# 米国株マスター（ティッカーシンボル → 業種・配当）
+US_STOCK_MASTER: dict[str, dict] = {
+    "AAPL": {"name": "Apple", "sector": "テクノロジー", "dividend": 1.00},
+    "MSFT": {"name": "Microsoft", "sector": "テクノロジー", "dividend": 3.32},
+    "GOOGL": {"name": "Alphabet", "sector": "テクノロジー", "dividend": 0.80},
+    "GOOG": {"name": "Alphabet C", "sector": "テクノロジー", "dividend": 0.80},
+    "AMZN": {"name": "Amazon", "sector": "消費財", "dividend": 0.0},
+    "NVDA": {"name": "NVIDIA", "sector": "テクノロジー", "dividend": 0.04},
+    "META": {"name": "Meta Platforms", "sector": "テクノロジー", "dividend": 2.00},
+    "TSLA": {"name": "Tesla", "sector": "自動車", "dividend": 0.0},
+    "JPM": {"name": "JPMorgan Chase", "sector": "金融", "dividend": 5.00},
+    "V": {"name": "Visa", "sector": "金融", "dividend": 2.36},
+    "JNJ": {"name": "Johnson & Johnson", "sector": "ヘルスケア", "dividend": 4.96},
+    "PG": {"name": "Procter & Gamble", "sector": "消費財", "dividend": 4.03},
+    "KO": {"name": "Coca-Cola", "sector": "消費財", "dividend": 1.94},
+    "PEP": {"name": "PepsiCo", "sector": "消費財", "dividend": 5.42},
+    "HD": {"name": "Home Depot", "sector": "小売", "dividend": 9.00},
+    "VZ": {"name": "Verizon", "sector": "通信", "dividend": 2.71},
+    "T": {"name": "AT&T", "sector": "通信", "dividend": 1.11},
+    "XOM": {"name": "Exxon Mobil", "sector": "エネルギー", "dividend": 3.96},
+    "VTI": {"name": "Vanguard Total Stock ETF", "sector": "米国ETF", "dividend": 3.44},
+    "VOO": {"name": "Vanguard S&P 500 ETF", "sector": "米国ETF", "dividend": 6.76},
+    "VYM": {"name": "Vanguard High Div ETF", "sector": "米国ETF", "dividend": 3.21},
+    "SPYD": {"name": "SPDR S&P 500 High Div ETF", "sector": "米国ETF", "dividend": 1.98},
+    "QQQ": {"name": "Invesco QQQ Trust", "sector": "米国ETF", "dividend": 2.86},
+}
+
 _YAHOO_URL = "https://finance.yahoo.co.jp/quote/{code}.T"
 _SECTOR_RE = re.compile(r'"sectorName":"([^"]+)"')
+
+
+def is_us_stock(code: str) -> bool:
+    """米国株ティッカーシンボルかどうかを判定する。"""
+    if not code:
+        return False
+    # 日本株は4桁数字、米国株はアルファベット
+    return bool(re.match(r"^[A-Z]{1,5}$", code))
 
 
 def _fetch_sector(code: str) -> str | None:
@@ -79,19 +114,25 @@ def _save_sectors(data: dict) -> None:
 def get_sector(code: str) -> str:
     """銘柄コードから業種を返す。
 
-    優先順位: sectors.json → Yahoo Finance（自動取得＋キャッシュ） → STOCK_MASTER → 'その他'
+    日本株: sectors.json → Yahoo Finance（自動取得＋キャッシュ） → STOCK_MASTER → 'その他'
+    米国株: sectors.json → US_STOCK_MASTER → '米国株'
     """
     # 1. sectors.json キャッシュ
     sectors = _load_sectors()
     if code in sectors:
         return sectors[code]
 
-    # 2. STOCK_MASTER ハードコード
+    # 2. 米国株の場合
+    if is_us_stock(code):
+        us_info = US_STOCK_MASTER.get(code)
+        return us_info["sector"] if us_info else "米国株"
+
+    # 3. STOCK_MASTER ハードコード（日本株）
     info = STOCK_MASTER.get(code)
     if info:
         return info["sector"]
 
-    # 3. Yahoo Finance から自動取得してキャッシュ
+    # 4. Yahoo Finance から自動取得してキャッシュ（日本株のみ）
     sector = _fetch_sector(code)
     if sector:
         sectors[code] = sector
@@ -133,17 +174,28 @@ def _load_dividends() -> dict:
 
 
 def get_dividend(code: str) -> float:
-    """銘柄コードから年間予想配当（円/株）を返す。
+    """銘柄コードから年間予想配当を返す。
 
+    日本株: 円/株、米国株: USD/株。
     dividends.json を優先し、なければハードコード値にフォールバック。
     """
     divs = _load_dividends()
     if code in divs:
         return divs[code]["dps"]
+    # 米国株
+    if is_us_stock(code):
+        us_info = US_STOCK_MASTER.get(code)
+        return us_info["dividend"] if us_info else 0.0
+    # 日本株
     info = STOCK_MASTER.get(code)
     return info["dividend"] if info else 0.0
 
 
 def get_all_codes() -> list[str]:
-    """STOCK_MASTER に登録された全銘柄コードを返す。"""
+    """STOCK_MASTER に登録された全銘柄コードを返す（日本株のみ）。"""
     return list(STOCK_MASTER.keys())
+
+
+def get_all_us_codes() -> list[str]:
+    """US_STOCK_MASTER に登録された全ティッカーを返す。"""
+    return list(US_STOCK_MASTER.keys())

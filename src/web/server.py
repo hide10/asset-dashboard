@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from src.analysis.ai_comment import generate_comments, get_comment
 from src.analysis.compare import ComparisonResult, get_all_comparisons
 from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
-from src.data.stock_master import get_dividend, get_sector
+from src.data.stock_master import get_dividend, get_sector, is_us_stock
 from src.db.repository import (
     get_budgets,
     get_cashflows,
@@ -332,12 +332,18 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
     sector_totals = dict(sorted(sector_totals.items(), key=lambda x: x[1], reverse=True))
 
     # 配当予測（株式のみ）
+    usd_jpy = 150.0  # 米国株配当の円換算レート
     dividends: list[dict] = []
     total_dividend = 0.0
     for h in holdings:
         if h["asset_class"] == "株式（現物）" and h["code"] and h["quantity"]:
             dps = get_dividend(h["code"])
-            annual = dps * h["quantity"]
+            # 米国株の配当は USD → JPY に変換
+            if is_us_stock(h["code"]):
+                dps_jpy = dps * usd_jpy
+            else:
+                dps_jpy = dps
+            annual = dps_jpy * h["quantity"]
             total_dividend += annual
             if dps > 0:
                 cur_price = h.get("current_price")
@@ -349,7 +355,7 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
                         "code": h["code"],
                         "name": h["name"],
                         "quantity": h["quantity"],
-                        "dps": dps,
+                        "dps": dps_jpy,
                         "annual": annual,
                         "current_yield": current_yield,
                         "acq_yield": acq_yield,
@@ -378,7 +384,8 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         if h["asset_class"] == "株式（現物）" and h["code"] and h["quantity"]:
             sector = get_sector(h["code"])
             dps = get_dividend(h["code"])
-            annual = dps * h["quantity"]
+            dps_jpy = dps * usd_jpy if is_us_stock(h["code"]) else dps
+            annual = dps_jpy * h["quantity"]
             if sector not in sector_dividends:
                 sector_dividends[sector] = {"value": 0, "dividend": 0}
             sector_dividends[sector]["value"] += h["value"]

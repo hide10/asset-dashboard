@@ -71,7 +71,7 @@ def get_comment(conn: sqlite3.Connection, date: str, page: str) -> str | None:
 def _build_dashboard_prompt(db_path: str, date: str) -> str:
     """ダッシュボード用の分析プロンプトを組み立てる。"""
     from src.analysis.compare import get_all_comparisons
-    from src.data.stock_master import get_dividend, get_sector
+    from src.data.stock_master import get_dividend, get_sector, is_us_stock
 
     conn = init_db(db_path)
 
@@ -106,6 +106,7 @@ def _build_dashboard_prompt(db_path: str, date: str) -> str:
     ).fetchall()
     sector_totals: dict[str, float] = {}
     total_dividend = 0.0
+    usd_jpy = 150.0
     for h in holdings:
         name, code, asset_class, value, quantity = h
         if asset_class == "株式（現物）" and code:
@@ -113,7 +114,8 @@ def _build_dashboard_prompt(db_path: str, date: str) -> str:
             sector_totals[sector] = sector_totals.get(sector, 0) + value
             if quantity:
                 dps = get_dividend(code)
-                total_dividend += dps * quantity
+                dps_jpy = dps * usd_jpy if is_us_stock(code) else dps
+                total_dividend += dps_jpy * quantity
 
     sector_sorted = sorted(sector_totals.items(), key=lambda x: x[1], reverse=True)[:5]
     sector_lines = [f"  {sec}: {amt:,.0f}円" for sec, amt in sector_sorted]
