@@ -439,7 +439,12 @@ def _avg_yield_html(dividends: list[dict]) -> str:
 
 
 def _build_html(
-    data: dict, dates: list[str], skip_update: bool = False, ai_comment: str | None = None, demo: bool = False
+    data: dict,
+    dates: list[str],
+    skip_update: bool = False,
+    ai_comment: str | None = None,
+    demo: bool = False,
+    session_expired: str | None = None,
 ) -> str:
     if not data:
         return "<html><body><h1>データがありません</h1></body></html>"
@@ -864,6 +869,11 @@ def _build_html(
     <h1>資産ダッシュボード</h1>
     {_nav_html("/")}
   </div>
+  {
+        '<div style="background:#DF3727;color:#fff;padding:10px 16px;border-radius:8px;margin-bottom:12px;font-size:0.85rem;font-weight:600">&#x26A0; セッション切れ — データの自動更新に失敗しました。<code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:4px;font-size:0.82rem">python -m src.scraper.login</code> で再ログインしてください。</div>'
+        if session_expired
+        else ""
+    }
   <div class="date-picker">
     <button class="nav-btn" id="prev-btn" title="前の日">&larr;</button>
     <select id="date-select" onchange="location.href='/?date='+this.value">
@@ -3686,7 +3696,18 @@ class Handler(BaseHTTPRequestHandler):
                             conn.close()
                     except Exception:
                         pass
-            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment)
+            # セッション切れチェック
+            session_expired = None
+            if not self.demo:
+                try:
+                    conn = get_connection(self.db_path)
+                    try:
+                        session_expired = get_setting(conn, "session_expired")
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment, session_expired=session_expired)
             self._send_html(html)
 
         elif parsed.path == "/cf":
@@ -4076,6 +4097,13 @@ def _bg_worker(db_path: str) -> None:
 
         asyncio.run(run(headless=True))
 
+        # 更新成功 → セッション切れフラグをクリア
+        conn = init_db(db_path)
+        try:
+            save_setting(conn, "session_expired", "")
+        finally:
+            conn.close()
+
         if _needs_dividend_update():
             from src.data.dividend_fetcher import update_all_dividends
 
@@ -4086,7 +4114,19 @@ def _bg_worker(db_path: str) -> None:
         _update_state["version"] += 1
         logger.info("[auto] バックグラウンド更新完了")
     except Exception as e:
-        logger.error("[auto] バックグラウンド更新失敗: %s", e)
+        # セッション切れを検知してDBにフラグを保存
+        if "ログインページにリダイレクト" in str(e) or "sign_in" in str(e):
+            try:
+                conn = init_db(db_path)
+                try:
+                    save_setting(conn, "session_expired", datetime.now().isoformat())
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+            logger.error("[auto] セッション切れを検知: %s", e)
+        else:
+            logger.error("[auto] バックグラウンド更新失敗: %s", e)
     finally:
         _update_state["running"] = False
 
