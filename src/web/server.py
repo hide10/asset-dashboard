@@ -2370,6 +2370,27 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
       <button type="submit" class="btn">保存</button>
     </form>
   </div>
+  <div class="card">
+    <h2>データエクスポート</h2>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">CSV / JSON 形式でダウンロードできます。</p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:0.85rem;width:140px">資産スナップショット</span>
+        <a href="/api/export/snapshots?format=csv" class="btn" style="font-size:0.8rem;padding:5px 12px;text-decoration:none">CSV</a>
+        <a href="/api/export/snapshots?format=json" class="btn" style="font-size:0.8rem;padding:5px 12px;text-decoration:none;background:#636e72">JSON</a>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:0.85rem;width:140px">月次収支</span>
+        <a href="/api/export/cashflows?format=csv" class="btn" style="font-size:0.8rem;padding:5px 12px;text-decoration:none">CSV</a>
+        <a href="/api/export/cashflows?format=json" class="btn" style="font-size:0.8rem;padding:5px 12px;text-decoration:none;background:#636e72">JSON</a>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:0.85rem;width:140px">家計簿取引明細</span>
+        <a href="/api/export/cf?format=csv" class="btn" style="font-size:0.8rem;padding:5px 12px;text-decoration:none">CSV</a>
+        <a href="/api/export/cf?format=json" class="btn" style="font-size:0.8rem;padding:5px 12px;text-decoration:none;background:#636e72">JSON</a>
+      </div>
+    </div>
+  </div>
 </div>
 </body>
 </html>"""
@@ -3687,6 +3708,117 @@ class Handler(BaseHTTPRequestHandler):
             saved = params.get("saved", [None])[0]
             html = _build_settings_html(self.db_path, saved=saved)
             self._send_html(html)
+
+        elif parsed.path == "/api/export/snapshots":
+            fmt = params.get("format", ["csv"])[0]
+            conn = get_connection(self.db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date ASC"
+                ).fetchall()
+            finally:
+                conn.close()
+            if fmt == "json":
+                data = [{"date": r[0], "total_asset": r[1], "by_class": json.loads(r[2])} for r in rows]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="snapshots.json"')
+                self.end_headers()
+                self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode())
+            else:
+                import csv
+                import io
+
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                # ヘッダー: date, total_asset + 動的な資産クラス列
+                all_classes: list[str] = []
+                parsed_rows = []
+                for r in rows:
+                    by_class = json.loads(r[2])
+                    parsed_rows.append((r[0], r[1], by_class))
+                    for cls in by_class:
+                        if cls not in all_classes:
+                            all_classes.append(cls)
+                writer.writerow(["date", "total_asset"] + all_classes)
+                for date_str, total, by_class in parsed_rows:
+                    writer.writerow([date_str, total] + [by_class.get(cls, 0) for cls in all_classes])
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="snapshots.csv"')
+                self.end_headers()
+                self.wfile.write(buf.getvalue().encode("utf-8-sig"))
+
+        elif parsed.path == "/api/export/cashflows":
+            fmt = params.get("format", ["csv"])[0]
+            conn = get_connection(self.db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT year_month, income, expense FROM monthly_cashflows ORDER BY year_month ASC"
+                ).fetchall()
+            finally:
+                conn.close()
+            if fmt == "json":
+                data = [{"year_month": r[0], "income": r[1], "expense": r[2], "balance": r[1] - r[2]} for r in rows]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="cashflows.json"')
+                self.end_headers()
+                self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode())
+            else:
+                import csv
+                import io
+
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                writer.writerow(["year_month", "income", "expense", "balance"])
+                for r in rows:
+                    writer.writerow([r[0], r[1], r[2], r[1] - r[2]])
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="cashflows.csv"')
+                self.end_headers()
+                self.wfile.write(buf.getvalue().encode("utf-8-sig"))
+
+        elif parsed.path == "/api/export/cf":
+            ym = params.get("month", [None])[0]
+            fmt = params.get("format", ["csv"])[0]
+            conn = get_connection(self.db_path)
+            try:
+                if ym:
+                    rows = conn.execute(
+                        "SELECT date, description, amount, major_category, minor_category, institution, memo FROM cf_transactions WHERE year_month = ? AND is_transfer = 0 ORDER BY date ASC",
+                        (ym,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT date, description, amount, major_category, minor_category, institution, memo FROM cf_transactions WHERE is_transfer = 0 ORDER BY date ASC"
+                    ).fetchall()
+            finally:
+                conn.close()
+            columns = ["date", "description", "amount", "major_category", "minor_category", "institution", "memo"]
+            if fmt == "json":
+                data = [dict(zip(columns, r, strict=True)) for r in rows]
+                fname = f"cf_{ym}.json" if ym else "cf_all.json"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                self.end_headers()
+                self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode())
+            else:
+                import csv
+                import io
+
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                writer.writerow(columns)
+                writer.writerows(rows)
+                fname = f"cf_{ym}.csv" if ym else "cf_all.csv"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                self.end_headers()
+                self.wfile.write(buf.getvalue().encode("utf-8-sig"))
 
         elif parsed.path == "/favicon.ico":
             self.send_response(204)
