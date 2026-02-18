@@ -2538,17 +2538,17 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         </select>
         <div class="hint">給与日に合わせると実際の家計サイクルに合った分析ができます。</div>
       </div>
-      <div class="field" style="margin-top:12px">
+      <div class="field" style="margin-top:12px;text-align:left">
         <label>土日祝日の扱い</label>
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+        <div style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:4px">
           <label style="font-weight:normal;font-size:0.9rem;display:flex;align-items:center;gap:6px">
-            <input type="radio" name="holiday_mode" value="none"{"checked" if holiday_mode == "none" else ""}> 変更しない
+            <input type="radio" name="holiday_mode" value="none" style="width:auto"{"checked" if holiday_mode == "none" else ""}> 変更しない
           </label>
           <label style="font-weight:normal;font-size:0.9rem;display:flex;align-items:center;gap:6px">
-            <input type="radio" name="holiday_mode" value="before"{"checked" if holiday_mode == "before" else ""}> 設定日前の平日
+            <input type="radio" name="holiday_mode" value="before" style="width:auto"{"checked" if holiday_mode == "before" else ""}> 設定日前の平日
           </label>
           <label style="font-weight:normal;font-size:0.9rem;display:flex;align-items:center;gap:6px">
-            <input type="radio" name="holiday_mode" value="after"{"checked" if holiday_mode == "after" else ""}> 設定日後の平日
+            <input type="radio" name="holiday_mode" value="after" style="width:auto"{"checked" if holiday_mode == "after" else ""}> 設定日後の平日
           </label>
         </div>
         <div class="hint">締め日が土日祝日に当たる場合の調整方法を選択します。</div>
