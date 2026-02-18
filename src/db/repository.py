@@ -329,8 +329,9 @@ def _current_fiscal_month(closing_day: int, holiday_mode: str = "none", *, _toda
     closing_day=25, 今日=2/18 → まだ2月の期間中なので '2026-02'
     closing_day=25, 今日=2/26 → 3月の期間に入っているので '2026-03'
 
-    holiday_mode="after" で調整済み締め日が翌月にスピルオーバーする場合も
-    前月の調整済み締め日を確認して正しい fiscal month を返す。
+    holiday_mode="after" で調整済み締め日が翌月にスピルオーバーする場合は
+    前月の調整済み締め日を確認し、holiday_mode="before" で翌月の締め日が
+    当月に前倒しされる場合は翌月の調整済み締め日も確認する。
     """
     from datetime import date
 
@@ -345,7 +346,7 @@ def _current_fiscal_month(closing_day: int, holiday_mode: str = "none", *, _toda
         if today.day < min(closing_day, last_day):
             return today.strftime("%Y-%m")
     else:
-        # 前月の調整済み締め日が翌月にスピルオーバーしている可能性をチェック
+        # "after": 前月の調整済み締め日が翌月にスピルオーバーしている可能性
         prev_year, prev_month = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
         prev_adj = _adjusted_closing_date(prev_year, prev_month, closing_day, holiday_mode)
         if today < prev_adj:
@@ -354,6 +355,14 @@ def _current_fiscal_month(closing_day: int, holiday_mode: str = "none", *, _toda
         adj = _adjusted_closing_date(today.year, today.month, closing_day, holiday_mode)
         if today < adj:
             return today.strftime("%Y-%m")
+
+        # "before": 翌月の調整済み締め日が当月に前倒しされている可能性
+        next_year, next_month = (today.year, today.month + 1) if today.month < 12 else (today.year + 1, 1)
+        next_adj = _adjusted_closing_date(next_year, next_month, closing_day, holiday_mode)
+        if today >= next_adj:
+            if next_month == 12:
+                return f"{next_year + 1}-01"
+            return f"{next_year}-{next_month + 1:02d}"
 
     # closing_day 以降 → 翌月の fiscal month
     if today.month == 12:

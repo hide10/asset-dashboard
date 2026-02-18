@@ -611,7 +611,7 @@ class TestAdjustedClosingDate:
 
 
 class TestCurrentFiscalMonthSpillover:
-    """holiday_mode='after' で締め日が翌月にスピルオーバーする場合のテスト。"""
+    """holiday_mode による締め日スピルオーバーのテスト。"""
 
     def test_after_spillover_before_boundary(self):
         """Feb 28 (Sat) → adj=Mar 2 (Mon)。Mar 1 はまだ2月の fiscal month。"""
@@ -647,6 +647,31 @@ class TestCurrentFiscalMonthSpillover:
         from datetime import date
 
         assert _current_fiscal_month(28, "none", _today=date(2026, 3, 1)) == "2026-03"
+
+    def test_before_spillover_next_month_pulled_back(self):
+        """closing_day=2, Feb 2 (Sun) → adj=Jan 31 (Fri)。Jan 31 は既に3月。"""
+        from datetime import date
+
+        # 2025-02-02 は日曜日 → "before" で 2025-01-31（金曜）に前倒し
+        # Jan 31 は Feb の調整済み締め日を越えている → fiscal "2025-03"
+        assert _current_fiscal_month(2, "before", _today=date(2025, 1, 31)) == "2025-03"
+
+    def test_before_spillover_day_before(self):
+        """Jan 30 はまだ Feb の締め日(Jan 31)前なので fiscal "2025-02"。"""
+        from datetime import date
+
+        assert _current_fiscal_month(2, "before", _today=date(2025, 1, 30)) == "2025-02"
+
+    def test_before_no_spillover(self):
+        """締め日が前倒しされても同月内に留まる通常ケース。"""
+        from datetime import date
+
+        # 2025-03-02 は日曜日 → "before" で 2025-02-28（金曜）に前倒し
+        # これは3月の締め日が2月に前倒しされるケース
+        # Feb 28: adj(Mar)=Feb 28 なので Feb 28 >= Feb 28 → fiscal "2025-04"
+        assert _current_fiscal_month(2, "before", _today=date(2025, 2, 28)) == "2025-04"
+        # Feb 27: adj(Mar)=Feb 28, Feb 27 < Feb 28 → fiscal "2025-03"
+        assert _current_fiscal_month(2, "before", _today=date(2025, 2, 27)) == "2025-03"
 
 
 class TestFiscalMonthRangeHoliday:
