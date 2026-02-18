@@ -88,17 +88,24 @@ source .venv/bin/activate   # または .venv/bin/python3 で直接実行
 gh issue list
 ```
 
-### 2. 実装
+### 2. ブランチ作成
+**機能追加・修正は必ずブランチで行う。master に直接コミットしない。**
+```bash
+git checkout -b feature/issue-番号-簡潔な説明
+# 例: git checkout -b feature/issue-17-closing-day
+```
+
+### 3. 実装
 - Issue 番号を参照しながら作業
 - コードを変更したら **必ずテストを実行**: `.venv/bin/python3 -m pytest tests/ -v`
 - テストが通らない状態でコミットしない
 
-### 3. テスト追加
+### 4. テスト追加
 - 新しい repository 関数 → `tests/test_repository.py` にテスト追加
 - 新しい HTML カードや UI 変更 → `tests/test_server_html.py` にテスト追加
 - テストは自動検証できるもの（データ構造、HTML 内の文字列存在確認）と、人間が確認すべきもの（見た目、操作感）を分ける
 
-### 4. Issue 更新
+### 5. Issue 更新
 実装完了後、Issue を以下の形式に更新する:
 ```markdown
 ## 自動テスト（pytest で検証済み）
@@ -108,15 +115,16 @@ gh issue list
 - [ ] 目視・操作で確認が必要な項目
 ```
 
-### 5. コミット
+### 6. コミット＋PR 作成
 Issue に紐づく場合は `#番号` を含める:
-```
-ナビゲーションをツールバー形式に変更 (#13)
+```bash
+git push -u origin feature/issue-17-closing-day
+gh pr create --title "家計簿の締め日設定 (#17)"
 ```
 
-### 6. 人間の確認
+### 7. 人間の確認 → マージ
 - 人間が「人間が確認すること」のチェックリストを消化
-- 全項目 OK → Issue をクローズ
+- 全項目 OK → PR をマージ → Issue をクローズ
 
 ## GitHub Issues の運用ルール
 
@@ -158,10 +166,12 @@ Issue に紐づく場合は `#番号` を含める:
 ### AI が実装する場合
 
 1. `gh issue list` で未対応の Issue を確認
-2. Issue の内容を読んで実装
-3. テストを書いて `pytest` で全テストが通ることを確認
-4. Issue を更新し、自動テスト済み項目と人間確認項目を分離
-5. 人間に確認を依頼する（**Issue は閉じない** — 人間が確認して閉じる）
+2. `git checkout -b feature/issue-番号-説明` でブランチ作成
+3. Issue の内容を読んで実装
+4. テストを書いて `pytest` で全テストが通ることを確認
+5. Issue を更新し、自動テスト済み項目と人間確認項目を分離
+6. ブランチを push して PR を作成する
+7. 人間に確認を依頼する（**Issue は閉じない** — 人間が確認・マージして閉じる）
 
 ## セキュリティ（パブリックリポジトリ対応）
 
