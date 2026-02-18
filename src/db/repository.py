@@ -164,6 +164,23 @@ def _fiscal_month_expr(closing_day: int) -> str:
     )
 
 
+def _current_fiscal_month(closing_day: int) -> str:
+    """現在の fiscal month を返す。
+
+    closing_day=25, 今日=2/18 → まだ2月の期間中なので '2026-02'
+    closing_day=25, 今日=2/26 → 3月の期間に入っているので '2026-03'
+    """
+    from datetime import date
+
+    today = date.today()
+    if closing_day <= 1 or today.day < closing_day:
+        return today.strftime("%Y-%m")
+    # closing_day 以降 → 翌月の fiscal month
+    if today.month == 12:
+        return f"{today.year + 1}-01"
+    return f"{today.year}-{today.month + 1:02d}"
+
+
 def _fiscal_month_range(year_month: str, closing_day: int) -> tuple[str, str]:
     """指定 fiscal month の開始日・終了日を返す。
 
@@ -313,6 +330,7 @@ def get_cf_category_summary(conn: sqlite3.Connection, year_month: str, closing_d
 def get_cf_monthly_trend(conn: sqlite3.Connection, months: int = 12, closing_day: int = 1) -> list[dict]:
     """月別収入・支出推移を返す（新しい順 → 古い順に並び替え）。"""
     fm = _fiscal_month_expr(closing_day)
+    cur_fm = _current_fiscal_month(closing_day)
     rows = conn.execute(
         f"""SELECT {fm} as fm,
               SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as expense,
@@ -320,9 +338,10 @@ def get_cf_monthly_trend(conn: sqlite3.Connection, months: int = 12, closing_day
            FROM cf_transactions
            WHERE is_transfer = 0 AND is_target = 1
            GROUP BY fm
+           HAVING fm <= ?
            ORDER BY fm DESC
            LIMIT ?""",
-        (months,),
+        (cur_fm, months),
     ).fetchall()
     result = [{"year_month": r[0], "expense": abs(r[1]) if r[1] else 0, "income": r[2] if r[2] else 0} for r in rows]
     result.reverse()
@@ -332,11 +351,13 @@ def get_cf_monthly_trend(conn: sqlite3.Connection, months: int = 12, closing_day
 def get_cf_category_trend(conn: sqlite3.Connection, months: int = 6, closing_day: int = 1) -> dict:
     """カテゴリ別月次推移を返す。"""
     fm = _fiscal_month_expr(closing_day)
+    cur_fm = _current_fiscal_month(closing_day)
     ym_rows = conn.execute(
         f"""SELECT DISTINCT {fm} as fm FROM cf_transactions
            WHERE is_transfer=0 AND is_target=1 AND amount<0
+           GROUP BY fm HAVING fm <= ?
            ORDER BY fm DESC LIMIT ?""",
-        (months,),
+        (cur_fm, months),
     ).fetchall()
     year_months = [r[0] for r in reversed(ym_rows)]
 
@@ -380,16 +401,15 @@ def get_cf_fixed_expenses(conn: sqlite3.Connection, months: int = 3, closing_day
     - 「現金・カード」カテゴリは除外（二重計上防止）
     - 確定月に2回以上出現、または確定月+当月で同額なら固定費と判定
     """
-    from datetime import date as _date
-
-    current_ym = _date.today().strftime("%Y-%m")
     fm = _fiscal_month_expr(closing_day)
+    current_ym = _current_fiscal_month(closing_day)
 
     ym_rows = conn.execute(
         f"""SELECT DISTINCT {fm} as fm FROM cf_transactions
            WHERE is_transfer=0 AND is_target=1 AND amount<0
+           GROUP BY fm HAVING fm <= ?
            ORDER BY fm DESC LIMIT ?""",
-        (months + 1,),
+        (current_ym, months + 1),
     ).fetchall()
     # 当月は途中データなので判定対象から除外
     year_months = [r[0] for r in ym_rows if r[0] != current_ym][:months]
@@ -500,12 +520,15 @@ def get_cf_income_breakdown(conn: sqlite3.Connection, year_month: str, closing_d
 def get_cf_income_trend(conn: sqlite3.Connection, months: int = 6, closing_day: int = 1) -> list[dict]:
     """月別の収入推移を返す。"""
     fm = _fiscal_month_expr(closing_day)
+    cur_fm = _current_fiscal_month(closing_day)
     rows = conn.execute(
         f"""SELECT {fm} as fm, SUM(amount) as total
            FROM cf_transactions
            WHERE is_transfer=0 AND is_target=1 AND amount>0
-           GROUP BY fm ORDER BY fm DESC LIMIT ?""",
-        (months,),
+           GROUP BY fm
+           HAVING fm <= ?
+           ORDER BY fm DESC LIMIT ?""",
+        (cur_fm, months),
     ).fetchall()
     result = [{"year_month": r[0], "income": r[1]} for r in rows]
     result.reverse()
@@ -515,14 +538,17 @@ def get_cf_income_trend(conn: sqlite3.Connection, months: int = 6, closing_day: 
 def get_cf_actual_savings(conn: sqlite3.Connection, months: int = 6, closing_day: int = 1) -> dict | None:
     """直近N月の実際の平均貯蓄額・貯蓄率を返す。"""
     fm = _fiscal_month_expr(closing_day)
+    cur_fm = _current_fiscal_month(closing_day)
     rows = conn.execute(
         f"""SELECT {fm} as fm,
               SUM(CASE WHEN amount>0 THEN amount ELSE 0 END) as income,
               SUM(CASE WHEN amount<0 THEN amount ELSE 0 END) as expense
            FROM cf_transactions
            WHERE is_transfer=0 AND is_target=1
-           GROUP BY fm ORDER BY fm DESC LIMIT ?""",
-        (months,),
+           GROUP BY fm
+           HAVING fm <= ?
+           ORDER BY fm DESC LIMIT ?""",
+        (cur_fm, months),
     ).fetchall()
     if not rows:
         return None
@@ -543,12 +569,16 @@ def get_cf_actual_savings(conn: sqlite3.Connection, months: int = 6, closing_day
 def get_cf_available_months(conn: sqlite3.Connection, closing_day: int = 1) -> list[dict]:
     """取引データ存在月リスト＋ダウンロード済み情報を返す。"""
     fm = _fiscal_month_expr(closing_day)
+    cur_fm = _current_fiscal_month(closing_day)
 
-    # 取引がある月 + 取引側のfetched日とカウント
+    # 取引がある月 + 取引側のfetched日とカウント（未来の fiscal month を除外）
     tx_rows = conn.execute(
         f"""SELECT {fm} as fm, MAX(fetched) as fetched, COUNT(*) as cnt
            FROM cf_transactions
-           GROUP BY fm ORDER BY fm DESC"""
+           GROUP BY fm
+           HAVING fm <= ?
+           ORDER BY fm DESC""",
+        (cur_fm,),
     ).fetchall()
     tx_map = {r[0]: {"fetched": r[1], "count": r[2]} for r in tx_rows}
 
@@ -579,13 +609,17 @@ def get_cf_available_months(conn: sqlite3.Connection, closing_day: int = 1) -> l
 def get_cf_dividend_history(conn: sqlite3.Connection, closing_day: int = 1) -> dict:
     """配当・分配金の月別・年別実績を返す。"""
     fm = _fiscal_month_expr(closing_day)
+    cur_fm = _current_fiscal_month(closing_day)
     rows = conn.execute(
         f"""SELECT {fm} as fm, SUM(amount) as total
            FROM cf_transactions
            WHERE is_transfer=0 AND is_target=1 AND amount>0
              AND (minor_category LIKE '%配当%' OR minor_category LIKE '%分配%'
                   OR minor_category LIKE '%利息%')
-           GROUP BY fm ORDER BY fm ASC"""
+           GROUP BY fm
+           HAVING fm <= ?
+           ORDER BY fm ASC""",
+        (cur_fm,),
     ).fetchall()
     monthly = [{"year_month": r[0], "amount": r[1]} for r in rows]
 
