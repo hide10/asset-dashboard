@@ -462,3 +462,23 @@ class TestAiChatExport:
         assert "資産分析" in html
         assert "家計簿分析" in html
         assert "ライフプラン" in html
+
+
+class TestClosingDaySetting:
+    """締め日設定が設定ページに表示される。"""
+
+    def test_settings_has_closing_day_section(self):
+        html = _build_settings_html("dummy_db", saved=False)
+        assert "家計簿の締め日" in html
+        assert "closing_day" in html
+
+    def test_settings_has_day_options(self):
+        html = _build_settings_html("dummy_db", saved=False)
+        assert "1日（暦月）" in html
+        assert "25日" in html
+
+    def test_cf_page_no_period_note_default(self):
+        """デフォルト(closing_day=1)では期間注記なし。"""
+        data = _demo_cf_data()
+        html = _build_cf_html(data)
+        assert "毎月" not in html or "毎月1日" not in html

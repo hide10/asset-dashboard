@@ -237,9 +237,10 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
     """家計簿分析用のプロンプトを組み立てる。"""
     conn = init_db(db_path)
     try:
-        summary = get_cf_category_summary(conn, year_month)
-        trend = get_cf_monthly_trend(conn, months=6)
-        fixed = get_cf_fixed_expenses(conn, months=3)
+        closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+        summary = get_cf_category_summary(conn, year_month, closing_day=closing_day)
+        trend = get_cf_monthly_trend(conn, months=6, closing_day=closing_day)
+        fixed = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day)
         budgets = get_budgets(conn)
     finally:
         conn.close()

@@ -1610,13 +1610,14 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
         ]
 
         # 家計簿の実績貯蓄データ
-        cf_savings = get_cf_actual_savings(conn)
+        closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+        cf_savings = get_cf_actual_savings(conn, closing_day=closing_day)
 
         # 日次資産推移
         daily_assets = get_daily_assets(conn, months=6)
 
         # 配当実績
-        dividend_history = get_cf_dividend_history(conn)
+        dividend_history = get_cf_dividend_history(conn, closing_day=closing_day)
     finally:
         conn.close()
 
@@ -2445,6 +2446,7 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
     conn = get_connection(db_path)
     try:
         db_key = get_setting(conn, "gemini_api_key", "")
+        closing_day = int(get_setting(conn, "closing_day", "1") or "1")
     finally:
         conn.close()
     env_key = os.environ.get("GEMINI_API_KEY", "")
@@ -2515,6 +2517,24 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
           Google AI Studio（<a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a>）で無料で取得できます。
           環境変数 GEMINI_API_KEY でも設定可能です。空欄で保存するとDBのキーを削除します。
         </div>
+      </div>
+      <button type="submit" class="btn">保存</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>家計簿の締め日</h2>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      毎月の集計開始日を設定します。例: 25日に設定すると「2月分 = 1/25〜2/24」で集計されます。
+    </p>
+    <form method="POST" action="/settings">
+      <input type="hidden" name="setting_type" value="closing_day">
+      <div class="field">
+        <label>集計開始日</label>
+        <select name="closing_day" style="width:auto;padding:8px 12px;border:1px solid #dfe6e9;border-radius:6px;font-size:0.9rem">
+          <option value="1"{"selected" if closing_day <= 1 else ""}>1日（暦月）</option>
+          {"".join(f'<option value="{d}"{" selected" if closing_day == d else ""}>{d}日</option>' for d in range(2, 29))}
+        </select>
+        <div class="hint">給与日に合わせると実際の家計サイクルに合った分析ができます。</div>
       </div>
       <button type="submit" class="btn">保存</button>
     </form>
@@ -2591,8 +2611,11 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
     """家計簿分析データを取得する。"""
     conn = get_connection(db_path)
     try:
+        # 締め日設定
+        closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+
         # 利用可能月
-        available = get_cf_available_months(conn)
+        available = get_cf_available_months(conn, closing_day=closing_day)
         if not available:
             return {}
 
@@ -2601,22 +2624,22 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
             year_month = available[0]["year_month"]
 
         # カテゴリ集計
-        summary = get_cf_category_summary(conn, year_month)
+        summary = get_cf_category_summary(conn, year_month, closing_day=closing_day)
 
         # 月別推移
-        trend = get_cf_monthly_trend(conn, months=12)
+        trend = get_cf_monthly_trend(conn, months=12, closing_day=closing_day)
 
         # カテゴリ別月次推移
-        category_trend = get_cf_category_trend(conn, months=6)
+        category_trend = get_cf_category_trend(conn, months=6, closing_day=closing_day)
 
         # 固定費 vs 変動費
-        fixed_expenses = get_cf_fixed_expenses(conn, months=3)
+        fixed_expenses = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day)
 
         # 収入内訳
-        income_breakdown = get_cf_income_breakdown(conn, year_month)
+        income_breakdown = get_cf_income_breakdown(conn, year_month, closing_day=closing_day)
 
         # 収入推移
-        income_trend = get_cf_income_trend(conn, months=6)
+        income_trend = get_cf_income_trend(conn, months=6, closing_day=closing_day)
 
         # 予算
         budgets = get_budgets(conn)
@@ -2633,6 +2656,7 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
         "income_breakdown": income_breakdown,
         "income_trend": income_trend,
         "budgets": budgets,
+        "closing_day": closing_day,
     }
 
 
@@ -2964,6 +2988,7 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
     summary = data["summary"]
     trend = data.get("trend", [])
     available = data.get("available_months", [])
+    closing_day = data.get("closing_day", 1)
 
     # 当月（途中データ）判定
     from datetime import date as _date
@@ -3344,6 +3369,11 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
       {month_options}
     </select>
     <button class="nav-btn" id="next-month" title="次の月">&rarr;</button>
+    {
+        f'<span style="font-size:0.75rem;color:#636e72;margin-left:8px">（毎月{closing_day}日〜）</span>'
+        if closing_day > 1
+        else ""
+    }
   </div>
   <div class="summary-cards">
     <div class="summary-card">
@@ -3903,7 +3933,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 conn = get_connection(self.db_path)
                 try:
-                    result = get_cf_available_months(conn)
+                    closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+                    result = get_cf_available_months(conn, closing_day=closing_day)
                 finally:
                     conn.close()
             self.send_response(200)
@@ -4116,6 +4147,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _ai_prompt_cf(self, conn: sqlite3.Connection) -> str:
         """家計簿分析用プロンプトを生成する。"""
+        closing_day = int(get_setting(conn, "closing_day", "1") or "1")
         cf_row = conn.execute(
             "SELECT DISTINCT year_month FROM cf_transactions ORDER BY year_month DESC LIMIT 1"
         ).fetchone()
@@ -4123,7 +4155,7 @@ class Handler(BaseHTTPRequestHandler):
             return "家計簿データがありません。"
         ym = cf_row[0]
 
-        summary = get_cf_category_summary(conn, ym)
+        summary = get_cf_category_summary(conn, ym, closing_day=closing_day)
         if not summary:
             return "家計簿データがありません。"
 
@@ -4142,7 +4174,7 @@ class Handler(BaseHTTPRequestHandler):
             lines.append(f"| {c['name']} | {c['total']:,.0f}円 | {pct:.1f}% |")
 
         # 月別推移
-        trend = get_cf_monthly_trend(conn, months=6)
+        trend = get_cf_monthly_trend(conn, months=6, closing_day=closing_day)
         if trend:
             lines += ["", "## 月別推移（直近6ヶ月）", "", "| 月 | 収入 | 支出 | 収支 |", "|---|---:|---:|---:|"]
             for t in trend[-6:]:
@@ -4224,20 +4256,37 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode()
             post_params = parse_qs(body)
-            api_key = post_params.get("gemini_api_key", [""])[0].strip()
-            conn = get_connection(self.db_path)
-            try:
+            setting_type = post_params.get("setting_type", ["gemini"])[0]
+
+            if setting_type == "closing_day":
+                # 締め日設定
+                closing_day_str = post_params.get("closing_day", ["1"])[0].strip()
+                try:
+                    closing_day_val = max(1, min(28, int(closing_day_str)))
+                except ValueError:
+                    closing_day_val = 1
+                conn = get_connection(self.db_path)
+                try:
+                    save_setting(conn, "closing_day", str(closing_day_val))
+                    logger.info("締め日更新: %d日", closing_day_val)
+                finally:
+                    conn.close()
+            else:
+                # Gemini APIキー設定
+                api_key = post_params.get("gemini_api_key", [""])[0].strip()
+                conn = get_connection(self.db_path)
+                try:
+                    if api_key:
+                        save_setting(conn, "gemini_api_key", api_key)
+                    else:
+                        conn.execute("DELETE FROM settings WHERE key = 'gemini_api_key'")
+                        conn.commit()
+                finally:
+                    conn.close()
+                # キーが設定されたら即座にAIコメント生成を試みる（バックグラウンド）
                 if api_key:
-                    save_setting(conn, "gemini_api_key", api_key)
-                else:
-                    conn.execute("DELETE FROM settings WHERE key = 'gemini_api_key'")
-                    conn.commit()
-            finally:
-                conn.close()
-            # キーが設定されたら即座にAIコメント生成を試みる（バックグラウンド）
-            if api_key:
-                t = threading.Thread(target=_generate_ai_comments, args=(self.db_path,), daemon=True)
-                t.start()
+                    t = threading.Thread(target=_generate_ai_comments, args=(self.db_path,), daemon=True)
+                    t.start()
             self.send_response(303)
             self.send_header("Location", "/settings?saved=1")
             self.end_headers()

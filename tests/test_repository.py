@@ -3,6 +3,7 @@
 import pytest
 
 from src.db.repository import (
+    _fiscal_month_range,
     get_cf_actual_savings,
     get_cf_available_months,
     get_cf_category_summary,
@@ -11,6 +12,7 @@ from src.db.repository import (
     get_cf_fixed_expenses,
     get_cf_income_breakdown,
     get_cf_income_trend,
+    get_cf_monthly_trend,
 )
 from src.db.schema import init_db
 
@@ -251,3 +253,177 @@ class TestCfDividendHistory:
         assert result["monthly"] == []
         assert result["annual"] == []
         c.close()
+
+
+class TestFiscalMonthRange:
+    """_fiscal_month_range ヘルパーのテスト。"""
+
+    def test_closing_day_1(self):
+        start, end = _fiscal_month_range("2025-02", 1)
+        assert start == "2025-02-01"
+        assert end == "2025-02-28"
+
+    def test_closing_day_1_leap_year(self):
+        start, end = _fiscal_month_range("2024-02", 1)
+        assert start == "2024-02-01"
+        assert end == "2024-02-29"
+
+    def test_closing_day_25(self):
+        # 2月分 = 1/25〜2/24
+        start, end = _fiscal_month_range("2025-02", 25)
+        assert start == "2025-01-25"
+        assert end == "2025-02-24"
+
+    def test_closing_day_25_january(self):
+        # 1月分 = 12/25〜1/24
+        start, end = _fiscal_month_range("2025-01", 25)
+        assert start == "2024-12-25"
+        assert end == "2025-01-24"
+
+    def test_closing_day_10(self):
+        # 3月分 = 2/10〜3/9
+        start, end = _fiscal_month_range("2025-03", 10)
+        assert start == "2025-02-10"
+        assert end == "2025-03-09"
+
+
+class TestClosingDay:
+    """締め日設定が各クエリに反映されるかテスト。"""
+
+    @pytest.fixture
+    def conn_closing(self, tmp_path):
+        """締め日テスト用のデータ。
+
+        締め日25日の場合:
+        - 10/1〜10/24 → fiscal month 2025-10
+        - 10/25〜11/24 → fiscal month 2025-11
+        """
+        db_path = tmp_path / "closing.db"
+        c = init_db(str(db_path))
+        rows = [
+            # 10/1〜10/24: fiscal=2025-10 (closing_day=25)
+            ("c01", "2025-10", "2025-10-01", "家賃10月前半", -80000, "銀行A", "住宅", "家賃", "", 0, 1, "2025-10-15"),
+            (
+                "c02",
+                "2025-10",
+                "2025-10-15",
+                "スーパー10月前半",
+                -10000,
+                "カードA",
+                "食費",
+                "食料品",
+                "",
+                0,
+                1,
+                "2025-10-15",
+            ),
+            ("c03", "2025-10", "2025-10-20", "給与10月前半", 300000, "銀行A", "収入", "給与", "", 0, 1, "2025-10-15"),
+            # 10/25〜11/24: fiscal=2025-11 (closing_day=25)
+            ("c04", "2025-10", "2025-10-25", "携帯10月後半", -9000, "銀行A", "通信費", "携帯", "", 0, 1, "2025-10-15"),
+            ("c05", "2025-10", "2025-10-28", "副業10月後半", 50000, "銀行B", "収入", "副業", "", 0, 1, "2025-10-15"),
+            (
+                "c06",
+                "2025-11",
+                "2025-11-05",
+                "スーパー11月前半",
+                -15000,
+                "カードA",
+                "食費",
+                "食料品",
+                "",
+                0,
+                1,
+                "2025-11-15",
+            ),
+            ("c07", "2025-11", "2025-11-20", "給与11月", 310000, "銀行A", "収入", "給与", "", 0, 1, "2025-11-15"),
+            # 11/25〜12/24: fiscal=2025-12 (closing_day=25)
+            (
+                "c08",
+                "2025-11",
+                "2025-11-25",
+                "保険11月後半",
+                -12000,
+                "銀行A",
+                "保険",
+                "生命保険",
+                "",
+                0,
+                1,
+                "2025-11-15",
+            ),
+            (
+                "c09",
+                "2025-12",
+                "2025-12-10",
+                "スーパー12月前半",
+                -20000,
+                "カードA",
+                "食費",
+                "食料品",
+                "",
+                0,
+                1,
+                "2025-12-15",
+            ),
+            ("c10", "2025-12", "2025-12-15", "配当金", 5000, "証券A", "収入", "配当金", "", 0, 1, "2025-12-15"),
+        ]
+        c.executemany(
+            """INSERT INTO cf_transactions
+               (id, year_month, date, description, amount, institution,
+                major_category, minor_category, memo, is_transfer, is_target, fetched)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        c.commit()
+        yield c
+        c.close()
+
+    def test_summary_closing_day_1(self, conn_closing):
+        """closing_day=1: 暦月の2025-10で集計。"""
+        result = get_cf_category_summary(conn_closing, "2025-10", closing_day=1)
+        # 10月の全取引: 支出80000+10000+9000=99000, 収入300000+50000=350000
+        assert result["total_expense"] == 99000
+        assert result["total_income"] == 350000
+
+    def test_summary_closing_day_25(self, conn_closing):
+        """closing_day=25: fiscal 2025-11 = 10/25〜11/24 で集計。"""
+        result = get_cf_category_summary(conn_closing, "2025-11", closing_day=25)
+        # 10/25: -9000, 10/28: +50000, 11/5: -15000, 11/20: +310000
+        assert result["total_expense"] == 9000 + 15000  # 24000
+        assert result["total_income"] == 50000 + 310000  # 360000
+
+    def test_monthly_trend_closing_day_25(self, conn_closing):
+        """closing_day=25: fiscal month ごとにグループ化。"""
+        result = get_cf_monthly_trend(conn_closing, months=12, closing_day=25)
+        # 3つの fiscal month が存在するはず
+        months = [r["year_month"] for r in result]
+        assert "2025-10" in months  # 10/1〜10/24
+        assert "2025-11" in months  # 10/25〜11/24
+        assert "2025-12" in months  # 11/25〜12/24
+
+    def test_income_breakdown_closing_day_25(self, conn_closing):
+        """closing_day=25: fiscal 2025-11 の収入内訳。"""
+        result = get_cf_income_breakdown(conn_closing, "2025-11", closing_day=25)
+        assert result["total"] == 360000  # 副業50000 + 給与310000
+
+    def test_available_months_closing_day_25(self, conn_closing):
+        """closing_day=25: fiscal month ベースの月一覧。"""
+        result = get_cf_available_months(conn_closing, closing_day=25)
+        months = [r["year_month"] for r in result]
+        assert "2025-10" in months
+        assert "2025-11" in months
+        assert "2025-12" in months
+
+    def test_dividend_history_closing_day_25(self, conn_closing):
+        """closing_day=25: 配当金は fiscal 2025-12 に入る。"""
+        result = get_cf_dividend_history(conn_closing, closing_day=25)
+        monthly = result["monthly"]
+        assert len(monthly) == 1
+        assert monthly[0]["year_month"] == "2025-12"
+        assert monthly[0]["amount"] == 5000
+
+    def test_default_closing_day_backward_compatible(self, conn):
+        """closing_day=1 (デフォルト) は既存テストと同じ結果。"""
+        result = get_cf_category_summary(conn, "2025-10", closing_day=1)
+        assert result["total_expense"] == 128800
+        assert result["total_income"] == 392500
