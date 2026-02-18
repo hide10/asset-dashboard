@@ -273,6 +273,20 @@ class TestBudget:
         assert "予算残り" in self.html
         assert 'data-testid="budget-remaining"' in self.html
 
+    def test_budget_total_summary(self):
+        """予算合計サマリーカードが存在する。"""
+        assert "予算合計" in self.html
+        assert 'data-testid="budget-total"' in self.html
+
+    def test_budget_total_income_ratio(self):
+        """予算合計カードに収入比が表示される。"""
+        assert "収入の" in self.html
+        assert "%" in self.html
+
+    def test_budget_remaining_prev_month(self):
+        """予算残りカードに前月実績が表示される。"""
+        assert "先月実績:" in self.html
+
     def test_budget_cell_click_editable(self):
         """予算セルにクリック編集用のdata属性とクラスがある。"""
         assert "budget-cell" in self.html
