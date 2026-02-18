@@ -344,7 +344,8 @@ def generate_comments(db_path: str) -> None:
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
         holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
         cf_available = get_cf_available_months(conn, closing_day=closing_day, holiday_mode=holiday_mode)
-        cf_ym = cf_available[0]["year_month"] if cf_available else None
+        cf_with_data = [m for m in cf_available if m.get("has_data")]
+        cf_ym = cf_with_data[0]["year_month"] if cf_with_data else None
 
         targets: list[tuple[str, str, object]] = [
             ("dashboard", date, lambda: _build_dashboard_prompt(db_path, date)),

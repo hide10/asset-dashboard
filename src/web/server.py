@@ -4170,11 +4170,12 @@ class Handler(BaseHTTPRequestHandler):
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
         holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
 
-        # fiscal month ベースで最新月を取得
+        # fiscal month ベースで最新月（取引データあり）を取得
         available = get_cf_available_months(conn, closing_day=closing_day, holiday_mode=holiday_mode)
-        if not available:
+        with_data = [m for m in available if m.get("has_data")]
+        if not with_data:
             return "家計簿データがありません。"
-        ym = available[0]["year_month"]
+        ym = with_data[0]["year_month"]
 
         summary = get_cf_category_summary(conn, ym, closing_day=closing_day, holiday_mode=holiday_mode)
         if not summary:
