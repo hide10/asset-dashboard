@@ -15,6 +15,7 @@ from datetime import datetime
 from src.db.repository import (
     get_budgets,
     get_cashflows,
+    get_cf_available_months,
     get_cf_category_summary,
     get_cf_fixed_expenses,
     get_cf_monthly_trend,
@@ -237,9 +238,11 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
     """家計簿分析用のプロンプトを組み立てる。"""
     conn = init_db(db_path)
     try:
-        summary = get_cf_category_summary(conn, year_month)
-        trend = get_cf_monthly_trend(conn, months=6)
-        fixed = get_cf_fixed_expenses(conn, months=3)
+        closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+        holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
+        summary = get_cf_category_summary(conn, year_month, closing_day=closing_day, holiday_mode=holiday_mode)
+        trend = get_cf_monthly_trend(conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode)
+        fixed = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day, holiday_mode=holiday_mode)
         budgets = get_budgets(conn)
     finally:
         conn.close()
@@ -337,11 +340,12 @@ def generate_comments(db_path: str) -> None:
             return
         date = row[0]
 
-        # CF の最新年月を取得
-        cf_row = conn.execute(
-            "SELECT DISTINCT year_month FROM cf_transactions ORDER BY year_month DESC LIMIT 1"
-        ).fetchone()
-        cf_ym = cf_row[0] if cf_row else None
+        # CF の最新 fiscal month を取得（締め日設定を反映）
+        closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+        holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
+        cf_available = get_cf_available_months(conn, closing_day=closing_day, holiday_mode=holiday_mode)
+        cf_with_data = [m for m in cf_available if m.get("has_data")]
+        cf_ym = cf_with_data[0]["year_month"] if cf_with_data else None
 
         targets: list[tuple[str, str, object]] = [
             ("dashboard", date, lambda: _build_dashboard_prompt(db_path, date)),
