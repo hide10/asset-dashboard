@@ -3,6 +3,7 @@ raw/
 
 # SQLite database
 data/*.db
+*.db
 
 # Cache data (contains portfolio-derived info)
 data/dividends.json

@@ -2,6 +2,7 @@
 name = "money-forward-analyzer"
 version = "0.1.0"
 description = "マネーフォワード資産取得・分析ツール"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "playwright>=1.40",
