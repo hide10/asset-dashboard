@@ -634,3 +634,72 @@ class TestHolidayModeQuery:
         # fiscal 2026-02: 1/25〜2/24 → 1/25(-1000), 1/26(+300000), 2/10(-80000)
         assert result["total_expense"] == 81000
         assert result["total_income"] == 300000
+
+
+class TestClosingDay31:
+    """closing_day=31 で短い月（4月=30日, 2月=28日）のテスト。
+
+    SQL式とPython側 (_fiscal_month_range) の一貫性を検証する。
+    """
+
+    @pytest.fixture
+    def conn_day31(self, tmp_path):
+        db_path = tmp_path / "day31.db"
+        c = init_db(str(db_path))
+        rows = [
+            # 4/30: 4月最終日。closing_day=31 → min(31,30)=30 なので fiscal 2025-05
+            ("d01", "2025-04", "2025-04-30", "月末支出", -10000, "カードA", "食費", "食料品", "", 0, 1, "2025-05-01"),
+            # 4/29: closing_day=31 → day(29) < min(31,30) → fiscal 2025-04
+            ("d02", "2025-04", "2025-04-29", "前日支出", -5000, "カードA", "食費", "外食", "", 0, 1, "2025-05-01"),
+            # 5/15: 普通の日 → fiscal 2025-05
+            ("d03", "2025-05", "2025-05-15", "5月支出", -8000, "カードA", "食費", "食料品", "", 0, 1, "2025-05-20"),
+            # 2/28: 2月最終日。closing_day=31 → min(31,28)=28 なので fiscal 2025-03
+            ("d04", "2025-02", "2025-02-28", "2月末支出", -7000, "カードA", "食費", "食料品", "", 0, 1, "2025-03-01"),
+            # 2/27: fiscal 2025-02
+            ("d05", "2025-02", "2025-02-27", "2月27日", -3000, "カードA", "食費", "外食", "", 0, 1, "2025-03-01"),
+        ]
+        c.executemany(
+            """INSERT INTO cf_transactions
+               (id, year_month, date, description, amount, institution,
+                major_category, minor_category, memo, is_transfer, is_target, fetched)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        c.commit()
+        yield c
+        c.close()
+
+    def test_trend_groups_april_30_into_may(self, conn_day31):
+        """closing_day=31: 4/30 は fiscal 2025-05 にグループ化される。"""
+        trend = get_cf_monthly_trend(conn_day31, months=12, closing_day=31)
+        by_month = {t["year_month"]: t["expense"] for t in trend}
+        # 4/30(-10000) は fiscal 2025-05 に、4/29(-5000) は fiscal 2025-04 に
+        assert by_month.get("2025-04") == 5000
+        assert by_month.get("2025-05") == 10000 + 8000
+
+    def test_summary_consistent_with_trend(self, conn_day31):
+        """summary (range ベース) と trend (SQL式) が一致する。"""
+        summary = get_cf_category_summary(conn_day31, "2025-05", closing_day=31)
+        trend = get_cf_monthly_trend(conn_day31, months=12, closing_day=31)
+        trend_may = next(t for t in trend if t["year_month"] == "2025-05")
+        assert summary["total_expense"] == trend_may["expense"]
+
+    def test_feb_28_rolls_to_march(self, conn_day31):
+        """closing_day=31: 2/28 は fiscal 2025-03 にグループ化される。"""
+        trend = get_cf_monthly_trend(conn_day31, months=12, closing_day=31)
+        by_month = {t["year_month"]: t["expense"] for t in trend}
+        # 2/28(-7000) → fiscal 2025-03, 2/27(-3000) → fiscal 2025-02
+        assert by_month.get("2025-02") == 3000
+        assert by_month.get("2025-03") == 7000
+
+    def test_range_consistent_with_sql(self, conn_day31):
+        """_fiscal_month_range と SQL式の結果が一致する（4月/2月）。"""
+        # fiscal 2025-05: range = 4/30〜5/30
+        start, end = _fiscal_month_range("2025-05", 31)
+        assert start == "2025-04-30"
+        assert end == "2025-05-30"
+
+        # fiscal 2025-03: range = 2/28〜3/30
+        start, end = _fiscal_month_range("2025-03", 31)
+        assert start == "2025-02-28"
+        assert end == "2025-03-30"

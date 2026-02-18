@@ -4168,12 +4168,12 @@ class Handler(BaseHTTPRequestHandler):
         """家計簿分析用プロンプトを生成する。"""
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
         holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
-        cf_row = conn.execute(
-            "SELECT DISTINCT year_month FROM cf_transactions ORDER BY year_month DESC LIMIT 1"
-        ).fetchone()
-        if not cf_row:
+
+        # fiscal month ベースで最新月を取得
+        available = get_cf_available_months(conn, closing_day=closing_day, holiday_mode=holiday_mode)
+        if not available:
             return "家計簿データがありません。"
-        ym = cf_row[0]
+        ym = available[0]["year_month"]
 
         summary = get_cf_category_summary(conn, ym, closing_day=closing_day, holiday_mode=holiday_mode)
         if not summary:

@@ -258,9 +258,10 @@ def _fiscal_month_expr(closing_day: int, holiday_mode: str = "none") -> str:
     if closing_day <= 1:
         return "year_month"
     if holiday_mode == "none":
-        # 固定日数比較でOK
+        # 月末日を超えない実効締め日で比較（closing_day=31 で4月なら 30 にクランプ）
+        last_day = "CAST(strftime('%d', date, 'start of month', '+1 month', '-1 day') AS INTEGER)"
         return (
-            f"CASE WHEN CAST(substr(date,9,2) AS INTEGER) >= {closing_day} "
+            f"CASE WHEN CAST(substr(date,9,2) AS INTEGER) >= min({closing_day}, {last_day}) "
             f"THEN strftime('%Y-%m', date, 'start of month', '+1 month') "
             f"ELSE substr(date,1,7) END"
         )
@@ -270,7 +271,7 @@ def _fiscal_month_expr(closing_day: int, holiday_mode: str = "none") -> str:
 
     today = date.today()
     boundaries: list[tuple[str, str]] = []
-    for y in range(today.year - 3, today.year + 2):
+    for y in range(today.year - 10, today.year + 2):
         for m in range(1, 13):
             adj = _adjusted_closing_date(y, m, closing_day, holiday_mode)
             # adj は「y年m月の締め日」= 翌 fiscal month の開始日
@@ -300,7 +301,10 @@ def _current_fiscal_month(closing_day: int, holiday_mode: str = "none") -> str:
         return today.strftime("%Y-%m")
 
     if holiday_mode == "none":
-        if today.day < closing_day:
+        import calendar
+
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        if today.day < min(closing_day, last_day):
             return today.strftime("%Y-%m")
     else:
         adj = _adjusted_closing_date(today.year, today.month, closing_day, holiday_mode)
