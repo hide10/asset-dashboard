@@ -1,0 +1,21 @@
+name: バグ報告
+description: 不具合やエラーの報告
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 何が起きたか
+      description: 期待した動作と実際の動作
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      description: バグを再現する手順（任意）
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境
+      description: OS、ブラウザなど（任意）
