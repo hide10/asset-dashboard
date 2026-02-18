@@ -1,7 +1,13 @@
 """repository.py のテスト — DB操作の正確性を検証。"""
 
+import json
+
 import pytest
 
+from src.analysis.compare import (
+    _dynamic_label,
+    get_all_comparisons,
+)
 from src.db.repository import (
     _adjusted_closing_date,
     _current_fiscal_month,
@@ -828,3 +834,100 @@ class TestClosingDay31:
         start, end = _fiscal_month_range("2025-03", 31)
         assert start == "2025-02-28"
         assert end == "2025-03-30"
+
+
+# ── 比較ラベル・フィルタリングのテスト ──────────────────────
+
+
+class TestDynamicLabel:
+    """_dynamic_label のテスト。"""
+
+    def test_monthly_enough_data(self):
+        """30日以上離れていれば「前月比」。"""
+        assert _dynamic_label("2025-03-01", "2025-01-30", "前月比") == "前月比"
+
+    def test_monthly_short_data(self):
+        """25日未満なら「n日前」。"""
+        assert _dynamic_label("2025-03-10", "2025-02-28", "前月比") == "10日前"
+
+    def test_yearly_enough_data(self):
+        """11ヶ月以上離れていれば「前年比」。"""
+        assert _dynamic_label("2025-12-01", "2024-12-01", "前年比") == "前年比"
+
+    def test_yearly_months(self):
+        """25日以上11ヶ月未満なら「nヶ月前」。"""
+        assert _dynamic_label("2025-06-01", "2025-03-01", "前年比") == "3ヶ月前"
+
+    def test_yearly_short_data(self):
+        """25日未満なら「n日前」。"""
+        assert _dynamic_label("2025-03-10", "2025-02-28", "前年比") == "10日前"
+
+    def test_none_compare_date(self):
+        """compare_date が None ならデフォルトラベル。"""
+        assert _dynamic_label("2025-03-01", None, "前月比") == "前月比"
+
+
+class TestGetAllComparisons:
+    """get_all_comparisons のフィルタリングテスト。"""
+
+    @pytest.fixture
+    def short_db(self, tmp_path):
+        """5日分のデータしかない DB。"""
+        db_path = str(tmp_path / "short.db")
+        init_db(db_path)
+        import sqlite3
+
+        conn = sqlite3.connect(db_path)
+        for i in range(5):
+            d = f"2025-03-{10 + i:02d}"
+            conn.execute(
+                "INSERT INTO snapshots (date, total_asset, by_class_json, raw_path) VALUES (?, ?, ?, ?)",
+                (d, 1_000_000 + i * 10_000, json.dumps({"預金": 1_000_000 + i * 10_000}), ""),
+            )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    @pytest.fixture
+    def long_db(self, tmp_path):
+        """1年以上のデータがある DB。"""
+        db_path = str(tmp_path / "long.db")
+        init_db(db_path)
+        import sqlite3
+
+        conn = sqlite3.connect(db_path)
+        for d, v in [
+            ("2024-01-15", 800_000),
+            ("2024-12-15", 950_000),
+            ("2025-01-14", 980_000),
+            ("2025-01-15", 1_000_000),
+        ]:
+            conn.execute(
+                "INSERT INTO snapshots (date, total_asset, by_class_json, raw_path) VALUES (?, ?, ?, ?)",
+                (d, v, json.dumps({"預金": v}), ""),
+            )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_short_data_drops_yearly(self, short_db):
+        """データが5日分しかない場合、前年比は除外される。"""
+        results = get_all_comparisons(short_db, "2025-03-14")
+        labels = [r.label for r in results]
+        assert len(results) == 2
+        assert labels[0] == "前日比"
+        assert "日前" in labels[1]
+
+    def test_short_data_monthly_label(self, short_db):
+        """データ不足時、前月比は「n日前」ラベルになる。"""
+        results = get_all_comparisons(short_db, "2025-03-14")
+        monthly = results[1]
+        assert monthly.label == "4日前"
+        assert monthly.compare_date == "2025-03-10"
+
+    def test_long_data_has_three(self, long_db):
+        """1年分のデータがあれば3つの比較が返る。"""
+        results = get_all_comparisons(long_db, "2025-01-15")
+        assert len(results) == 3
+        assert results[1].label == "前月比"
+        assert results[2].label == "前年比"

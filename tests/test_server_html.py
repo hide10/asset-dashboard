@@ -492,3 +492,40 @@ class TestClosingDaySetting:
         assert "設定日前の平日" in html
         assert "設定日後の平日" in html
         assert 'name="holiday_mode"' in html
+
+
+# --- Favicon (#37) ---
+
+
+class TestFavicon:
+    """全ページに favicon が設定されている。"""
+
+    def test_dashboard_has_favicon(self):
+        html = _build_html(_demo_data(), [_demo_data()["date"]])
+        assert 'rel="icon"' in html
+
+    def test_cf_has_favicon(self):
+        html = _build_cf_html(_demo_cf_data())
+        assert 'rel="icon"' in html
+
+    def test_plan_has_favicon(self):
+        html = _build_plan_html(_demo_plan_data())
+        assert 'rel="icon"' in html
+
+    def test_settings_has_favicon(self):
+        html = _build_settings_html("dummy_db", saved=False)
+        assert 'rel="icon"' in html
+
+
+# --- 比較ラベルの動的表示 (#38) ---
+
+
+class TestComparisonHeaders:
+    """保有銘柄テーブルのヘッダーが比較結果に応じて動的に変わる。"""
+
+    def test_demo_has_three_comparison_headers(self):
+        """デモデータ（十分なデータ量）では前日比・前月比・前年比の3列。"""
+        html = _build_html(_demo_data(), [_demo_data()["date"]])
+        assert "前日比" in html
+        assert "前月比" in html
+        assert "前年比" in html

@@ -539,12 +539,16 @@ def _build_html(
                 lookup[key] = hd["diff"]
         diff_lookups.append(lookup)
 
+    # 比較期間のヘッダーラベル (前日比は常に表示、残りは comparisons に応じて動的)
+    comp_headers = "".join(f'<th class="num">{comp.label}</th>' for comp in comparisons)
+    hold_col_count = 3 + len(comparisons)  # 銘柄 + 評価額 + 損益 + 比較列
+
     hold_rows = ""
     current_class = None
     for h in holdings:
         if h["asset_class"] != current_class:
             current_class = h["asset_class"]
-            hold_rows += f'<tr class="group-header"><td colspan="6">{current_class}</td></tr>'
+            hold_rows += f'<tr class="group-header"><td colspan="{hold_col_count}">{current_class}</td></tr>'
         code = f'<span class="code">{h["code"]}</span> ' if h["code"] else ""
         qty = f' <span class="qty">x{h["quantity"]:,.0f}</span>' if h["quantity"] else ""
         # 評価損益セル
@@ -1021,7 +1025,7 @@ def _build_html(
       </div>
       <div class="card-body">
       <table class="hold-table">
-        <tr><th>銘柄</th><th class="num">評価額</th><th class="num">損益</th><th class="num">前日比</th><th class="num">前月比</th><th class="num">前年比</th></tr>
+        <tr><th>銘柄</th><th class="num">評価額</th><th class="num">損益</th>{comp_headers}</tr>
         {hold_rows}
       </table>
       </div>
@@ -2474,6 +2478,7 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
 <title>設定</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box; }}

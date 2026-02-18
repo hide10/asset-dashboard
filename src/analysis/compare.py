@@ -218,6 +218,27 @@ def compare_daily(db_path: str, target_date: str) -> ComparisonResult:
         conn.close()
 
 
+def _dynamic_label(target_date: str, compare_date: str | None, default_label: str) -> str:
+    """実際の比較日との差分に基づいてラベルを生成する。
+
+    データが不足して期待の期間に満たない場合は「n日前」「nヶ月前」を返す。
+    """
+    if compare_date is None:
+        return default_label
+    d = date.fromisoformat(target_date)
+    c = date.fromisoformat(compare_date)
+    days = (d - c).days
+    if default_label == "前月比" and days < 25:
+        return f"{days}日前"
+    if default_label == "前年比":
+        if days < 25:
+            return f"{days}日前"
+        months = (d.year - c.year) * 12 + d.month - c.month
+        if months < 11:
+            return f"{months}ヶ月前"
+    return default_label
+
+
 def compare_monthly(db_path: str, target_date: str) -> ComparisonResult:
     """前月比を計算する。"""
     conn = sqlite3.connect(db_path)
@@ -229,7 +250,8 @@ def compare_monthly(db_path: str, target_date: str) -> ComparisonResult:
         # 同日は除外
         if compare_date == target_date:
             compare_date = None
-        return _compute_diff(conn, target_date, compare_date, "前月比")
+        label = _dynamic_label(target_date, compare_date, "前月比")
+        return _compute_diff(conn, target_date, compare_date, label)
     finally:
         conn.close()
 
@@ -249,15 +271,22 @@ def compare_yearly(db_path: str, target_date: str) -> ComparisonResult:
         # 同日は除外
         if compare_date == target_date:
             compare_date = None
-        return _compute_diff(conn, target_date, compare_date, "前年比")
+        label = _dynamic_label(target_date, compare_date, "前年比")
+        return _compute_diff(conn, target_date, compare_date, label)
     finally:
         conn.close()
 
 
 def get_all_comparisons(db_path: str, target_date: str) -> list[ComparisonResult]:
-    """前日比・前月比・前年比をまとめて返す。"""
-    return [
-        compare_daily(db_path, target_date),
-        compare_monthly(db_path, target_date),
-        compare_yearly(db_path, target_date),
-    ]
+    """前日比・前月比・前年比をまとめて返す。
+
+    前月比と前年比の比較日が同じ場合、前年比は冗長なので除外する。
+    """
+    daily = compare_daily(db_path, target_date)
+    monthly = compare_monthly(db_path, target_date)
+    yearly = compare_yearly(db_path, target_date)
+    results = [daily, monthly]
+    # 前月比と前年比が同じ比較日なら前年比を省略
+    if yearly.compare_date is not None and yearly.compare_date != monthly.compare_date:
+        results.append(yearly)
+    return results
