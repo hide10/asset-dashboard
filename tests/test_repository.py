@@ -516,6 +516,35 @@ class TestJapaneseHolidays:
         assert date(2019, 2, 23) not in _japanese_holidays(2019)
         assert date(2020, 2, 23) in _japanese_holidays(2020)
 
+    def test_heisei_emperor_birthday(self):
+        """平成天皇誕生日(12/23)は〜2018年。2019年は空白。"""
+        from datetime import date
+
+        assert date(2018, 12, 23) in _japanese_holidays(2018)
+        assert date(2019, 12, 23) not in _japanese_holidays(2019)
+
+    def test_olympic_2020_exceptions(self):
+        """2020年オリンピック特例: 海の日→7/23、スポーツの日→7/24、山の日→8/10。"""
+        from datetime import date
+
+        h = _japanese_holidays(2020)
+        assert date(2020, 7, 23) in h  # 海の日（通常は第3月曜）
+        assert date(2020, 7, 24) in h  # スポーツの日（通常は10月第2月曜）
+        assert date(2020, 8, 10) in h  # 山の日（通常は8/11）
+        assert date(2020, 8, 11) not in h  # 通常の山の日はなし
+        # 通常のハッピーマンデー位置にはない
+        assert date(2020, 10, 12) not in h  # スポーツの日の通常位置
+
+    def test_olympic_2021_exceptions(self):
+        """2021年オリンピック特例: 海の日→7/22、スポーツの日→7/23、山の日→8/8。"""
+        from datetime import date
+
+        h = _japanese_holidays(2021)
+        assert date(2021, 7, 22) in h
+        assert date(2021, 7, 23) in h
+        assert date(2021, 8, 8) in h
+        assert date(2021, 8, 11) not in h
+
 
 class TestAdjustedClosingDate:
     """営業日調整のテスト。"""

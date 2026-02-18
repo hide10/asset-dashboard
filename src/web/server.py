@@ -2675,6 +2675,7 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
         "income_trend": income_trend,
         "budgets": budgets,
         "closing_day": closing_day,
+        "holiday_mode": holiday_mode,
     }
 
 
@@ -3007,12 +3008,12 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
     trend = data.get("trend", [])
     available = data.get("available_months", [])
     closing_day = data.get("closing_day", 1)
+    holiday_mode = data.get("holiday_mode", "none")
 
-    # 当月（途中データ）判定
-    from datetime import date as _date
+    # 当月（途中データ）判定 — fiscal month ベース
+    from src.db.repository import _current_fiscal_month
 
-    _current_ym = _date.today().strftime("%Y-%m")
-    is_partial_month = year_month == _current_ym
+    is_partial_month = year_month == _current_fiscal_month(closing_day, holiday_mode)
 
     total_expense = summary["total_expense"]
     total_income = summary["total_income"]

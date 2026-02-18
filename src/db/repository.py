@@ -168,10 +168,20 @@ def _japanese_holidays(year: int) -> set:
     ]
     for m, d in fixed:
         holidays.add(date(year, m, d))
-    if year >= 2016:
-        holidays.add(date(year, 8, 11))  # 山の日 (2016〜)
-    if year >= 2020:
-        holidays.add(date(year, 2, 23))  # 天皇誕生日 (2020〜)
+
+    # 天皇誕生日: 〜2018は12/23（平成）、2019は空白、2020〜は2/23（令和）
+    if year <= 2018:
+        holidays.add(date(year, 12, 23))
+    elif year >= 2020:
+        holidays.add(date(year, 2, 23))
+
+    # 山の日 (2016〜、2020/2021はオリンピック特例で移動)
+    if year == 2020:
+        holidays.add(date(2020, 8, 10))
+    elif year == 2021:
+        holidays.add(date(2021, 8, 8))
+    elif year >= 2016:
+        holidays.add(date(year, 8, 11))
 
     # --- ハッピーマンデー（第N月曜日）---
     def nth_monday(y: int, m: int, n: int) -> date:
@@ -181,9 +191,23 @@ def _japanese_holidays(year: int) -> set:
         return date(y, m, monday + 7 * (n - 1))
 
     holidays.add(nth_monday(year, 1, 2))  # 成人の日（1月第2月曜）
-    holidays.add(nth_monday(year, 7, 3))  # 海の日（7月第3月曜）
     holidays.add(nth_monday(year, 9, 3))  # 敬老の日（9月第3月曜）
-    holidays.add(nth_monday(year, 10, 2))  # スポーツの日（10月第2月曜）
+
+    # 海の日 (2020/2021はオリンピック特例)
+    if year == 2020:
+        holidays.add(date(2020, 7, 23))
+    elif year == 2021:
+        holidays.add(date(2021, 7, 22))
+    else:
+        holidays.add(nth_monday(year, 7, 3))
+
+    # スポーツの日 (2020/2021はオリンピック特例)
+    if year == 2020:
+        holidays.add(date(2020, 7, 24))
+    elif year == 2021:
+        holidays.add(date(2021, 7, 23))
+    else:
+        holidays.add(nth_monday(year, 10, 2))
 
     # --- 春分の日・秋分の日（近似式、2000〜2099年対応）---
     vernal = int(20.8431 + 0.242194 * (year - 1980)) - int((year - 1980) / 4)
