@@ -4,6 +4,7 @@ import pytest
 
 from src.db.repository import (
     _adjusted_closing_date,
+    _current_fiscal_month,
     _fiscal_month_range,
     _japanese_holidays,
     get_cf_actual_savings,
@@ -607,6 +608,45 @@ class TestAdjustedClosingDate:
 
         result = _adjusted_closing_date(2026, 2, 30, "none")
         assert result == date(2026, 2, 28)
+
+
+class TestCurrentFiscalMonthSpillover:
+    """holiday_mode='after' で締め日が翌月にスピルオーバーする場合のテスト。"""
+
+    def test_after_spillover_before_boundary(self):
+        """Feb 28 (Sat) → adj=Mar 2 (Mon)。Mar 1 はまだ2月の fiscal month。"""
+        from datetime import date
+
+        # 2026-02-28 は土曜日 → "after" で 2026-03-02（月曜）に移動
+        assert _current_fiscal_month(28, "after", _today=date(2026, 3, 1)) == "2026-02"
+
+    def test_after_spillover_at_boundary(self):
+        """adj=Mar 2 を過ぎたら 3月の fiscal month。"""
+        from datetime import date
+
+        assert _current_fiscal_month(28, "after", _today=date(2026, 3, 2)) == "2026-03"
+
+    def test_after_spillover_closing_day_31(self):
+        """closing_day=31, Jan 31 (Sat) → adj=Feb 2 (Mon)。Feb 1 はまだ1月。"""
+        from datetime import date
+
+        # 2026-01-31 は土曜日 → "after" で 2026-02-02（月曜）に移動
+        assert _current_fiscal_month(31, "after", _today=date(2026, 2, 1)) == "2026-01"
+        assert _current_fiscal_month(31, "after", _today=date(2026, 2, 2)) == "2026-02"
+
+    def test_no_spillover_normal_case(self):
+        """スピルオーバーなしの通常ケースは変わらない。"""
+        from datetime import date
+
+        # 2026-02-25 は水曜日 → 調整なし
+        assert _current_fiscal_month(25, "after", _today=date(2026, 2, 18)) == "2026-02"
+        assert _current_fiscal_month(25, "after", _today=date(2026, 2, 26)) == "2026-03"
+
+    def test_none_mode_unaffected(self):
+        """holiday_mode='none' はスピルオーバーの影響を受けない。"""
+        from datetime import date
+
+        assert _current_fiscal_month(28, "none", _today=date(2026, 3, 1)) == "2026-03"
 
 
 class TestFiscalMonthRangeHoliday:
