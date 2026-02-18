@@ -3105,10 +3105,36 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
     remaining_color = "#0F7F30" if remaining >= 0 else "#DF3727"
     remaining_sign = "+" if remaining >= 0 else ""
     budget_display_style = "" if budget_total > 0 else "display:none"
+
+    # 予算合計カード（収入比つき）
+    income_ratio_html = ""
+    if budget_total > 0 and total_income > 0:
+        income_ratio = budget_total / total_income * 100
+        income_ratio_html = f'<div class="sub-info">収入の {income_ratio:.0f}%</div>'
+    budget_total_html = f"""
+    <div class="summary-card" data-testid="budget-total" style="{budget_display_style}">
+      <h3>予算合計</h3>
+      <div class="amount">{budget_total:,.0f}円</div>
+      {income_ratio_html}
+    </div>"""
+
+    # 前月実績（予算設定済みカテゴリの前月支出合計）
+    prev_month_html = ""
+    cat_trend = data.get("category_trend", {})
+    cat_trend_months = cat_trend.get("year_months", [])
+    cat_trend_by_month = cat_trend.get("by_month", {})
+    if budget_total > 0 and len(cat_trend_months) >= 2:
+        prev_m = cat_trend_months[-2]
+        prev_data = cat_trend_by_month.get(prev_m, {})
+        prev_budget_actual = sum(prev_data.get(cat, 0) for cat in budgets if budgets[cat] > 0)
+        if prev_budget_actual > 0:
+            prev_month_html = f'<div class="sub-info">先月実績: {prev_budget_actual:,.0f}円</div>'
+
     budget_remaining_html = f"""
     <div class="summary-card" data-testid="budget-remaining" style="{budget_display_style}">
       <h3>予算残り</h3>
       <div class="amount" style="color:{remaining_color}">{remaining_sign}{remaining:,.0f}円</div>
+      {prev_month_html}
     </div>"""
 
     # 高額支出テーブル
@@ -3319,6 +3345,7 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
   .summary-card {{ flex: 1; background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; }}
   .summary-card h3 {{ font-size: 0.85rem; color: #636e72; margin-bottom: 6px; font-weight: 600; }}
   .summary-card .amount {{ font-size: 1.3rem; font-weight: 700; }}
+  .summary-card .sub-info {{ font-size: 0.75rem; color: #636e72; margin-top: 4px; }}
   .grid {{ display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; align-items: flex-start; }}
   .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); width: calc(50% - 10px); }}
   .card-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 0; }}
@@ -3412,6 +3439,7 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
       <h3>収支</h3>
       <div class="amount {balance_css}">{balance_sign}{balance:,.0f}円</div>
     </div>
+    {budget_total_html}
     {budget_remaining_html}
   </div>
   {
@@ -3809,6 +3837,23 @@ function updateBudgetRemaining() {{
     amountEl.textContent = sign + remaining.toLocaleString('ja-JP') + '円';
     amountEl.style.color = remaining >= 0 ? '#0F7F30' : '#DF3727';
     card.style.display = budgetTotal > 0 ? '' : 'none';
+  }}
+  const totalCard = document.querySelector('[data-testid="budget-total"]');
+  if (totalCard) {{
+    const totalAmountEl = totalCard.querySelector('.amount');
+    totalAmountEl.textContent = budgetTotal.toLocaleString('ja-JP') + '円';
+    totalCard.style.display = budgetTotal > 0 ? '' : 'none';
+    const subInfo = totalCard.querySelector('.sub-info');
+    if (subInfo) {{
+      const incomeText = document.querySelectorAll('.summary-card')[1]?.querySelector('.amount')?.textContent || '';
+      const income = parseInt(incomeText.replace(/[^0-9]/g, '')) || 0;
+      if (income > 0 && budgetTotal > 0) {{
+        subInfo.textContent = '収入の ' + Math.round(budgetTotal / income * 100) + '%';
+        subInfo.style.display = '';
+      }} else {{
+        subInfo.style.display = 'none';
+      }}
+    }}
   }}
 }}
 
