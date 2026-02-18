@@ -288,6 +288,23 @@ class TestFiscalMonthRange:
         assert start == "2025-02-10"
         assert end == "2025-03-09"
 
+    def test_malformed_input_returns_safe_fallback(self):
+        """不正な year_month でもクラッシュしない。"""
+        start, end = _fiscal_month_range("bad", 25)
+        assert start == "1970-01-01"
+
+    def test_empty_input_returns_safe_fallback(self):
+        start, end = _fiscal_month_range("", 1)
+        assert start == "1970-01-01"
+
+    def test_none_input_returns_safe_fallback(self):
+        start, end = _fiscal_month_range(None, 10)
+        assert start == "1970-01-01"
+
+    def test_invalid_month_returns_safe_fallback(self):
+        start, end = _fiscal_month_range("2025-13", 25)
+        assert start == "1970-01-01"
+
 
 class TestClosingDay:
     """締め日設定が各クエリに反映されるかテスト。"""
@@ -484,6 +501,20 @@ class TestJapaneseHolidays:
         holidays = _japanese_holidays(2026)
         # 2026-03-02 (月曜、祝日でない)
         assert date(2026, 3, 2) not in holidays
+
+    def test_mountain_day_not_before_2016(self):
+        """山の日(8/11)は2016年施行。2015年には含まれない。"""
+        from datetime import date
+
+        assert date(2015, 8, 11) not in _japanese_holidays(2015)
+        assert date(2016, 8, 11) in _japanese_holidays(2016)
+
+    def test_emperor_birthday_not_before_2020(self):
+        """天皇誕生日(2/23)は2020年施行。2019年には含まれない。"""
+        from datetime import date
+
+        assert date(2019, 2, 23) not in _japanese_holidays(2019)
+        assert date(2020, 2, 23) in _japanese_holidays(2020)
 
 
 class TestAdjustedClosingDate:

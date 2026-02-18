@@ -159,17 +159,19 @@ def _japanese_holidays(year: int) -> set:
     fixed = [
         (1, 1),  # 元日
         (2, 11),  # 建国記念の日
-        (2, 23),  # 天皇誕生日 (2020〜)
         (4, 29),  # 昭和の日
         (5, 3),  # 憲法記念日
         (5, 4),  # みどりの日
         (5, 5),  # こどもの日
-        (8, 11),  # 山の日 (2016〜)
         (11, 3),  # 文化の日
         (11, 23),  # 勤労感謝の日
     ]
     for m, d in fixed:
         holidays.add(date(year, m, d))
+    if year >= 2016:
+        holidays.add(date(year, 8, 11))  # 山の日 (2016〜)
+    if year >= 2020:
+        holidays.add(date(year, 2, 23))  # 天皇誕生日 (2020〜)
 
     # --- ハッピーマンデー（第N月曜日）---
     def nth_monday(y: int, m: int, n: int) -> date:
@@ -324,9 +326,14 @@ def _fiscal_month_range(year_month: str, closing_day: int, holiday_mode: str = "
     closing_day=25: 2025-02 → 2025-01-25 〜 2025-02-24
     holiday_mode で土日祝の調整を反映する。
     """
+    import re
     from datetime import date, timedelta
 
+    if not re.fullmatch(r"\d{4}-\d{2}", year_month or ""):
+        return "1970-01-01", "1970-01-31"
     year, month = int(year_month[:4]), int(year_month[5:7])
+    if not (1 <= month <= 12):
+        return "1970-01-01", "1970-01-31"
 
     if closing_day <= 1:
         start = date(year, month, 1)
