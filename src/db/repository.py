@@ -247,7 +247,7 @@ def _adjusted_closing_date(year: int, month: int, closing_day: int, holiday_mode
     return d
 
 
-def _fiscal_month_expr(closing_day: int, holiday_mode: str = "none") -> str:
+def _fiscal_month_expr(closing_day: int, holiday_mode: str = "none", conn: sqlite3.Connection | None = None) -> str:
     """締め日に応じた fiscal month の SQL 式を返す。
 
     closing_day=1: 暦月（year_month カラムをそのまま使用）
@@ -255,7 +255,8 @@ def _fiscal_month_expr(closing_day: int, holiday_mode: str = "none") -> str:
       例: 2025-01-25 → '2025-02', 2025-01-24 → '2025-01'
 
     holiday_mode が "none" 以外の場合、祝日・土日を考慮した
-    事前計算済み境界日の CASE 式を生成する。
+    事前計算済み境界日の CASE 式を生成する。conn を渡すと
+    データの実際の年範囲から境界を生成する。
     """
     if closing_day <= 1:
         return "year_month"
@@ -272,8 +273,16 @@ def _fiscal_month_expr(closing_day: int, holiday_mode: str = "none") -> str:
     from datetime import date
 
     today = date.today()
+
+    # データの実際の年範囲を取得（conn があれば）
+    min_year = today.year - 10  # フォールバック
+    if conn is not None:
+        row = conn.execute("SELECT MIN(substr(date,1,4)) FROM cf_transactions").fetchone()
+        if row and row[0]:
+            min_year = int(row[0]) - 1  # 前月の締め日が前年になるケースに備えて -1
+
     boundaries: list[tuple[str, str]] = []
-    for y in range(today.year - 10, today.year + 2):
+    for y in range(min_year, today.year + 2):
         for m in range(1, 13):
             adj = _adjusted_closing_date(y, m, closing_day, holiday_mode)
             # adj は「y年m月の締め日」= 翌 fiscal month の開始日
@@ -486,7 +495,7 @@ def get_cf_monthly_trend(
     conn: sqlite3.Connection, months: int = 12, closing_day: int = 1, holiday_mode: str = "none"
 ) -> list[dict]:
     """月別収入・支出推移を返す（新しい順 → 古い順に並び替え）。"""
-    fm = _fiscal_month_expr(closing_day, holiday_mode)
+    fm = _fiscal_month_expr(closing_day, holiday_mode, conn)
     cur_fm = _current_fiscal_month(closing_day, holiday_mode)
     rows = conn.execute(
         f"""SELECT {fm} as fm,
@@ -509,7 +518,7 @@ def get_cf_category_trend(
     conn: sqlite3.Connection, months: int = 6, closing_day: int = 1, holiday_mode: str = "none"
 ) -> dict:
     """カテゴリ別月次推移を返す。"""
-    fm = _fiscal_month_expr(closing_day, holiday_mode)
+    fm = _fiscal_month_expr(closing_day, holiday_mode, conn)
     cur_fm = _current_fiscal_month(closing_day, holiday_mode)
     ym_rows = conn.execute(
         f"""SELECT DISTINCT {fm} as fm FROM cf_transactions
@@ -562,7 +571,7 @@ def get_cf_fixed_expenses(
     - 「現金・カード」カテゴリは除外（二重計上防止）
     - 確定月に2回以上出現、または確定月+当月で同額なら固定費と判定
     """
-    fm = _fiscal_month_expr(closing_day, holiday_mode)
+    fm = _fiscal_month_expr(closing_day, holiday_mode, conn)
     current_ym = _current_fiscal_month(closing_day, holiday_mode)
 
     ym_rows = conn.execute(
@@ -684,7 +693,7 @@ def get_cf_income_trend(
     conn: sqlite3.Connection, months: int = 6, closing_day: int = 1, holiday_mode: str = "none"
 ) -> list[dict]:
     """月別の収入推移を返す。"""
-    fm = _fiscal_month_expr(closing_day, holiday_mode)
+    fm = _fiscal_month_expr(closing_day, holiday_mode, conn)
     cur_fm = _current_fiscal_month(closing_day, holiday_mode)
     rows = conn.execute(
         f"""SELECT {fm} as fm, SUM(amount) as total
@@ -704,7 +713,7 @@ def get_cf_actual_savings(
     conn: sqlite3.Connection, months: int = 6, closing_day: int = 1, holiday_mode: str = "none"
 ) -> dict | None:
     """直近N月の実際の平均貯蓄額・貯蓄率を返す。"""
-    fm = _fiscal_month_expr(closing_day, holiday_mode)
+    fm = _fiscal_month_expr(closing_day, holiday_mode, conn)
     cur_fm = _current_fiscal_month(closing_day, holiday_mode)
     rows = conn.execute(
         f"""SELECT {fm} as fm,
@@ -735,7 +744,7 @@ def get_cf_actual_savings(
 
 def get_cf_available_months(conn: sqlite3.Connection, closing_day: int = 1, holiday_mode: str = "none") -> list[dict]:
     """取引データ存在月リスト＋ダウンロード済み情報を返す。"""
-    fm = _fiscal_month_expr(closing_day, holiday_mode)
+    fm = _fiscal_month_expr(closing_day, holiday_mode, conn)
     cur_fm = _current_fiscal_month(closing_day, holiday_mode)
 
     # 取引がある月 + 取引側のfetched日とカウント（未来の fiscal month を除外）
@@ -775,7 +784,7 @@ def get_cf_available_months(conn: sqlite3.Connection, closing_day: int = 1, holi
 
 def get_cf_dividend_history(conn: sqlite3.Connection, closing_day: int = 1, holiday_mode: str = "none") -> dict:
     """配当・分配金の月別・年別実績を返す。"""
-    fm = _fiscal_month_expr(closing_day, holiday_mode)
+    fm = _fiscal_month_expr(closing_day, holiday_mode, conn)
     cur_fm = _current_fiscal_month(closing_day, holiday_mode)
     rows = conn.execute(
         f"""SELECT {fm} as fm, SUM(amount) as total
