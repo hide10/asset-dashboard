@@ -482,3 +482,12 @@ class TestClosingDaySetting:
         data = _demo_cf_data()
         html = _build_cf_html(data)
         assert "毎月" not in html or "毎月1日" not in html
+
+    def test_settings_has_holiday_mode_options(self):
+        """祝日調整のラジオボタンが表示される。"""
+        html = _build_settings_html("dummy_db", saved=False)
+        assert "土日祝日の扱い" in html
+        assert "変更しない" in html
+        assert "設定日前の平日" in html
+        assert "設定日後の平日" in html
+        assert 'name="holiday_mode"' in html

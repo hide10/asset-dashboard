@@ -1611,13 +1611,14 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
 
         # 家計簿の実績貯蓄データ
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
-        cf_savings = get_cf_actual_savings(conn, closing_day=closing_day)
+        holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
+        cf_savings = get_cf_actual_savings(conn, closing_day=closing_day, holiday_mode=holiday_mode)
 
         # 日次資産推移
         daily_assets = get_daily_assets(conn, months=6)
 
         # 配当実績
-        dividend_history = get_cf_dividend_history(conn, closing_day=closing_day)
+        dividend_history = get_cf_dividend_history(conn, closing_day=closing_day, holiday_mode=holiday_mode)
     finally:
         conn.close()
 
@@ -2447,6 +2448,7 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
     try:
         db_key = get_setting(conn, "gemini_api_key", "")
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+        holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
     finally:
         conn.close()
     env_key = os.environ.get("GEMINI_API_KEY", "")
@@ -2536,6 +2538,21 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         </select>
         <div class="hint">給与日に合わせると実際の家計サイクルに合った分析ができます。</div>
       </div>
+      <div class="field" style="margin-top:12px">
+        <label>土日祝日の扱い</label>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+          <label style="font-weight:normal;font-size:0.9rem;display:flex;align-items:center;gap:6px">
+            <input type="radio" name="holiday_mode" value="none"{"checked" if holiday_mode == "none" else ""}> 変更しない
+          </label>
+          <label style="font-weight:normal;font-size:0.9rem;display:flex;align-items:center;gap:6px">
+            <input type="radio" name="holiday_mode" value="before"{"checked" if holiday_mode == "before" else ""}> 設定日前の平日
+          </label>
+          <label style="font-weight:normal;font-size:0.9rem;display:flex;align-items:center;gap:6px">
+            <input type="radio" name="holiday_mode" value="after"{"checked" if holiday_mode == "after" else ""}> 設定日後の平日
+          </label>
+        </div>
+        <div class="hint">締め日が土日祝日に当たる場合の調整方法を選択します。</div>
+      </div>
       <button type="submit" class="btn">保存</button>
     </form>
   </div>
@@ -2613,9 +2630,10 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
     try:
         # 締め日設定
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+        holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
 
         # 利用可能月
-        available = get_cf_available_months(conn, closing_day=closing_day)
+        available = get_cf_available_months(conn, closing_day=closing_day, holiday_mode=holiday_mode)
         if not available:
             return {}
 
@@ -2624,22 +2642,22 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
             year_month = available[0]["year_month"]
 
         # カテゴリ集計
-        summary = get_cf_category_summary(conn, year_month, closing_day=closing_day)
+        summary = get_cf_category_summary(conn, year_month, closing_day=closing_day, holiday_mode=holiday_mode)
 
         # 月別推移
-        trend = get_cf_monthly_trend(conn, months=12, closing_day=closing_day)
+        trend = get_cf_monthly_trend(conn, months=12, closing_day=closing_day, holiday_mode=holiday_mode)
 
         # カテゴリ別月次推移
-        category_trend = get_cf_category_trend(conn, months=6, closing_day=closing_day)
+        category_trend = get_cf_category_trend(conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode)
 
         # 固定費 vs 変動費
-        fixed_expenses = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day)
+        fixed_expenses = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day, holiday_mode=holiday_mode)
 
         # 収入内訳
-        income_breakdown = get_cf_income_breakdown(conn, year_month, closing_day=closing_day)
+        income_breakdown = get_cf_income_breakdown(conn, year_month, closing_day=closing_day, holiday_mode=holiday_mode)
 
         # 収入推移
-        income_trend = get_cf_income_trend(conn, months=6, closing_day=closing_day)
+        income_trend = get_cf_income_trend(conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode)
 
         # 予算
         budgets = get_budgets(conn)
@@ -3934,7 +3952,8 @@ class Handler(BaseHTTPRequestHandler):
                 conn = get_connection(self.db_path)
                 try:
                     closing_day = int(get_setting(conn, "closing_day", "1") or "1")
-                    result = get_cf_available_months(conn, closing_day=closing_day)
+                    holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
+                    result = get_cf_available_months(conn, closing_day=closing_day, holiday_mode=holiday_mode)
                 finally:
                     conn.close()
             self.send_response(200)
@@ -4148,6 +4167,7 @@ class Handler(BaseHTTPRequestHandler):
     def _ai_prompt_cf(self, conn: sqlite3.Connection) -> str:
         """家計簿分析用プロンプトを生成する。"""
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
+        holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
         cf_row = conn.execute(
             "SELECT DISTINCT year_month FROM cf_transactions ORDER BY year_month DESC LIMIT 1"
         ).fetchone()
@@ -4155,7 +4175,7 @@ class Handler(BaseHTTPRequestHandler):
             return "家計簿データがありません。"
         ym = cf_row[0]
 
-        summary = get_cf_category_summary(conn, ym, closing_day=closing_day)
+        summary = get_cf_category_summary(conn, ym, closing_day=closing_day, holiday_mode=holiday_mode)
         if not summary:
             return "家計簿データがありません。"
 
@@ -4174,7 +4194,7 @@ class Handler(BaseHTTPRequestHandler):
             lines.append(f"| {c['name']} | {c['total']:,.0f}円 | {pct:.1f}% |")
 
         # 月別推移
-        trend = get_cf_monthly_trend(conn, months=6, closing_day=closing_day)
+        trend = get_cf_monthly_trend(conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode)
         if trend:
             lines += ["", "## 月別推移（直近6ヶ月）", "", "| 月 | 収入 | 支出 | 収支 |", "|---|---:|---:|---:|"]
             for t in trend[-6:]:
@@ -4265,10 +4285,14 @@ class Handler(BaseHTTPRequestHandler):
                     closing_day_val = max(1, min(28, int(closing_day_str)))
                 except ValueError:
                     closing_day_val = 1
+                holiday_mode_val = post_params.get("holiday_mode", ["none"])[0].strip()
+                if holiday_mode_val not in ("none", "before", "after"):
+                    holiday_mode_val = "none"
                 conn = get_connection(self.db_path)
                 try:
                     save_setting(conn, "closing_day", str(closing_day_val))
-                    logger.info("締め日更新: %d日", closing_day_val)
+                    save_setting(conn, "closing_day_holiday", holiday_mode_val)
+                    logger.info("締め日更新: %d日 (祝日: %s)", closing_day_val, holiday_mode_val)
                 finally:
                     conn.close()
             else:

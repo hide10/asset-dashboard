@@ -238,9 +238,10 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
     conn = init_db(db_path)
     try:
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
-        summary = get_cf_category_summary(conn, year_month, closing_day=closing_day)
-        trend = get_cf_monthly_trend(conn, months=6, closing_day=closing_day)
-        fixed = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day)
+        holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
+        summary = get_cf_category_summary(conn, year_month, closing_day=closing_day, holiday_mode=holiday_mode)
+        trend = get_cf_monthly_trend(conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode)
+        fixed = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day, holiday_mode=holiday_mode)
         budgets = get_budgets(conn)
     finally:
         conn.close()

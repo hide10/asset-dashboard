@@ -3,7 +3,9 @@
 import pytest
 
 from src.db.repository import (
+    _adjusted_closing_date,
     _fiscal_month_range,
+    _japanese_holidays,
     get_cf_actual_savings,
     get_cf_available_months,
     get_cf_category_summary,
@@ -427,3 +429,208 @@ class TestClosingDay:
         result = get_cf_category_summary(conn, "2025-10", closing_day=1)
         assert result["total_expense"] == 128800
         assert result["total_income"] == 392500
+
+
+class TestJapaneseHolidays:
+    """日本の祝日計算のテスト。"""
+
+    def test_fixed_holidays_2026(self):
+        from datetime import date
+
+        holidays = _japanese_holidays(2026)
+        assert date(2026, 1, 1) in holidays  # 元日
+        assert date(2026, 2, 11) in holidays  # 建国記念の日
+        assert date(2026, 2, 23) in holidays  # 天皇誕生日
+        assert date(2026, 4, 29) in holidays  # 昭和の日
+        assert date(2026, 5, 3) in holidays  # 憲法記念日
+        assert date(2026, 5, 4) in holidays  # みどりの日
+        assert date(2026, 5, 5) in holidays  # こどもの日
+        assert date(2026, 8, 11) in holidays  # 山の日
+        assert date(2026, 11, 3) in holidays  # 文化の日
+        assert date(2026, 11, 23) in holidays  # 勤労感謝の日
+
+    def test_happy_monday_2026(self):
+        from datetime import date
+
+        holidays = _japanese_holidays(2026)
+        assert date(2026, 1, 12) in holidays  # 成人の日（1月第2月曜）
+        assert date(2026, 7, 20) in holidays  # 海の日（7月第3月曜）
+        assert date(2026, 9, 21) in holidays  # 敬老の日（9月第3月曜）
+        assert date(2026, 10, 12) in holidays  # スポーツの日（10月第2月曜）
+
+    def test_equinox_2026(self):
+        holidays = _japanese_holidays(2026)
+        # 春分の日は3/20 or 3/21付近
+        spring = [d for d in holidays if d.month == 3 and 19 <= d.day <= 22]
+        assert len(spring) >= 1
+        # 秋分の日は9/22 or 9/23付近
+        autumn = [d for d in holidays if d.month == 9 and 21 <= d.day <= 24]
+        assert len(autumn) >= 1
+
+    def test_substitute_holiday(self):
+        """祝日が日曜の場合、翌月曜が振替休日になる。"""
+        from datetime import date
+
+        # 2026-05-03 (憲法記念日) は日曜日
+        assert date(2026, 5, 3).weekday() == 6  # 日曜
+        holidays = _japanese_holidays(2026)
+        # 5/3日曜 → 5/4月曜は既にみどりの日 → 5/5火曜はこどもの日 → 5/6水曜が振替
+        assert date(2026, 5, 6) in holidays
+
+    def test_no_weekdays_in_holidays_set(self):
+        """祝日セットに通常の平日は含まれない。"""
+        from datetime import date
+
+        holidays = _japanese_holidays(2026)
+        # 2026-03-02 (月曜、祝日でない)
+        assert date(2026, 3, 2) not in holidays
+
+
+class TestAdjustedClosingDate:
+    """営業日調整のテスト。"""
+
+    def test_none_mode_no_change(self):
+        from datetime import date
+
+        result = _adjusted_closing_date(2026, 2, 25, "none")
+        assert result == date(2026, 2, 25)
+
+    def test_before_mode_weekday(self):
+        """平日なら変更なし。"""
+        from datetime import date
+
+        # 2026-02-25 は水曜日
+        assert date(2026, 2, 25).weekday() == 2
+        result = _adjusted_closing_date(2026, 2, 25, "before")
+        assert result == date(2026, 2, 25)
+
+    def test_before_mode_saturday(self):
+        """土曜 → 前日の金曜に移動。"""
+        from datetime import date
+
+        # 2026-01-25 が日曜日なので、2026-04-25 を確認
+        # 2026-04-25 は土曜日
+        assert date(2026, 4, 25).weekday() == 5  # 土曜
+        result = _adjusted_closing_date(2026, 4, 25, "before")
+        assert result == date(2026, 4, 24)  # 金曜
+
+    def test_before_mode_sunday(self):
+        """日曜 → 前の金曜に移動。"""
+        from datetime import date
+
+        # 2026-01-25 は日曜日
+        assert date(2026, 1, 25).weekday() == 6  # 日曜
+        result = _adjusted_closing_date(2026, 1, 25, "before")
+        assert result == date(2026, 1, 23)  # 金曜
+
+    def test_after_mode_saturday(self):
+        """土曜 → 次の月曜に移動。"""
+        from datetime import date
+
+        # 2026-04-25 は土曜日
+        assert date(2026, 4, 25).weekday() == 5
+        result = _adjusted_closing_date(2026, 4, 25, "after")
+        assert result == date(2026, 4, 27)  # 月曜
+
+    def test_before_mode_holiday(self):
+        """祝日の場合も前の平日に移動。"""
+        from datetime import date
+
+        # 2026-02-11 は建国記念の日（水曜日）
+        assert date(2026, 2, 11).weekday() == 2  # 水曜
+        result = _adjusted_closing_date(2026, 2, 11, "before")
+        assert result == date(2026, 2, 10)  # 火曜
+
+    def test_closing_day_clamps_to_month_end(self):
+        """2月に closing_day=30 の場合、28日に調整。"""
+        from datetime import date
+
+        result = _adjusted_closing_date(2026, 2, 30, "none")
+        assert result == date(2026, 2, 28)
+
+
+class TestFiscalMonthRangeHoliday:
+    """holiday_mode 付き _fiscal_month_range のテスト。"""
+
+    def test_holiday_mode_none_same_as_default(self):
+        start_none, end_none = _fiscal_month_range("2026-02", 25, "none")
+        start_def, end_def = _fiscal_month_range("2026-02", 25)
+        assert start_none == start_def
+        assert end_none == end_def
+
+    def test_holiday_mode_before_adjusts_start(self):
+        # 2026-01-25 は日曜 → before で 1/23 (金) に
+        start, end = _fiscal_month_range("2026-02", 25, "before")
+        assert start == "2026-01-23"  # 日曜→金曜
+
+    def test_holiday_mode_after_adjusts_start(self):
+        # 2026-01-25 は日曜 → after で 1/26 (月) に
+        start, end = _fiscal_month_range("2026-02", 25, "after")
+        assert start == "2026-01-26"  # 日曜→月曜
+
+    def test_holiday_mode_closing_day_1_unaffected(self):
+        """closing_day=1 は holiday_mode に関係なく暦月。"""
+        start_n, end_n = _fiscal_month_range("2026-02", 1, "none")
+        start_b, end_b = _fiscal_month_range("2026-02", 1, "before")
+        assert start_n == start_b == "2026-02-01"
+        assert end_n == end_b == "2026-02-28"
+
+
+class TestHolidayModeQuery:
+    """holiday_mode が DB クエリ結果に反映されるテスト。"""
+
+    @pytest.fixture
+    def conn_holiday(self, tmp_path):
+        """祝日テスト用データ。2026-01-25 は日曜日。
+
+        closing_day=25, holiday_mode="before" の場合:
+        - fiscal 2026-02: 1/23(金)〜2/24(火)
+        closing_day=25, holiday_mode="after" の場合:
+        - fiscal 2026-02: 1/26(月)〜2/24(火)
+        """
+        db_path = tmp_path / "holiday.db"
+        c = init_db(str(db_path))
+        rows = [
+            # 1/23 (金): before=fiscal 2026-02, after=fiscal 2026-01
+            ("h01", "2026-01", "2026-01-23", "スーパー", -5000, "カードA", "食費", "食料品", "", 0, 1, "2026-01-25"),
+            # 1/24 (土): before=fiscal 2026-02, after=fiscal 2026-01
+            ("h02", "2026-01", "2026-01-24", "外食", -3000, "カードA", "食費", "外食", "", 0, 1, "2026-01-25"),
+            # 1/25 (日): none=fiscal 2026-02, before=fiscal 2026-02, after=fiscal 2026-01
+            ("h03", "2026-01", "2026-01-25", "コンビニ", -1000, "カードA", "食費", "食料品", "", 0, 1, "2026-01-25"),
+            # 1/26 (月): 全モードで fiscal 2026-02
+            ("h04", "2026-01", "2026-01-26", "給与", 300000, "銀行A", "収入", "給与", "", 0, 1, "2026-01-26"),
+            # 2/10 (火): 全モードで fiscal 2026-02
+            ("h05", "2026-02", "2026-02-10", "家賃", -80000, "銀行A", "住宅", "家賃", "", 0, 1, "2026-02-15"),
+        ]
+        c.executemany(
+            """INSERT INTO cf_transactions
+               (id, year_month, date, description, amount, institution,
+                major_category, minor_category, memo, is_transfer, is_target, fetched)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        c.commit()
+        yield c
+        c.close()
+
+    def test_summary_before_includes_boundary_day(self, conn_holiday):
+        """before モードでは 1/23 のデータが fiscal 2026-02 に含まれる。"""
+        result = get_cf_category_summary(conn_holiday, "2026-02", closing_day=25, holiday_mode="before")
+        # 1/23(-5000) + 1/24(-3000) + 1/25(-1000) + 2/10(-80000) = 89000
+        assert result["total_expense"] == 89000
+        # 収入: 1/26(+300000)
+        assert result["total_income"] == 300000
+
+    def test_summary_after_excludes_before_boundary(self, conn_holiday):
+        """after モードでは 1/23,1/24,1/25 のデータが fiscal 2026-01 に入る。"""
+        result = get_cf_category_summary(conn_holiday, "2026-02", closing_day=25, holiday_mode="after")
+        # fiscal 2026-02: 1/26〜2/24 → 1/26(+300000), 2/10(-80000)
+        assert result["total_expense"] == 80000
+        assert result["total_income"] == 300000
+
+    def test_summary_none_standard_boundary(self, conn_holiday):
+        """none モードでは 1/25 以降が fiscal 2026-02。"""
+        result = get_cf_category_summary(conn_holiday, "2026-02", closing_day=25, holiday_mode="none")
+        # fiscal 2026-02: 1/25〜2/24 → 1/25(-1000), 1/26(+300000), 2/10(-80000)
+        assert result["total_expense"] == 81000
+        assert result["total_income"] == 300000
