@@ -476,6 +476,7 @@ class TestClosingDaySetting:
         html = _build_settings_html("dummy_db", saved=False)
         assert "1日（暦月）" in html
         assert "25日" in html
+        assert "31日" in html
 
     def test_cf_page_no_period_note_default(self):
         """デフォルト(closing_day=1)では期間注記なし。"""

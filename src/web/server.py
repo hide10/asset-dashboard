@@ -2534,7 +2534,7 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         <label>集計開始日</label>
         <select name="closing_day" style="width:auto;padding:8px 12px;border:1px solid #dfe6e9;border-radius:6px;font-size:0.9rem">
           <option value="1"{"selected" if closing_day <= 1 else ""}>1日（暦月）</option>
-          {"".join(f'<option value="{d}"{" selected" if closing_day == d else ""}>{d}日</option>' for d in range(2, 29))}
+          {"".join(f'<option value="{d}"{" selected" if closing_day == d else ""}>{d}日</option>' for d in range(2, 32))}
         </select>
         <div class="hint">給与日に合わせると実際の家計サイクルに合った分析ができます。</div>
       </div>
@@ -4282,7 +4282,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 締め日設定
                 closing_day_str = post_params.get("closing_day", ["1"])[0].strip()
                 try:
-                    closing_day_val = max(1, min(28, int(closing_day_str)))
+                    closing_day_val = max(1, min(31, int(closing_day_str)))
                 except ValueError:
                     closing_day_val = 1
                 holiday_mode_val = post_params.get("holiday_mode", ["none"])[0].strip()
