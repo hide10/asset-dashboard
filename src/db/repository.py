@@ -159,7 +159,7 @@ def _fiscal_month_expr(closing_day: int) -> str:
     # SQLite: substr(date,9,2) で日を取得、strftime で翌月計算
     return (
         f"CASE WHEN CAST(substr(date,9,2) AS INTEGER) >= {closing_day} "
-        f"THEN strftime('%Y-%m', date, '+1 month') "
+        f"THEN strftime('%Y-%m', date, 'start of month', '+1 month') "
         f"ELSE substr(date,1,7) END"
     )
 
