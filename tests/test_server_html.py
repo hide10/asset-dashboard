@@ -543,3 +543,35 @@ class TestComparisonHeaders:
         assert "前日比" in html
         assert "前月比" in html
         assert "前年比" in html
+
+
+# --- 予測期間6パターン (#19) ---
+
+
+class TestPrediction6Periods:
+    """予測期間が1/3/5/10/20/30年の6パターンに拡張されている。"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.data = _demo_plan_data()
+        self.html = _build_plan_html(self.data)
+
+    def test_demo_predictions_count(self):
+        """デモデータの predictions が6要素。"""
+        assert len(self.data["predictions"]) == 6
+
+    def test_demo_predictions_contrib_count(self):
+        """デモデータの predictions_contrib が6要素。"""
+        assert len(self.data["predictions_contrib"]) == 6
+
+    def test_html_has_long_term_labels(self):
+        """HTML に「10年後」「20年後」「30年後」が存在する。"""
+        assert "10年後" in self.html
+        assert "20年後" in self.html
+        assert "30年後" in self.html
+
+    def test_html_has_short_term_labels(self):
+        """HTML に「1年後」「3年後」「5年後」も引き続き存在する。"""
+        assert "1年後" in self.html
+        assert "3年後" in self.html
+        assert "5年後" in self.html

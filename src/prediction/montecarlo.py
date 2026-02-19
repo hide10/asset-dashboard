@@ -22,12 +22,13 @@ RISK_CLASSES = {"株式（現物）", "投資信託"}
 
 # 資産クラス別のデフォルトパラメータ（年率リターン, 年率ボラティリティ）
 CLASS_PARAMS: dict[str, tuple[float, float]] = {
-    "株式（現物）": (0.07, 0.20),  # 国内株
-    "投資信託": (0.08, 0.18),  # 先進国株投信が主
-    "年金（株式型）": (0.08, 0.18),  # iDeCo・DC（株式運用）
+    "株式（現物）": (0.07, 0.20),  # 国内・海外個別株混合
+    "投資信託": (0.07, 0.15),  # インデックス投信主体
+    "年金（株式型）": (0.07, 0.15),  # iDeCo インデックス中心
     "不動産": (0.01, 0.05),
     "預金・現金・暗号資産": (0.0, 0.0),
     "年金（保険型）": (0.01, 0.02),  # 個人年金保険等
+    "債券": (0.01, 0.03),
 }
 
 # 年金の保有銘柄名から株式型を判定するパターン
@@ -215,7 +216,7 @@ def predict_no_contribution(
         (predictions, params) where params contains estimation details.
     """
     if years_list is None:
-        years_list = [1, 3, 5]
+        years_list = [1, 3, 5, 10, 20, 30]
 
     totals = _get_daily_totals(db_path)
     if not totals:
@@ -270,7 +271,7 @@ def predict_with_contribution(
         (predictions, params) where params contains estimation details.
     """
     if years_list is None:
-        years_list = [1, 3, 5]
+        years_list = [1, 3, 5, 10, 20, 30]
 
     totals = _get_daily_totals(db_path)
     if not totals:
