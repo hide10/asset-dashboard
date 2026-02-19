@@ -104,12 +104,14 @@ def _estimate_params(
 ) -> tuple[float, float, bool]:
     """日次リターンから年率期待リターンとボラティリティを推定する。
 
-    データが5日未満の場合は class_values の加重平均デフォルト値を使用する。
+    データが60日未満の場合は class_values の加重平均デフォルト値を使用する。
+    短期間のデータではノイズが大きく、年率換算で極端な値になるため。
 
     Returns:
         (annual_return, annual_volatility, is_estimated)
         is_estimated=True はデフォルト値を使用したことを意味する。
     """
+    min_days = 60  # 約3ヶ月の営業日
 
     def _defaults() -> tuple[float, float]:
         if class_values:
@@ -128,7 +130,7 @@ def _estimate_params(
         if prev > 0:
             daily_returns.append(curr / prev - 1)
 
-    if len(daily_returns) < 5:
+    if len(daily_returns) < min_days:
         r, v = _defaults()
         return r, v, True
 
