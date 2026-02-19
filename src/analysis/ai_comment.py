@@ -190,7 +190,9 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
 
     pred_lines = []
     try:
-        predictions, params = predict_no_contribution(db_path, risk_value, safe_value)
+        predictions, params = predict_no_contribution(
+            db_path, risk_value, safe_value, years_list=[1, 3, 5], simulations=2000
+        )
         for p in predictions:
             pred_lines.append(f"  {p.years}年後: P10={p.p10:,.0f}円 / P50={p.p50:,.0f}円 / P90={p.p90:,.0f}円")
     except Exception:
@@ -207,7 +209,9 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
 
     pred_c_lines = []
     try:
-        predictions_c, _ = predict_with_contribution(db_path, risk_value, safe_value, monthly_contribution)
+        predictions_c, _ = predict_with_contribution(
+            db_path, risk_value, safe_value, monthly_contribution, years_list=[1, 3, 5], simulations=2000
+        )
         for p in predictions_c:
             pred_c_lines.append(f"  {p.years}年後: P10={p.p10:,.0f}円 / P50={p.p50:,.0f}円 / P90={p.p90:,.0f}円")
     except Exception:
