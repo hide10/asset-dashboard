@@ -1643,14 +1643,16 @@ def _get_plan_data(db_path: str, monthly_contribution: float | None = None) -> d
 
     # 成長予測（追加投資なし）
     try:
-        predictions, pred_params = predict_no_contribution(db_path, risk_value, safe_value, class_values=class_values)
+        predictions, pred_params = predict_no_contribution(
+            db_path, risk_value, safe_value, simulations=2000, class_values=class_values
+        )
     except Exception:
         predictions, pred_params = [], {}
 
     # 成長予測（積立込み）
     try:
         predictions_c, pred_params_c = predict_with_contribution(
-            db_path, risk_value, safe_value, monthly_contribution, class_values=class_values
+            db_path, risk_value, safe_value, monthly_contribution, simulations=2000, class_values=class_values
         )
     except Exception:
         predictions_c, pred_params_c = [], {}
@@ -1695,6 +1697,9 @@ def _demo_plan_data() -> dict:
         PredictionRange(years=1, p10=19_800_000, p50=22_100_000, p90=24_800_000),
         PredictionRange(years=3, p10=18_200_000, p50=24_500_000, p90=33_100_000),
         PredictionRange(years=5, p10=17_500_000, p50=27_800_000, p90=44_200_000),
+        PredictionRange(years=10, p10=16_000_000, p50=36_500_000, p90=82_000_000),
+        PredictionRange(years=20, p10=18_500_000, p50=63_000_000, p90=215_000_000),
+        PredictionRange(years=30, p10=24_000_000, p50=110_000_000, p90=500_000_000),
     ]
     demo_pred_params = {
         "annual_return": 0.05,
@@ -1708,6 +1713,9 @@ def _demo_plan_data() -> dict:
         PredictionRange(years=1, p10=20_400_000, p50=22_700_000, p90=25_400_000),
         PredictionRange(years=3, p10=20_000_000, p50=26_500_000, p90=35_200_000),
         PredictionRange(years=5, p10=20_800_000, p50=31_200_000, p90=47_500_000),
+        PredictionRange(years=10, p10=22_000_000, p50=42_000_000, p90=90_000_000),
+        PredictionRange(years=20, p10=30_000_000, p50=85_000_000, p90=250_000_000),
+        PredictionRange(years=30, p10=45_000_000, p50=160_000_000, p90=600_000_000),
     ]
 
     # 日次資産推移デモデータ（30日分）
@@ -1912,8 +1920,8 @@ def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | No
         <p>現在の資産を出発点に、将来の資産額を確率的にシミュレーションする手法です。</p>
         <ul>
           <li><strong>対象資産の分離:</strong> リスク資産（株式・投信: <strong>{p_risk:,.0f}円</strong>）のみ市場変動の対象とし、安全資産（預金・不動産・年金: <strong>{p_safe:,.0f}円</strong>）は変動なしで固定加算</li>
-          <li><strong>手法:</strong> 幾何ブラウン運動（対数正規モデル）でリスク資産の月次リターンを生成し、10,000回のシミュレーションを実行</li>
-          <li><strong>パラメータ:</strong> 過去の日次リターンから年率の期待リターンとボラティリティ（価格変動の大きさ）を推定。データが5日未満の場合はデフォルト値（リターン5%/年、ボラティリティ15%/年）を使用</li>
+          <li><strong>手法:</strong> 幾何ブラウン運動（対数正規モデル）でリスク資産の月次リターンを生成し、2,000回のシミュレーションを実行</li>
+          <li><strong>パラメータ:</strong> 過去の日次リターンから年率の期待リターンとボラティリティ（価格変動の大きさ）を推定。データが60日未満の場合は資産クラス別デフォルト値の加重平均を使用</li>
           <li><strong>P10（悲観）:</strong> シミュレーション結果の下位10% — 10回中9回はこれ以上になる水準</li>
           <li><strong>P50（中央）:</strong> シミュレーション結果の中央値 — 最も起こりやすい水準</li>
           <li><strong>P90（楽観）:</strong> シミュレーション結果の上位10% — 好調時に期待できる水準</li>

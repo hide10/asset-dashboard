@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+from src.db.schema import init_db
 from src.web.server import (
     _build_cf_html,
     _build_html,
@@ -18,6 +19,14 @@ from src.web.server import (
     _demo_plan_data,
     _nav_html,
 )
+
+
+def _build_settings_html_for_test(tmp_path) -> str:
+    db_path = tmp_path / "settings_test.db"
+    conn = init_db(str(db_path))
+    conn.close()
+    return _build_settings_html(str(db_path), saved=False)
+
 
 # --- ナビゲーションツールバー (#13) ---
 
@@ -64,8 +73,8 @@ class TestNavToolbar:
         nav = self._extract_nav(html)
         assert 'class="active">ライフプラン' in nav
 
-    def test_settings_has_toolbar(self):
-        html = _build_settings_html("dummy_db", saved=False)
+    def test_settings_has_toolbar(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
         nav = self._extract_nav(html)
         assert 'class="active">設定' in nav
 
@@ -466,12 +475,12 @@ class TestSessionExpiredBanner:
 class TestAiChatExport:
     """AIチャット用データエクスポートが設定ページに表示される。"""
 
-    def test_settings_has_ai_chat_section(self):
-        html = _build_settings_html("dummy_db", saved=False)
+    def test_settings_has_ai_chat_section(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
         assert "AIチャット用データ" in html
 
-    def test_settings_has_copy_buttons(self):
-        html = _build_settings_html("dummy_db", saved=False)
+    def test_settings_has_copy_buttons(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
         assert "copyAiPrompt" in html
         assert "資産分析" in html
         assert "家計簿分析" in html
@@ -481,13 +490,13 @@ class TestAiChatExport:
 class TestClosingDaySetting:
     """締め日設定が設定ページに表示される。"""
 
-    def test_settings_has_closing_day_section(self):
-        html = _build_settings_html("dummy_db", saved=False)
+    def test_settings_has_closing_day_section(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
         assert "家計簿の締め日" in html
         assert "closing_day" in html
 
-    def test_settings_has_day_options(self):
-        html = _build_settings_html("dummy_db", saved=False)
+    def test_settings_has_day_options(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
         assert "1日（暦月）" in html
         assert "25日" in html
         assert "31日" in html
@@ -498,9 +507,9 @@ class TestClosingDaySetting:
         html = _build_cf_html(data)
         assert "毎月" not in html or "毎月1日" not in html
 
-    def test_settings_has_holiday_mode_options(self):
+    def test_settings_has_holiday_mode_options(self, tmp_path):
         """祝日調整のラジオボタンが表示される。"""
-        html = _build_settings_html("dummy_db", saved=False)
+        html = _build_settings_html_for_test(tmp_path)
         assert "土日祝日の扱い" in html
         assert "変更しない" in html
         assert "設定日前の平日" in html
@@ -526,8 +535,8 @@ class TestFavicon:
         html = _build_plan_html(_demo_plan_data())
         assert 'rel="icon"' in html
 
-    def test_settings_has_favicon(self):
-        html = _build_settings_html("dummy_db", saved=False)
+    def test_settings_has_favicon(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
         assert 'rel="icon"' in html
 
 
@@ -543,3 +552,35 @@ class TestComparisonHeaders:
         assert "前日比" in html
         assert "前月比" in html
         assert "前年比" in html
+
+
+# --- 予測期間6パターン (#19) ---
+
+
+class TestPrediction6Periods:
+    """予測期間が1/3/5/10/20/30年の6パターンに拡張されている。"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.data = _demo_plan_data()
+        self.html = _build_plan_html(self.data)
+
+    def test_demo_predictions_count(self):
+        """デモデータの predictions が6要素。"""
+        assert len(self.data["predictions"]) == 6
+
+    def test_demo_predictions_contrib_count(self):
+        """デモデータの predictions_contrib が6要素。"""
+        assert len(self.data["predictions_contrib"]) == 6
+
+    def test_html_has_long_term_labels(self):
+        """HTML に「10年後」「20年後」「30年後」が存在する。"""
+        assert "10年後" in self.html
+        assert "20年後" in self.html
+        assert "30年後" in self.html
+
+    def test_html_has_short_term_labels(self):
+        """HTML に「1年後」「3年後」「5年後」も引き続き存在する。"""
+        assert "1年後" in self.html
+        assert "3年後" in self.html
+        assert "5年後" in self.html

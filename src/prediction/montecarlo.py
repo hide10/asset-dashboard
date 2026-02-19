@@ -5,7 +5,7 @@
 
 リスク資産（株式・投信・株式型年金）のみシミュレーション対象とし、
 安全資産（預金・不動産・保険型年金）は固定値として加算する。
-データが少ない場合（5日未満）は資産クラス別デフォルトパラメータの加重平均を使用する。
+データが少ない場合（60日未満）は資産クラス別デフォルトパラメータの加重平均を使用する。
 """
 
 from __future__ import annotations
@@ -22,12 +22,13 @@ RISK_CLASSES = {"株式（現物）", "投資信託"}
 
 # 資産クラス別のデフォルトパラメータ（年率リターン, 年率ボラティリティ）
 CLASS_PARAMS: dict[str, tuple[float, float]] = {
-    "株式（現物）": (0.07, 0.20),  # 国内株
-    "投資信託": (0.08, 0.18),  # 先進国株投信が主
-    "年金（株式型）": (0.08, 0.18),  # iDeCo・DC（株式運用）
+    "株式（現物）": (0.07, 0.20),  # 国内・海外個別株混合
+    "投資信託": (0.07, 0.15),  # インデックス投信主体
+    "年金（株式型）": (0.07, 0.15),  # iDeCo インデックス中心
     "不動産": (0.01, 0.05),
     "預金・現金・暗号資産": (0.0, 0.0),
     "年金（保険型）": (0.01, 0.02),  # 個人年金保険等
+    "債券": (0.01, 0.03),
 }
 
 # 年金の保有銘柄名から株式型を判定するパターン
@@ -103,12 +104,14 @@ def _estimate_params(
 ) -> tuple[float, float, bool]:
     """日次リターンから年率期待リターンとボラティリティを推定する。
 
-    データが5日未満の場合は class_values の加重平均デフォルト値を使用する。
+    データが60日未満の場合は class_values の加重平均デフォルト値を使用する。
+    短期間のデータではノイズが大きく、年率換算で極端な値になるため。
 
     Returns:
         (annual_return, annual_volatility, is_estimated)
         is_estimated=True はデフォルト値を使用したことを意味する。
     """
+    min_days = 60  # 約3ヶ月の営業日
 
     def _defaults() -> tuple[float, float]:
         if class_values:
@@ -127,7 +130,7 @@ def _estimate_params(
         if prev > 0:
             daily_returns.append(curr / prev - 1)
 
-    if len(daily_returns) < 5:
+    if len(daily_returns) < min_days:
         r, v = _defaults()
         return r, v, True
 
@@ -215,7 +218,7 @@ def predict_no_contribution(
         (predictions, params) where params contains estimation details.
     """
     if years_list is None:
-        years_list = [1, 3, 5]
+        years_list = [1, 3, 5, 10, 20, 30]
 
     totals = _get_daily_totals(db_path)
     if not totals:
@@ -270,7 +273,7 @@ def predict_with_contribution(
         (predictions, params) where params contains estimation details.
     """
     if years_list is None:
-        years_list = [1, 3, 5]
+        years_list = [1, 3, 5, 10, 20, 30]
 
     totals = _get_daily_totals(db_path)
     if not totals:

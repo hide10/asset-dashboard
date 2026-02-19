@@ -16,6 +16,7 @@ from playwright.sync_api import Page, expect
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
+pytestmark = pytest.mark.e2e
 
 
 def _free_port() -> int:

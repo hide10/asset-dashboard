@@ -8,10 +8,11 @@ dependencies = [
     "playwright>=1.40",
     "numpy>=1.26",
     "google-genai>=1.0",
+    "beautifulsoup4>=4.12",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "ruff>=0.9", "pre-commit>=4.0"]
+dev = ["pytest>=7.0", "ruff==0.9.7", "pre-commit>=4.0"]
 
 [project.scripts]
 mf-fetch = "src.scraper.fetch:main"
@@ -45,3 +46,4 @@ known-first-party = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+markers = ["e2e: end-to-end tests requiring Playwright browser binaries"]
