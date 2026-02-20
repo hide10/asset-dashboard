@@ -329,7 +329,8 @@ def _call_gemini(api_key: str, prompt: str) -> str:
 def generate_comments(db_path: str) -> None:
     """ダッシュボード・ライフプラン・家計簿のAIコメントを生成・保存する。
 
-    同じ日付+ページのコメントが既存なら再生成しない。
+    dashboard/lifeplan: 同じ日付のコメントが既存ならスキップ（日付が変われば再生成）。
+    cf: 当月分は毎回上書き（月途中でデータが増えるため）。過去月はスキップ。
     """
     api_key = _get_api_key(db_path)
     if not api_key:
@@ -343,6 +344,7 @@ def generate_comments(db_path: str) -> None:
             logger.info("[ai] スナップショットなし — AI分析スキップ")
             return
         date = row[0]
+        today_ym = datetime.now().strftime("%Y-%m")
 
         # CF の最新 fiscal month を取得（締め日設定を反映）
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
@@ -351,16 +353,19 @@ def generate_comments(db_path: str) -> None:
         cf_with_data = [m for m in cf_available if m.get("has_data")]
         cf_ym = cf_with_data[0]["year_month"] if cf_with_data else None
 
-        targets: list[tuple[str, str, object]] = [
-            ("dashboard", date, lambda: _build_dashboard_prompt(db_path, date)),
-            ("lifeplan", date, lambda: _build_lifeplan_prompt(db_path, date)),
+        # dashboard/lifeplan: 既存ならスキップ（日が変われば新規生成）
+        targets: list[tuple[str, str, bool, object]] = [
+            ("dashboard", date, False, lambda: _build_dashboard_prompt(db_path, date)),
+            ("lifeplan", date, False, lambda: _build_lifeplan_prompt(db_path, date)),
         ]
+        # cf: 当月なら上書き、過去月ならスキップ
         if cf_ym:
-            targets.append(("cf", cf_ym, lambda: _build_cf_prompt(db_path, cf_ym)))
+            is_current_month = cf_ym >= today_ym
+            targets.append(("cf", cf_ym, is_current_month, lambda: _build_cf_prompt(db_path, cf_ym)))
 
-        for page, key, build_prompt in targets:
+        for page, key, force_update, build_prompt in targets:
             existing = get_comment(conn, key, page)
-            if existing:
+            if existing and not force_update:
                 logger.info("[ai] %s コメント既存 (%s) — スキップ", page, key)
                 continue
 
@@ -372,7 +377,8 @@ def generate_comments(db_path: str) -> None:
             try:
                 comment = _call_gemini(api_key, prompt)
                 save_comment(conn, key, page, comment)
-                logger.info("[ai] %s コメント生成・保存完了 (%s)", page, key)
+                action = "上書き" if existing else "生成・保存"
+                logger.info("[ai] %s コメント%s完了 (%s)", page, action, key)
             except Exception as e:
                 logger.error("[ai] %s コメント生成失敗: %s", page, e)
     finally:
