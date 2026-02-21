@@ -416,7 +416,7 @@ def run_lifecycle_simulation(
                 if risk > 0 and cost_basis < risk:
                     gain_ratio = (risk - cost_basis) / risk
                     # 取崩しのうちリスク資産から出る分に課税
-                    risk_withdrawal = max(0.0, withdrawal - safe)
+                    risk_withdrawal = min(risk, max(0.0, withdrawal - safe))
                     if risk_withdrawal > 0:
                         tax = risk_withdrawal * gain_ratio * tax_rate
                         tax_cumulative += tax

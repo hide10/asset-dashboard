@@ -5239,7 +5239,7 @@ class Handler(BaseHTTPRequestHandler):
                     pension_start_age=int(req.get("pension_start_age", 65)),
                     monthly_pension=float(req.get("monthly_pension", 150_000)),
                     other_monthly_income=float(req.get("other_monthly_income", 0)),
-                    rng_seed=None,
+                    rng_seed=42,
                 )
             except Exception as e:
                 self.send_response(500)
