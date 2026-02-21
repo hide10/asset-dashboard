@@ -90,6 +90,23 @@ class PredictionRange:
     p90: float
 
 
+DEFAULT_SIMULATIONS = 2000
+DEFAULT_RNG_SEED = 42
+
+
+@dataclass
+class SimulatorResult:
+    """ライフサイクルシミュレーション結果。"""
+
+    yearly_balances: list[dict]  # [{"age": 35, "p10":..., "p25":..., "p50":..., "p75":..., "p90":...}, ...]
+    depletion_probability: float  # 枯渇確率 (0.0-1.0)
+    principal_loss_probability: float  # 元本割れ確率 (0.0-1.0)
+    total_principal: float  # 投入元本合計
+    total_gains: float  # 運用益（P50）
+    total_tax: float  # 税金合計（P50）
+    net_final: float  # 最終残高（P50）
+
+
 def _get_daily_totals(db_path: str) -> list[tuple[str, float]]:
     """全日の(date, total_asset)を日付昇順で返す。"""
     conn = sqlite3.connect(db_path)
@@ -306,3 +323,175 @@ def predict_with_contribution(
         predictions.append(pred)
 
     return predictions, params
+
+
+def run_lifecycle_simulation(
+    current_age: int,
+    retirement_age: int,
+    end_age: int,
+    initial_investment: float,
+    monthly_contribution: float,
+    annual_return: float,
+    annual_volatility: float,
+    monthly_withdrawal: float,
+    inflation_rate: float = 0.0,
+    expense_ratio: float = 0.0,
+    pension_start_age: int = 65,
+    monthly_pension: float = 0.0,
+    other_monthly_income: float = 0.0,
+    tax_rate: float = 0.20315,
+    safe_value: float = 0.0,
+    simulations: int = DEFAULT_SIMULATIONS,
+    rng_seed: int | None = DEFAULT_RNG_SEED,
+) -> SimulatorResult:
+    """ライフサイクル全体のモンテカルロシミュレーションを実行する。
+
+    蓄積期間（current_age → retirement_age）と取崩し期間（retirement_age → end_age）を
+    月次ステップでシミュレーションし、パーセンタイル・枯渇確率等を返す。
+
+    initial_investment: リスク資産額（GBMで成長）
+    safe_value: 安全資産額（成長なし、取崩し時に先に消費）
+    """
+    import random
+
+    if rng_seed is not None:
+        rng = random.Random(rng_seed)
+    else:
+        rng = random.Random()
+
+    # ドリフト調整: インフレ率・信託報酬を幾何学的に差し引く
+    drift = (1 + annual_return) / ((1 + inflation_rate) * (1 + expense_ratio)) - 1
+    monthly_drift = drift / 12
+    monthly_vol = annual_volatility / math.sqrt(12)
+
+    total_years = end_age - current_age
+    total_months = total_years * 12
+    accumulation_months = (retirement_age - current_age) * 12
+
+    # 元本合計 = リスク資産 + 安全資産 + 蓄積期間の積立合計
+    total_principal = initial_investment + safe_value + monthly_contribution * accumulation_months
+
+    # 各シミュレーションの年末残高を記録
+    sim_yearly: list[list[float]] = []
+    depleted_count = 0
+    principal_loss_count = 0
+
+    sim_final: list[float] = []
+    sim_tax_total: list[float] = []
+
+    for _ in range(simulations):
+        risk = initial_investment  # リスク資産（GBMで成長）
+        safe = safe_value  # 安全資産（成長なし）
+        cost_basis = initial_investment
+        tax_cumulative = 0.0
+        depleted = False
+        yearly_values: list[float] = []
+
+        for month in range(total_months):
+            if depleted:
+                if month % 12 == 11:
+                    yearly_values.append(0.0)
+                continue
+
+            # GBM で成長（リスク資産のみ）
+            z = rng.gauss(0, 1)
+            growth = math.exp((monthly_drift - 0.5 * monthly_vol**2) + monthly_vol * z)
+            risk = risk * growth
+
+            if month < accumulation_months:
+                # 蓄積期間: 月次積立（リスク資産へ）
+                risk += monthly_contribution
+                cost_basis += monthly_contribution
+            else:
+                # 取崩し期間
+                year_in_sim = month // 12
+                age = current_age + year_in_sim
+
+                # 収入（年金 + その他）→ 安全資産へ
+                income = other_monthly_income
+                if age >= pension_start_age:
+                    income += monthly_pension
+                safe += income
+
+                # 取崩し: 安全資産から先に消費
+                withdrawal = monthly_withdrawal
+
+                # 税金はリスク資産の含み益に対してのみ発生
+                if risk > 0 and cost_basis < risk:
+                    gain_ratio = (risk - cost_basis) / risk
+                    # 取崩しのうちリスク資産から出る分に課税
+                    risk_withdrawal = min(risk, max(0.0, withdrawal - safe))
+                    if risk_withdrawal > 0:
+                        tax = risk_withdrawal * gain_ratio * tax_rate
+                        tax_cumulative += tax
+                        risk -= tax
+
+                # 安全資産から先に引き出し、足りなければリスク資産から
+                if safe >= withdrawal:
+                    safe -= withdrawal
+                else:
+                    remainder = withdrawal - safe
+                    safe = 0.0
+                    # コストベースを按分で減少（税計算精度のため）
+                    if risk > 0:
+                        cost_basis -= remainder * (cost_basis / risk)
+                        cost_basis = max(cost_basis, 0.0)
+                    risk -= remainder
+
+                if risk + safe <= 0:
+                    risk = 0.0
+                    safe = 0.0
+                    depleted = True
+
+            # 年末に記録（リスク + 安全の合計）
+            if month % 12 == 11:
+                yearly_values.append(max(risk + safe, 0.0))
+
+        total_value = max(risk + safe, 0.0)
+        sim_yearly.append(yearly_values)
+        sim_final.append(total_value)
+        sim_tax_total.append(tax_cumulative)
+
+        if depleted:
+            depleted_count += 1
+        # total_principal は名目合計、total_value はインフレ調整済み実質値。
+        # 「今の貨幣価値で見て元本を割り込むか」を判定する。
+        if total_value < total_principal:
+            principal_loss_count += 1
+
+    # 年次パーセンタイル集計
+    yearly_balances: list[dict] = []
+    for year_idx in range(total_years):
+        age = current_age + year_idx + 1  # 年末時点の年齢
+        values = sorted(sim_yearly[s][year_idx] for s in range(simulations) if year_idx < len(sim_yearly[s]))
+        n = len(values)
+        if n == 0:
+            continue
+        yearly_balances.append(
+            {
+                "age": age,
+                "p10": values[int(n * 0.10)],
+                "p25": values[int(n * 0.25)],
+                "p50": values[int(n * 0.50)],
+                "p75": values[int(n * 0.75)],
+                "p90": values[int(n * 0.90)],
+            }
+        )
+
+    # P50 ベースの財務サマリー
+    sim_final.sort()
+    sim_tax_total.sort()
+    n = len(sim_final)
+    net_final_p50 = sim_final[int(n * 0.50)]
+    total_tax_p50 = sim_tax_total[int(n * 0.50)]
+    total_gains = net_final_p50 + total_tax_p50 - total_principal
+
+    return SimulatorResult(
+        yearly_balances=yearly_balances,
+        depletion_probability=depleted_count / simulations,
+        principal_loss_probability=principal_loss_count / simulations,
+        total_principal=total_principal,
+        total_gains=total_gains,
+        total_tax=total_tax_p50,
+        net_final=net_final_p50,
+    )

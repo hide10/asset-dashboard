@@ -11,6 +11,7 @@ import contextlib
 import html as html_mod
 import json
 import logging
+import math
 import sqlite3
 import threading
 from datetime import datetime
@@ -45,9 +46,11 @@ from src.db.schema import get_connection, init_db
 from src.prediction.montecarlo import (
     RISK_CLASSES,
     PredictionRange,
+    SimulatorResult,
     classify_pension_holdings,
     predict_no_contribution,
     predict_with_contribution,
+    run_lifecycle_simulation,
 )
 
 logger = logging.getLogger(__name__)
@@ -202,6 +205,7 @@ def _nav_html(active: str) -> str:
         ("/", "ダッシュボード"),
         ("/cf", "家計簿分析"),
         ("/plan", "ライフプラン"),
+        ("/simulator", "シミュレーター"),
         ("/settings", "設定"),
     ]
     links = []
@@ -1779,6 +1783,845 @@ def _demo_plan_data() -> dict:
             ],
         },
     }
+
+
+# --- シミュレーター ---
+
+_SIMULATOR_DEFAULTS = {
+    "current_age": 35,
+    "retirement_age": 65,
+    "end_age": 95,
+    "initial_investment": 5_000_000,
+    "safe_value": 5_000_000,
+    "monthly_contribution": 50_000,
+    "annual_return": 0.05,
+    "annual_volatility": 0.15,
+    "monthly_withdrawal": 200_000,
+    "inflation_rate": 0.02,
+    "expense_ratio": 0.003,
+    "pension_start_age": 65,
+    "monthly_pension": 150_000,
+    "other_monthly_income": 0,
+}
+
+
+def _demo_simulator_data() -> dict:
+    """シミュレーターページ用のデモデータを生成する。"""
+    # ライフプランのデモデータと同じ値を使用
+    params = dict(_SIMULATOR_DEFAULTS)
+    params["initial_investment"] = 11_530_000  # _demo_plan_data() の risk_value
+    params["safe_value"] = 9_970_000  # _demo_plan_data() の safe_value
+    params["monthly_contribution"] = 50_000  # _demo_plan_data() の monthly_contribution
+    result = run_lifecycle_simulation(**params, rng_seed=42)
+    return {"params": params, "result": result}
+
+
+def _sanitize_simulator_params(params: dict) -> dict:
+    """DB から読み込んだシミュレーターパラメータを正規化し、範囲外ならデフォルトに戻す。"""
+    defaults = _SIMULATOR_DEFAULTS
+    clean: dict = {}
+    # 各キーを型変換＋範囲チェック（失敗時はデフォルト値にフォールバック）
+    int_keys = {"current_age", "retirement_age", "end_age", "pension_start_age"}
+    for k, default_v in defaults.items():
+        try:
+            v = int(params[k]) if k in int_keys else float(params[k])
+            if not math.isfinite(v) if isinstance(v, float) else False:
+                v = default_v
+        except (ValueError, TypeError, KeyError):
+            v = default_v
+        clean[k] = v
+    # 年齢整合性: 崩れていたら全てデフォルトに戻す
+    if not (clean["current_age"] <= clean["retirement_age"] <= clean["end_age"]):
+        for k in ("current_age", "retirement_age", "end_age"):
+            clean[k] = defaults[k]
+    # pension_start_age 範囲
+    if not (60 <= clean["pension_start_age"] <= 75):
+        clean["pension_start_age"] = defaults["pension_start_age"]
+    # 金額非負 + 上限
+    _MAX_LUMP = 200_000_000
+    _MAX_MONTHLY = 1_000_000
+    for k, upper in [
+        ("initial_investment", _MAX_LUMP),
+        ("safe_value", _MAX_LUMP),
+        ("monthly_contribution", _MAX_MONTHLY),
+        ("monthly_withdrawal", _MAX_MONTHLY),
+        ("monthly_pension", 500_000),
+        ("other_monthly_income", 500_000),
+    ]:
+        if clean[k] < 0 or clean[k] > upper:
+            clean[k] = defaults[k]
+    # レート範囲
+    for k, lo, hi in [
+        ("annual_return", 0.0, 0.15),
+        ("annual_volatility", 0.01, 0.40),
+        ("inflation_rate", 0.0, 0.10),
+        ("expense_ratio", 0.0, 0.03),
+    ]:
+        if not (lo <= clean[k] <= hi):
+            clean[k] = defaults[k]
+    return clean
+
+
+def _get_simulator_data(db_path: str) -> dict:
+    """DB設定からシミュレーターパラメータを読み込み、シミュレーションを実行する。"""
+    conn = get_connection(db_path)
+    try:
+        raw = get_setting(conn, "simulator_params", "")
+        if raw:
+            try:
+                params = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                params = {}
+            # デフォルト値で補完 → 正規化
+            for k, v in _SIMULATOR_DEFAULTS.items():
+                if k not in params:
+                    params[k] = v
+            params = _sanitize_simulator_params(params)
+        else:
+            # 初回: ライフプランの実データからデフォルト値を構築
+            params = dict(_SIMULATOR_DEFAULTS)
+            row = conn.execute(
+                "SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                date, total_asset, by_class_json = row
+                by_class = json.loads(by_class_json)
+                # リスク資産の算出（ライフプランと同じロジック）
+                risk_value = sum(v for cls, v in by_class.items() if cls in RISK_CLASSES)
+                # 年金の株式型を判定
+                holdings = [
+                    {"name": r[0], "asset_class": r[1], "value": r[2]}
+                    for r in conn.execute(
+                        "SELECT name, asset_class, value FROM snapshot_holdings "
+                        "WHERE date = ? AND asset_class = '年金'",
+                        (date,),
+                    ).fetchall()
+                ]
+                eq_pension, _ = classify_pension_holdings(holdings)
+                risk_value += eq_pension
+                params["initial_investment"] = risk_value
+                params["safe_value"] = total_asset - risk_value
+            contrib = get_setting(conn, "monthly_contribution", "")
+            if contrib:
+                with contextlib.suppress(ValueError, TypeError):
+                    params["monthly_contribution"] = float(contrib)
+            params = _sanitize_simulator_params(params)
+    finally:
+        conn.close()
+
+    result = run_lifecycle_simulation(
+        current_age=int(params["current_age"]),
+        retirement_age=int(params["retirement_age"]),
+        end_age=int(params["end_age"]),
+        initial_investment=float(params["initial_investment"]),
+        safe_value=float(params["safe_value"]),
+        monthly_contribution=float(params["monthly_contribution"]),
+        annual_return=float(params["annual_return"]),
+        annual_volatility=float(params["annual_volatility"]),
+        monthly_withdrawal=float(params["monthly_withdrawal"]),
+        inflation_rate=float(params["inflation_rate"]),
+        expense_ratio=float(params["expense_ratio"]),
+        pension_start_age=int(params["pension_start_age"]),
+        monthly_pension=float(params["monthly_pension"]),
+        other_monthly_income=float(params["other_monthly_income"]),
+        rng_seed=42,
+    )
+    return {"params": params, "result": result}
+
+
+def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
+    """シミュレーターページの HTML を生成する。"""
+    params = data["params"]
+    result: SimulatorResult = data["result"]
+
+    # パラメータ表示用
+    def _fmt_money(v: float) -> str:
+        return f"{v:,.0f}"
+
+    def _fmt_pct(v: float) -> str:
+        return f"{v * 100:.1f}"
+
+    # --- パラメータ入力カード ---
+    param_fields = [
+        # (id, label, value, min, max, step, unit, input_type)
+        # 基本パラメータ
+        ("current_age", "現在の年齢", params["current_age"], 20, 80, 1, "歳", "stepper"),
+        ("retirement_age", "退職年齢", params["retirement_age"], 30, 85, 1, "歳", "stepper"),
+        ("end_age", "シミュレーション終了年齢", params["end_age"], 70, 110, 1, "歳", "stepper"),
+        # 金額パラメータ
+        ("initial_investment", "リスク資産額", params["initial_investment"], 0, 200_000_000, 100_000, "円", "number"),
+        ("safe_value", "安全資産額", params["safe_value"], 0, 200_000_000, 100_000, "円", "number"),
+        ("monthly_contribution", "月額積立", params["monthly_contribution"], 0, 1_000_000, 10_000, "円", "number"),
+        (
+            "monthly_withdrawal",
+            "月額取崩し（生活費）",
+            params["monthly_withdrawal"],
+            0,
+            1_000_000,
+            10_000,
+            "円",
+            "number",
+        ),
+        # リターンパラメータ
+        ("annual_return", "期待リターン（年率）", params["annual_return"], 0.0, 0.15, 0.005, "%", "range"),
+        ("annual_volatility", "ボラティリティ（年率）", params["annual_volatility"], 0.01, 0.40, 0.005, "%", "range"),
+        ("inflation_rate", "インフレ率", params["inflation_rate"], 0.0, 0.10, 0.005, "%", "range"),
+        ("expense_ratio", "信託報酬", params["expense_ratio"], 0.0, 0.03, 0.001, "%", "range"),
+        # 年金・収入
+        ("pension_start_age", "年金受給開始年齢", params["pension_start_age"], 60, 75, 1, "歳", "stepper"),
+        (
+            "monthly_pension",
+            "月額年金",
+            params["monthly_pension"],
+            0,
+            500_000,
+            10_000,
+            "円",
+            "number",
+            "独身の目安: 約14.6万円／夫婦の目安: 約29.2万円（65歳・額面）",
+        ),
+        (
+            "other_monthly_income",
+            "年金以外の月額収入",
+            params["other_monthly_income"],
+            0,
+            500_000,
+            10_000,
+            "円",
+            "number",
+            "家賃収入・副業など、年金以外の定期収入",
+        ),
+    ]
+
+    param_rows_html = ""
+    for field in param_fields:
+        fid, label, val, fmin, fmax, step, unit, itype = field[:8]
+        tooltip = field[8] if len(field) > 8 else None
+        label_html = label
+        if tooltip:
+            label_html += f' <span class="sim-info-btn" tabindex="0" data-tooltip="{tooltip}">i</span>'
+        if itype == "stepper":
+            param_rows_html += f"""
+          <div class="sim-field">
+            <label for="{fid}">{label_html}</label>
+            <div class="sim-input-row">
+              <button type="button" class="stepper-btn" onclick="stepVal('{fid}',-1,{fmin},{fmax})">-</button>
+              <input type="number" id="{fid}" name="{fid}" min="{fmin}" max="{fmax}" step="{step}" value="{int(val)}" class="stepper-input">
+              <button type="button" class="stepper-btn" onclick="stepVal('{fid}',1,{fmin},{fmax})">+</button>
+              <span class="sim-unit">{unit}</span>
+            </div>
+          </div>"""
+        elif itype == "range":
+            if unit == "%":
+                display_val = f"{float(val) * 100:.1f}"
+                param_rows_html += f"""
+          <div class="sim-field">
+            <label for="{fid}">{label_html}</label>
+            <div class="sim-input-row">
+              <input type="range" id="{fid}" name="{fid}" min="{fmin}" max="{fmax}" step="{step}" value="{val}"
+                     oninput="document.getElementById('{fid}-val').textContent=(this.value*100).toFixed(1)">
+              <span id="{fid}-val">{display_val}</span><span class="sim-unit">{unit}</span>
+            </div>
+          </div>"""
+            else:
+                param_rows_html += f"""
+          <div class="sim-field">
+            <label for="{fid}">{label_html}</label>
+            <div class="sim-input-row">
+              <input type="range" id="{fid}" name="{fid}" min="{fmin}" max="{fmax}" step="{step}" value="{val}"
+                     oninput="document.getElementById('{fid}-val').textContent=this.value">
+              <span id="{fid}-val">{val}</span><span class="sim-unit">{unit}</span>
+            </div>
+          </div>"""
+        else:
+            formatted_val = f"{int(val):,}"
+            param_rows_html += f"""
+          <div class="sim-field">
+            <label for="{fid}">{label_html}</label>
+            <div class="sim-input-row">
+              <input type="text" inputmode="numeric" id="{fid}" name="{fid}" data-min="{fmin}" data-max="{fmax}" data-step="{step}" value="{formatted_val}" class="money-input">
+              <span class="sim-unit">{unit}</span>
+            </div>
+          </div>"""
+
+    # --- 財務サマリー ---
+    depl_pct = result.depletion_probability * 100
+    loss_pct = result.principal_loss_probability * 100
+    depl_color = "#e74c3c" if depl_pct > 10 else "#f39c12" if depl_pct > 0 else "#27ae60"
+    loss_color = "#e74c3c" if loss_pct > 30 else "#f39c12" if loss_pct > 10 else "#27ae60"
+
+    summary_html = f"""
+    <div class="card full" data-card-id="sim-summary">
+      <div class="card-header">
+        <h2>財務サマリー</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="sim-summary-grid">
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">投入元本</div>
+          <div class="sim-summary-value">{_fmt_money(result.total_principal)}円</div>
+        </div>
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">運用益（P50） <span class="sim-info-btn" tabindex="0" data-tooltip="今の貨幣価値に換算した実質値。インフレ分は差し引き済み">i</span></div>
+          <div class="sim-summary-value">{_fmt_money(result.total_gains)}円</div>
+        </div>
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">税金合計（P50） <span class="sim-info-btn" tabindex="0" data-tooltip="取崩し時にリスク資産を売却した際の実現益への課税。含み益への潜在税は含まない">i</span></div>
+          <div class="sim-summary-value">{_fmt_money(result.total_tax)}円</div>
+        </div>
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">最終残高（P50） <span class="sim-info-btn" tabindex="0" data-tooltip="今の貨幣価値での残高。全売却時は含み益に別途課税あり">i</span></div>
+          <div class="sim-summary-value" style="font-size:1.3rem;color:#2881D7">{_fmt_money(result.net_final)}円</div>
+        </div>
+      </div>
+      <div class="sim-prob-grid">
+        <div class="sim-prob-item">
+          <span class="sim-prob-label">枯渇確率</span>
+          <span class="sim-prob-value" style="color:{depl_color}">{depl_pct:.1f}%</span>
+        </div>
+        <div class="sim-prob-item">
+          <span class="sim-prob-label">元本割れ確率</span>
+          <span class="sim-prob-value" style="color:{loss_color}">{loss_pct:.1f}%</span>
+        </div>
+      </div>
+      <div class="sim-notes" id="sim-notes">
+        <div class="sim-notes-header" onclick="this.parentElement.classList.toggle('open')">
+          <span class="sim-notes-icon">&#x25B6;</span> 計算の前提
+        </div>
+        <div class="sim-notes-body">
+          <ul>
+            <li><strong>すべての金額は今の貨幣価値（実質値）</strong>で表示。インフレ率はリターンから差し引いて計算するため、「今の感覚でいくら」が直感的にわかります</li>
+            <li><strong>リスク資産</strong>はモンテカルロ法（2,000回）で月次シミュレーション。<strong>安全資産</strong>は変動なし</li>
+            <li><strong>積立</strong>は現在〜退職年齢まで毎月リスク資産に加算</li>
+            <li><strong>取崩し</strong>は退職後に毎月実行。安全資産から先に消費し、不足分をリスク資産から売却</li>
+            <li><strong>税金</strong>（{float(params.get("tax_rate", 0.20315)) * 100:.1f}%）はリスク資産の売却時、含み益部分にのみ課税。含み益への潜在税や NISA 非課税枠は未考慮</li>
+            <li><strong>年金・その他収入</strong>は受給開始年齢以降、毎月安全資産に加算</li>
+            <li><strong>P50</strong> = 中央値（半分がこれ以上、半分がこれ以下）。P10 は悲観、P90 は楽観シナリオ</li>
+          </ul>
+        </div>
+      </div>
+      </div>
+    </div>"""
+
+    # --- 年次パーセンタイル表 ---
+    projection_rows = ""
+    for yb in result.yearly_balances:
+        age = yb["age"]
+        # 退職年齢をハイライト
+        row_style = ' style="background:#eff8ff"' if age == int(params["retirement_age"]) else ""
+        projection_rows += f"""<tr{row_style}>
+          <td class="num">{age}歳</td>
+          <td class="num">{yb["p10"]:,.0f}</td>
+          <td class="num">{yb["p25"]:,.0f}</td>
+          <td class="num" style="font-weight:700">{yb["p50"]:,.0f}</td>
+          <td class="num">{yb["p75"]:,.0f}</td>
+          <td class="num">{yb["p90"]:,.0f}</td>
+        </tr>"""
+
+    balances_json = json.dumps(result.yearly_balances, ensure_ascii=False)
+    projection_html = f"""
+    <div class="card full" data-card-id="sim-chart">
+      <div class="card-header">
+        <h2>資産推移グラフ</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div style="position:relative;width:100%;padding-bottom:45%;min-height:280px">
+        <canvas id="sim-fan-chart" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
+      </div>
+      <div class="pred-note">※ 実質値（インフレ調整済み）。濃い帯=P25〜P75、薄い帯=P10〜P90、線=P50（中央値）</div>
+      </div>
+    </div>
+    <div class="card full" data-card-id="sim-projection">
+      <div class="card-header">
+        <h2>年次データ</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div style="overflow-x:auto">
+      <table class="pred-table">
+        <tr><th>年齢</th><th class="num">悲観(P10)</th><th class="num">P25</th><th class="num" style="color:#2881D7">中央(P50)</th><th class="num">P75</th><th class="num">楽観(P90)</th></tr>
+        {projection_rows}
+      </table>
+      </div>
+      </div>
+    </div>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
+<title>ライフサイクル・シミュレーター</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f6fa; color: #2d3436; line-height: 1.6; }}
+  .container {{ max-width: 1100px; margin: 0 auto; padding: 20px; }}
+  {_NAV_CSS}
+  h1 {{ font-size: 1.5rem; }}
+  .grid {{ display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }}
+  .card {{
+    background: #fff; border-radius: 12px; padding: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    width: calc(50% - 10px);
+  }}
+  .card.full {{ width: 100%; }}
+  .card-header {{
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  }}
+  .card-header h2 {{
+    font-size: 1rem; font-weight: 700; flex: 1; margin: 0;
+  }}
+  .card-body {{ }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+  th, td {{ padding: 6px 8px; text-align: left; border-bottom: 1px solid #f1f2f6; }}
+  .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .pred-table th {{ background: #f8f9fa; font-weight: 600; position: sticky; top: 0; }}
+  .pred-note {{ font-size: 0.75rem; color: #b2bec3; margin-top: 8px; }}
+  {_COLLAPSE_CSS}
+
+  /* シミュレーター固有 */
+  .sim-field {{ margin-bottom: 12px; }}
+  .sim-field label {{ display: block; font-size: 0.8rem; font-weight: 600; color: #636e72; margin-bottom: 4px; }}
+  .sim-input-row {{ display: flex; align-items: center; gap: 8px; }}
+  .sim-input-row input[type="range"] {{ flex: 1; }}
+  .sim-input-row input[type="number"] {{ width: 140px; padding: 4px 8px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.9rem; }}
+  .money-input {{ width: 140px; padding: 4px 8px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.9rem; text-align: right; }}
+  .sim-unit {{ font-size: 0.8rem; color: #636e72; min-width: 20px; }}
+  .stepper-btn {{
+    width: 32px; height: 32px; border: 1px solid #dfe6e9; border-radius: 4px;
+    background: #f8f9fa; font-size: 1.1rem; font-weight: 700; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; color: #2d3436;
+    flex-shrink: 0;
+  }}
+  .stepper-btn:hover {{ background: #e9ecef; }}
+  .stepper-btn:active {{ background: #dfe6e9; }}
+  .stepper-input {{
+    width: 64px; text-align: center; padding: 4px 4px; border: 1px solid #dfe6e9;
+    border-radius: 4px; font-size: 0.95rem; font-weight: 600;
+    -moz-appearance: textfield;
+  }}
+  .stepper-input::-webkit-outer-spin-button,
+  .stepper-input::-webkit-inner-spin-button {{ -webkit-appearance: none; margin: 0; }}
+  .sim-info-btn {{
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%; background: #2881D7; color: #fff;
+    font-size: 0.7rem; font-weight: 700; font-style: italic; cursor: pointer;
+    vertical-align: middle; margin-left: 4px; position: relative;
+    border: 1.5px solid #2881D7;
+  }}
+  .sim-info-btn:hover, .sim-info-btn:focus {{ background: #1a6bb5; }}
+  .sim-tooltip {{
+    position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    background: #2d3436; color: #fff; font-size: 0.75rem; font-style: normal; font-weight: 400;
+    padding: 6px 10px; border-radius: 6px; white-space: nowrap; z-index: 100;
+    pointer-events: none;
+  }}
+  .sim-tooltip::after {{
+    content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+    border: 5px solid transparent; border-top-color: #2d3436;
+  }}
+  .sim-param-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }}
+  .sim-param-section h3 {{ font-size: 0.85rem; font-weight: 700; color: #2881D7; margin-bottom: 8px; border-bottom: 2px solid #2881D7; padding-bottom: 4px; }}
+  .sim-recalc {{ margin-top: 16px; text-align: center; }}
+  .sim-recalc button {{
+    background: #2881D7; color: #fff; border: none; border-radius: 6px;
+    padding: 10px 32px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+  }}
+  .sim-recalc button:hover {{ background: #1a6bb5; }}
+  .sim-recalc button:disabled {{ background: #b2bec3; cursor: not-allowed; }}
+  .sim-reset-btn {{
+    background: #fff !important; color: #636e72 !important; border: 1px solid #dfe6e9 !important;
+    font-size: 0.8rem !important; padding: 8px 16px !important;
+  }}
+  .sim-reset-btn:hover {{ background: #f8f9fa !important; color: #2d3436 !important; }}
+  .sim-summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px; }}
+  .sim-summary-item {{ text-align: center; padding: 12px; background: #f8f9fa; border-radius: 8px; }}
+  .sim-summary-label {{ font-size: 0.8rem; color: #636e72; margin-bottom: 4px; }}
+  .sim-summary-value {{ font-size: 1.1rem; font-weight: 700; }}
+  .sim-prob-grid {{ display: flex; gap: 24px; justify-content: center; padding: 12px 0; border-top: 1px solid #f1f2f6; }}
+  .sim-prob-item {{ text-align: center; }}
+  .sim-prob-label {{ font-size: 0.8rem; color: #636e72; margin-right: 8px; }}
+  .sim-prob-value {{ font-size: 1.2rem; font-weight: 700; }}
+  .sim-loading {{ display: none; margin-left: 8px; }}
+  .sim-notes {{
+    margin-top: 16px; padding: 0; background: #f8f9fa; border-radius: 8px;
+    border-left: 3px solid #b2bec3;
+  }}
+  .sim-notes-header {{
+    padding: 10px 16px; cursor: pointer; font-size: 0.8rem; font-weight: 700;
+    color: #636e72; user-select: none;
+  }}
+  .sim-notes-header:hover {{ color: #2d3436; }}
+  .sim-notes-icon {{
+    display: inline-block; font-size: 0.65rem; transition: transform 0.2s;
+    margin-right: 4px;
+  }}
+  .sim-notes.open .sim-notes-icon {{ transform: rotate(90deg); }}
+  .sim-notes-body {{
+    max-height: 0; overflow: hidden; transition: max-height 0.3s ease;
+    padding: 0 16px;
+  }}
+  .sim-notes.open .sim-notes-body {{ max-height: 500px; padding: 0 16px 12px; }}
+  .sim-notes ul {{ font-size: 0.75rem; color: #636e72; padding-left: 18px; margin: 0; }}
+  .sim-notes li {{ margin-bottom: 3px; line-height: 1.5; }}
+  .sim-notes strong {{ color: #2d3436; }}
+
+  @media (max-width: 700px) {{
+    .card {{ width: 100%; }}
+    .sim-param-grid {{ grid-template-columns: 1fr; }}
+    .page-header {{ flex-direction: column; gap: 8px; align-items: flex-start; }}
+    .nav-toolbar a {{ padding: 6px 10px; font-size: 0.78rem; }}
+    h1 {{ font-size: 1.2rem; }}
+    table {{ font-size: 0.8rem; }}
+  }}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="page-header">
+    <h1>ライフサイクル・シミュレーター</h1>
+    {_nav_html("/simulator")}
+  </div>
+  <div class="grid">
+    <div class="card full" id="sim-params" data-card-id="sim-params">
+      <div class="card-header">
+        <h2>パラメータ設定</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="sim-param-grid">
+{param_rows_html}
+      </div>
+      <div class="sim-recalc">
+        <button id="sim-reset-btn" onclick="resetFromData()" class="sim-reset-btn">実データから再取得</button>
+        <span class="sim-loading" id="sim-loading">計算中...</span>
+      </div>
+      </div>
+    </div>
+    {summary_html}
+    {projection_html}
+  </div>
+</div>
+<script>
+{_COLLAPSE_JS}
+
+function fmtMoney(v) {{ return Math.round(v).toLocaleString('ja-JP'); }}
+function parseMoney(s) {{ return parseFloat(String(s).replace(/,/g, '')) || 0; }}
+function fmt(v) {{ return Math.round(v).toLocaleString('ja-JP'); }}
+function fmtAxis(v) {{
+  if (v >= 100_000_000) return (v / 100_000_000).toFixed(1) + '億';
+  if (v >= 10_000) return Math.round(v / 10_000) + '万';
+  return String(v);
+}}
+
+function stepVal(id, dir, min, max) {{
+  const el = document.getElementById(id);
+  let v = parseInt(el.value, 10) + dir;
+  if (v < min) v = min;
+  if (v > max) v = max;
+  el.value = v;
+  scheduleRecalc();
+}}
+
+// --- ツールチップ ---
+document.querySelectorAll('.sim-info-btn').forEach(btn => {{
+  function show() {{
+    if (btn.querySelector('.sim-tooltip')) return;
+    const tip = document.createElement('span');
+    tip.className = 'sim-tooltip';
+    tip.textContent = btn.dataset.tooltip;
+    btn.appendChild(tip);
+  }}
+  function hide() {{ const t = btn.querySelector('.sim-tooltip'); if (t) t.remove(); }}
+  btn.addEventListener('mouseenter', show);
+  btn.addEventListener('mouseleave', hide);
+  btn.addEventListener('focus', show);
+  btn.addEventListener('blur', hide);
+}});
+
+// --- 金額入力フィールド ---
+document.querySelectorAll('.money-input').forEach(el => {{
+  el.addEventListener('blur', () => {{
+    el.value = fmtMoney(parseMoney(el.value));
+    scheduleRecalc();
+  }});
+  el.addEventListener('focus', () => {{
+    el.value = String(parseMoney(el.value));
+  }});
+}});
+
+// --- デバウンス付きリアルタイム再計算 ---
+let _recalcTimer = null;
+let _recalcInFlight = false;
+function scheduleRecalc() {{
+  if (_recalcTimer) clearTimeout(_recalcTimer);
+  _recalcTimer = setTimeout(() => recalcSimulator(), 600);
+}}
+
+// スライダー・ステッパーの変更で自動再計算
+document.querySelectorAll('#sim-params input[type="range"]').forEach(el => {{
+  el.addEventListener('change', scheduleRecalc);
+}});
+document.querySelectorAll('#sim-params .stepper-input').forEach(el => {{
+  el.addEventListener('change', scheduleRecalc);
+}});
+
+async function recalcSimulator() {{
+  if (_recalcInFlight) return;
+  _recalcInFlight = true;
+  const loading = document.getElementById('sim-loading');
+  loading.style.display = 'inline';
+
+  const params = {{}};
+  const fields = ['current_age','retirement_age','end_age','initial_investment','safe_value','monthly_contribution',
+    'annual_return','annual_volatility','monthly_withdrawal','inflation_rate','expense_ratio',
+    'pension_start_age','monthly_pension','other_monthly_income'];
+  fields.forEach(f => {{
+    const el = document.getElementById(f);
+    params[f] = el.classList.contains('money-input') ? parseMoney(el.value) : parseFloat(el.value);
+  }});
+
+  try {{
+    const resp = await fetch('/api/simulator', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(params)
+    }});
+    const data = await resp.json();
+    if (!data.ok) {{
+      if (data.error) alert(data.error);
+    }} else {{
+      updateSummary(data);
+      updateProjection(data.yearly_balances, params.retirement_age);
+      _initBalances = data.yearly_balances;
+      drawFanChart(data.yearly_balances, params.retirement_age);
+    }}
+  }} catch(e) {{
+    console.error('Simulator error:', e);
+  }} finally {{
+    _recalcInFlight = false;
+    loading.style.display = 'none';
+  }}
+}}
+
+function updateSummary(data) {{
+  const summaryCard = document.querySelector('[data-card-id="sim-summary"] .card-body');
+  if (!summaryCard) return;
+  const grid = summaryCard.querySelector('.sim-summary-grid');
+  if (grid) {{
+    const vals = grid.querySelectorAll('.sim-summary-value');
+    if (vals[0]) vals[0].textContent = fmt(data.total_principal) + '円';
+    if (vals[1]) vals[1].textContent = fmt(data.total_gains) + '円';
+    if (vals[2]) vals[2].textContent = fmt(data.total_tax) + '円';
+    if (vals[3]) vals[3].textContent = fmt(data.net_final) + '円';
+  }}
+  const probs = summaryCard.querySelectorAll('.sim-prob-value');
+  if (probs[0]) {{
+    const dp = (data.depletion_probability * 100).toFixed(1);
+    probs[0].textContent = dp + '%';
+    probs[0].style.color = dp > 10 ? '#e74c3c' : dp > 0 ? '#f39c12' : '#27ae60';
+  }}
+  if (probs[1]) {{
+    const lp = (data.principal_loss_probability * 100).toFixed(1);
+    probs[1].textContent = lp + '%';
+    probs[1].style.color = lp > 30 ? '#e74c3c' : lp > 10 ? '#f39c12' : '#27ae60';
+  }}
+}}
+
+function updateProjection(balances, retirementAge) {{
+  const table = document.querySelector('[data-card-id="sim-projection"] .pred-table');
+  if (!table) return;
+  const header = table.querySelector('tr');
+  table.innerHTML = '';
+  table.appendChild(header);
+  balances.forEach(yb => {{
+    const tr = document.createElement('tr');
+    if (yb.age === Math.round(retirementAge)) tr.style.background = '#eff8ff';
+    tr.innerHTML = '<td class="num">' + yb.age + '歳</td>'
+      + '<td class="num">' + fmt(yb.p10) + '</td>'
+      + '<td class="num">' + fmt(yb.p25) + '</td>'
+      + '<td class="num" style="font-weight:700">' + fmt(yb.p50) + '</td>'
+      + '<td class="num">' + fmt(yb.p75) + '</td>'
+      + '<td class="num">' + fmt(yb.p90) + '</td>';
+    table.appendChild(tr);
+  }});
+}}
+
+// --- ファンチャート描画 ---
+function drawFanChart(balances, retirementAge) {{
+  const canvas = document.getElementById('sim-fan-chart');
+  if (!canvas || !balances || balances.length === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const padL = 70, padR = 20, padT = 20, padB = 40;
+  const cW = W - padL - padR, cH = H - padT - padB;
+  const n = balances.length;
+
+  // Y軸の最大値
+  let yMax = 0;
+  balances.forEach(b => {{ if (b.p90 > yMax) yMax = b.p90; }});
+  yMax = yMax > 0 ? yMax * 1.1 : 10_000_000;
+
+  function xPos(i) {{ return padL + (i / Math.max(n - 1, 1)) * cW; }}
+  function yPos(v) {{ return padT + cH - (Math.max(v, 0) / yMax) * cH; }}
+
+  // グリッド線と Y 軸ラベル
+  ctx.strokeStyle = '#eee';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#999';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  const gridSteps = 5;
+  for (let i = 0; i <= gridSteps; i++) {{
+    const val = (yMax / gridSteps) * i;
+    const y = yPos(val);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + cW, y); ctx.stroke();
+    ctx.fillText(fmtAxis(val), padL - 8, y + 4);
+  }}
+
+  // P10-P90 帯（薄い青）
+  ctx.fillStyle = 'rgba(40,129,215,0.10)';
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {{ const x = xPos(i); ctx.lineTo(x, yPos(balances[i].p90)); }}
+  for (let i = n - 1; i >= 0; i--) {{ const x = xPos(i); ctx.lineTo(x, yPos(balances[i].p10)); }}
+  ctx.closePath(); ctx.fill();
+
+  // P25-P75 帯（濃い青）
+  ctx.fillStyle = 'rgba(40,129,215,0.22)';
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {{ const x = xPos(i); ctx.lineTo(x, yPos(balances[i].p75)); }}
+  for (let i = n - 1; i >= 0; i--) {{ const x = xPos(i); ctx.lineTo(x, yPos(balances[i].p25)); }}
+  ctx.closePath(); ctx.fill();
+
+  // P50 線
+  ctx.strokeStyle = '#2881D7';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {{ const x = xPos(i); i === 0 ? ctx.moveTo(x, yPos(balances[i].p50)) : ctx.lineTo(x, yPos(balances[i].p50)); }}
+  ctx.stroke();
+
+  // 退職年齢の縦線
+  const retIdx = balances.findIndex(b => b.age === Math.round(retirementAge));
+  if (retIdx >= 0) {{
+    const rx = xPos(retIdx);
+    ctx.strokeStyle = 'rgba(231,76,60,0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(rx, padT); ctx.lineTo(rx, padT + cH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#e74c3c';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('退職', rx, padT - 4);
+  }}
+
+  // 0 線（枯渇ライン）
+  const zeroY = yPos(0);
+  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(padL, zeroY); ctx.lineTo(padL + cW, zeroY); ctx.stroke();
+
+  // X 軸ラベル（年齢）
+  ctx.fillStyle = '#999';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  const labelEvery = n > 30 ? 5 : n > 15 ? 3 : 2;
+  balances.forEach((b, i) => {{
+    if (i === 0 || i === n - 1 || b.age % labelEvery === 0) {{
+      ctx.fillText(b.age + '歳', xPos(i), padT + cH + 20);
+    }}
+  }});
+
+  // ホバーツールチップ用データを canvas に保持
+  canvas._chartData = {{ balances, xPos, yPos, padL, padR, padT, padB, cW, cH, n }};
+}}
+
+// --- チャートホバーツールチップ ---
+(function() {{
+  const canvas = document.getElementById('sim-fan-chart');
+  if (!canvas) return;
+  const tip = document.createElement('div');
+  tip.style.cssText = 'position:absolute;background:rgba(45,52,54,0.92);color:#fff;font-size:12px;'
+    + 'padding:8px 12px;border-radius:6px;pointer-events:none;display:none;z-index:50;white-space:nowrap;line-height:1.6';
+  canvas.parentElement.appendChild(tip);
+
+  canvas.addEventListener('mousemove', e => {{
+    const d = canvas._chartData;
+    if (!d) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    // 最寄りのデータポイント
+    let closest = 0, minDist = Infinity;
+    for (let i = 0; i < d.n; i++) {{
+      const dist = Math.abs(mx - d.xPos(i));
+      if (dist < minDist) {{ minDist = dist; closest = i; }}
+    }}
+    if (minDist > 30) {{ tip.style.display = 'none'; return; }}
+    const b = d.balances[closest];
+    tip.innerHTML = '<strong>' + b.age + '歳</strong><br>'
+      + 'P90: ' + fmt(b.p90) + '円<br>'
+      + 'P75: ' + fmt(b.p75) + '円<br>'
+      + '<span style="color:#5dade2">P50: ' + fmt(b.p50) + '円</span><br>'
+      + 'P25: ' + fmt(b.p25) + '円<br>'
+      + 'P10: ' + fmt(b.p10) + '円';
+    tip.style.display = 'block';
+    const tx = d.xPos(closest);
+    tip.style.left = (tx + 15) + 'px';
+    tip.style.top = '20px';
+    if (tx + 15 + tip.offsetWidth > d.cW + d.padL) {{
+      tip.style.left = (tx - tip.offsetWidth - 15) + 'px';
+    }}
+  }});
+  canvas.addEventListener('mouseleave', () => {{ tip.style.display = 'none'; }});
+}})();
+
+// --- 初期チャート描画 ---
+let _initBalances = {balances_json};
+drawFanChart(_initBalances, {int(params["retirement_age"])});
+window.addEventListener('resize', () => {{
+  if (_initBalances) drawFanChart(_initBalances, parseInt(document.getElementById('retirement_age').value) || 65);
+}});
+
+// --- 実データから再取得 ---
+async function resetFromData() {{
+  if (!confirm('リスク資産額・安全資産額・月額積立を実データから再取得します。\\n他のパラメータはそのまま維持されます。')) return;
+  const btn = document.getElementById('sim-reset-btn');
+  const loading = document.getElementById('sim-loading');
+  btn.disabled = true;
+  loading.style.display = 'inline';
+  try {{
+    const resp = await fetch('/api/simulator/reset', {{ method: 'POST' }});
+    const data = await resp.json();
+    if (data.ok) {{
+      const ii = document.getElementById('initial_investment');
+      const sv = document.getElementById('safe_value');
+      const mc = document.getElementById('monthly_contribution');
+      if (ii) ii.value = fmtMoney(data.initial_investment);
+      if (sv) sv.value = fmtMoney(data.safe_value);
+      if (mc) mc.value = fmtMoney(data.monthly_contribution);
+      await recalcSimulator();
+    }}
+  }} catch(e) {{
+    console.error('Reset error:', e);
+  }} finally {{
+    btn.disabled = false;
+    loading.style.display = 'none';
+  }}
+}}
+</script>
+</body>
+</html>"""
 
 
 def _build_plan_html(data: dict, skip_update: bool = False, ai_comment: str | None = None) -> str:
@@ -3944,6 +4787,14 @@ class Handler(BaseHTTPRequestHandler):
             html = _build_plan_html(data, self.skip_update, ai_comment=ai_comment)
             self._send_html(html)
 
+        elif parsed.path == "/simulator":
+            if self.demo:
+                data = _demo_simulator_data()
+            else:
+                data = _get_simulator_data(self.db_path)
+            html = _build_simulator_html(data, self.skip_update)
+            self._send_html(html)
+
         elif parsed.path == "/":
             if self.demo:
                 data = _demo_data()
@@ -4328,6 +5179,13 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _json_error(self, status: int, message: str) -> None:
+        """JSON エラーレスポンスを返すヘルパー。"""
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"ok": False, "error": message}).encode())
+
     def do_POST(self) -> None:
         if not self._check_origin():
             return
@@ -4374,6 +5232,164 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(303)
             self.send_header("Location", "/settings?saved=1")
             self.end_headers()
+
+        elif parsed.path == "/api/simulator/reset":
+            # DB の simulator_params を削除して実データから再取得
+            result_data: dict[str, object] = {"ok": False}
+            try:
+                if not self.demo:
+                    conn = get_connection(self.db_path)
+                    try:
+                        # 保存済みパラメータを削除
+                        save_setting(conn, "simulator_params", "")
+                        # 実データから再取得
+                        data = _get_simulator_data(self.db_path)
+                        params = data["params"]
+                        result_data = {
+                            "ok": True,
+                            "initial_investment": params["initial_investment"],
+                            "safe_value": params["safe_value"],
+                            "monthly_contribution": params["monthly_contribution"],
+                        }
+                    finally:
+                        conn.close()
+                else:
+                    result_data = {
+                        "ok": True,
+                        "initial_investment": _SIMULATOR_DEFAULTS["initial_investment"],
+                        "safe_value": _SIMULATOR_DEFAULTS["safe_value"],
+                        "monthly_contribution": _SIMULATOR_DEFAULTS["monthly_contribution"],
+                    }
+            except Exception as e:
+                result_data = {"ok": False, "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result_data, ensure_ascii=False).encode())
+
+        elif parsed.path == "/api/simulator":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+            except json.JSONDecodeError:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "invalid JSON"}).encode())
+                return
+
+            # パラメータ抽出とバリデーション
+            try:
+                ca = int(req.get("current_age", 35))
+                ra = int(req.get("retirement_age", 65))
+                ea = int(req.get("end_age", 95))
+                inv = float(req.get("initial_investment", 5_000_000))
+                sv = float(req.get("safe_value", 0))
+                mc = float(req.get("monthly_contribution", 50_000))
+                ar = float(req.get("annual_return", 0.05))
+                av = float(req.get("annual_volatility", 0.15))
+                mw = float(req.get("monthly_withdrawal", 200_000))
+                ir = float(req.get("inflation_rate", 0.02))
+                er = float(req.get("expense_ratio", 0.003))
+                psa = int(req.get("pension_start_age", 65))
+                mp = float(req.get("monthly_pension", 150_000))
+                omi = float(req.get("other_monthly_income", 0))
+            except (ValueError, TypeError):
+                self._json_error(400, "パラメータの値が不正です")
+                return
+
+            # 有限値チェック（inf/nan 防止）
+            all_floats = [inv, sv, mc, ar, av, mw, ir, er, mp, omi]
+            if not all(math.isfinite(v) for v in all_floats):
+                self._json_error(400, "パラメータの値が不正です")
+                return
+
+            # 年齢整合性
+            if not (ca <= ra <= ea):
+                self._json_error(400, "現在の年齢 ≤ 退職年齢 ≤ 終了年齢 にしてください")
+                return
+            if not (60 <= psa <= 75):
+                self._json_error(400, "年金受給開始年齢は60〜75歳の範囲にしてください")
+                return
+            # 数値範囲チェック（UIのmin/maxと同じ制約）
+            _MAX_LUMP = 200_000_000  # 一括金額上限（初期投資・安全資産）
+            _MAX_MONTHLY = 1_000_000  # 月額上限（積立・取崩し）
+            if inv < 0 or sv < 0 or mc < 0 or mw < 0 or mp < 0 or omi < 0:
+                self._json_error(400, "金額は0以上にしてください")
+                return
+            if inv > _MAX_LUMP or sv > _MAX_LUMP:
+                self._json_error(400, "金額が上限を超えています")
+                return
+            if mc > _MAX_MONTHLY or mw > _MAX_MONTHLY:
+                self._json_error(400, "月額は100万円以下にしてください")
+                return
+            if mp > 500_000 or omi > 500_000:
+                self._json_error(400, "月額収入は50万円以下にしてください")
+                return
+            if not (0.0 <= ar <= 0.15):
+                self._json_error(400, "期待リターンは0〜15%の範囲にしてください")
+                return
+            if not (0.01 <= av <= 0.40):
+                self._json_error(400, "ボラティリティは1〜40%の範囲にしてください")
+                return
+            if not (0.0 <= ir <= 0.10):
+                self._json_error(400, "インフレ率は0〜10%の範囲にしてください")
+                return
+            if not (0.0 <= er <= 0.03):
+                self._json_error(400, "信託報酬は0〜3%の範囲にしてください")
+                return
+
+            try:
+                result = run_lifecycle_simulation(
+                    current_age=ca,
+                    retirement_age=ra,
+                    end_age=ea,
+                    initial_investment=inv,
+                    safe_value=sv,
+                    monthly_contribution=mc,
+                    annual_return=ar,
+                    annual_volatility=av,
+                    monthly_withdrawal=mw,
+                    inflation_rate=ir,
+                    expense_ratio=er,
+                    pension_start_age=psa,
+                    monthly_pension=mp,
+                    other_monthly_income=omi,
+                    rng_seed=42,
+                )
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+                return
+
+            # 非デモ時はパラメータを保存
+            if not self.demo:
+                try:
+                    conn = get_connection(self.db_path)
+                    try:
+                        save_setting(conn, "simulator_params", json.dumps(req, ensure_ascii=False))
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+
+            payload = {
+                "ok": True,
+                "yearly_balances": result.yearly_balances,
+                "depletion_probability": result.depletion_probability,
+                "principal_loss_probability": result.principal_loss_probability,
+                "total_principal": result.total_principal,
+                "total_gains": result.total_gains,
+                "total_tax": result.total_tax,
+                "net_final": result.net_final,
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False).encode())
 
         elif parsed.path == "/api/cf/download":
             length = int(self.headers.get("Content-Length", 0))
