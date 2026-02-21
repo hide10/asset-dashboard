@@ -5227,20 +5227,24 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # パラメータ抽出とバリデーション
-            ca = int(req.get("current_age", 35))
-            ra = int(req.get("retirement_age", 65))
-            ea = int(req.get("end_age", 95))
-            inv = float(req.get("initial_investment", 5_000_000))
-            sv = float(req.get("safe_value", 0))
-            mc = float(req.get("monthly_contribution", 50_000))
-            ar = float(req.get("annual_return", 0.05))
-            av = float(req.get("annual_volatility", 0.15))
-            mw = float(req.get("monthly_withdrawal", 200_000))
-            ir = float(req.get("inflation_rate", 0.02))
-            er = float(req.get("expense_ratio", 0.003))
-            psa = int(req.get("pension_start_age", 65))
-            mp = float(req.get("monthly_pension", 150_000))
-            omi = float(req.get("other_monthly_income", 0))
+            try:
+                ca = int(req.get("current_age", 35))
+                ra = int(req.get("retirement_age", 65))
+                ea = int(req.get("end_age", 95))
+                inv = float(req.get("initial_investment", 5_000_000))
+                sv = float(req.get("safe_value", 0))
+                mc = float(req.get("monthly_contribution", 50_000))
+                ar = float(req.get("annual_return", 0.05))
+                av = float(req.get("annual_volatility", 0.15))
+                mw = float(req.get("monthly_withdrawal", 200_000))
+                ir = float(req.get("inflation_rate", 0.02))
+                er = float(req.get("expense_ratio", 0.003))
+                psa = int(req.get("pension_start_age", 65))
+                mp = float(req.get("monthly_pension", 150_000))
+                omi = float(req.get("other_monthly_income", 0))
+            except (ValueError, TypeError):
+                self._json_error(400, "パラメータの値が不正です")
+                return
 
             # 年齢整合性
             if not (ca <= ra <= ea):
