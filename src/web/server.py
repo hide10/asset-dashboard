@@ -2339,7 +2339,9 @@ async function recalcSimulator() {{
       body: JSON.stringify(params)
     }});
     const data = await resp.json();
-    if (data.ok) {{
+    if (!data.ok) {{
+      if (data.error) alert(data.error);
+    }} else {{
       updateSummary(data);
       updateProjection(data.yearly_balances, params.retirement_age);
       _initBalances = data.yearly_balances;
@@ -2455,12 +2457,6 @@ function drawFanChart(balances, retirementAge) {{
   ctx.beginPath();
   for (let i = 0; i < n; i++) {{ const x = xPos(i); i === 0 ? ctx.moveTo(x, yPos(balances[i].p50)) : ctx.lineTo(x, yPos(balances[i].p50)); }}
   ctx.stroke();
-
-  // 元本線（破線）
-  const principal = balances.map((b, i) => {{
-    const age = b.age;
-    return b;
-  }});
 
   // 退職年齢の縦線
   const retIdx = balances.findIndex(b => b.age === Math.round(retirementAge));
@@ -5130,6 +5126,13 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _json_error(self, status: int, message: str) -> None:
+        """JSON エラーレスポンスを返すヘルパー。"""
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"ok": False, "error": message}).encode())
+
     def do_POST(self) -> None:
         if not self._check_origin():
             return
@@ -5223,17 +5226,41 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": "invalid JSON"}).encode())
                 return
 
-            # 年齢の整合性バリデーション
+            # パラメータ抽出とバリデーション
             ca = int(req.get("current_age", 35))
             ra = int(req.get("retirement_age", 65))
             ea = int(req.get("end_age", 95))
+            inv = float(req.get("initial_investment", 5_000_000))
+            sv = float(req.get("safe_value", 0))
+            mc = float(req.get("monthly_contribution", 50_000))
+            ar = float(req.get("annual_return", 0.05))
+            av = float(req.get("annual_volatility", 0.15))
+            mw = float(req.get("monthly_withdrawal", 200_000))
+            ir = float(req.get("inflation_rate", 0.02))
+            er = float(req.get("expense_ratio", 0.003))
+            psa = int(req.get("pension_start_age", 65))
+            mp = float(req.get("monthly_pension", 150_000))
+            omi = float(req.get("other_monthly_income", 0))
+
+            # 年齢整合性
             if not (ca <= ra <= ea):
-                self.send_response(400)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(
-                    json.dumps({"ok": False, "error": "現在の年齢 ≤ 退職年齢 ≤ 終了年齢 にしてください"}).encode()
-                )
+                self._json_error(400, "現在の年齢 ≤ 退職年齢 ≤ 終了年齢 にしてください")
+                return
+            # 数値範囲チェック（UIのmin/maxと同じ制約）
+            if inv < 0 or sv < 0 or mc < 0 or mw < 0 or mp < 0 or omi < 0:
+                self._json_error(400, "金額は0以上にしてください")
+                return
+            if not (0.0 <= ar <= 0.15):
+                self._json_error(400, "期待リターンは0〜15%の範囲にしてください")
+                return
+            if not (0.01 <= av <= 0.40):
+                self._json_error(400, "ボラティリティは1〜40%の範囲にしてください")
+                return
+            if not (0.0 <= ir <= 0.10):
+                self._json_error(400, "インフレ率は0〜10%の範囲にしてください")
+                return
+            if not (0.0 <= er <= 0.03):
+                self._json_error(400, "信託報酬は0〜3%の範囲にしてください")
                 return
 
             try:
@@ -5241,17 +5268,17 @@ class Handler(BaseHTTPRequestHandler):
                     current_age=ca,
                     retirement_age=ra,
                     end_age=ea,
-                    initial_investment=float(req.get("initial_investment", 5_000_000)),
-                    safe_value=float(req.get("safe_value", 0)),
-                    monthly_contribution=float(req.get("monthly_contribution", 50_000)),
-                    annual_return=float(req.get("annual_return", 0.05)),
-                    annual_volatility=float(req.get("annual_volatility", 0.15)),
-                    monthly_withdrawal=float(req.get("monthly_withdrawal", 200_000)),
-                    inflation_rate=float(req.get("inflation_rate", 0.02)),
-                    expense_ratio=float(req.get("expense_ratio", 0.003)),
-                    pension_start_age=int(req.get("pension_start_age", 65)),
-                    monthly_pension=float(req.get("monthly_pension", 150_000)),
-                    other_monthly_income=float(req.get("other_monthly_income", 0)),
+                    initial_investment=inv,
+                    safe_value=sv,
+                    monthly_contribution=mc,
+                    annual_return=ar,
+                    annual_volatility=av,
+                    monthly_withdrawal=mw,
+                    inflation_rate=ir,
+                    expense_ratio=er,
+                    pension_start_age=psa,
+                    monthly_pension=mp,
+                    other_monthly_income=omi,
                     rng_seed=42,
                 )
             except Exception as e:
