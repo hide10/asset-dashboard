@@ -355,8 +355,8 @@ def run_lifecycle_simulation(
     else:
         rng = random.Random()
 
-    # ドリフト調整: インフレ率・信託報酬を差し引く
-    drift = annual_return - inflation_rate - expense_ratio
+    # ドリフト調整: インフレ率・信託報酬を幾何学的に差し引く
+    drift = (1 + annual_return) / ((1 + inflation_rate) * (1 + expense_ratio)) - 1
     monthly_drift = drift / 12
     monthly_vol = annual_volatility / math.sqrt(12)
 
@@ -428,6 +428,10 @@ def run_lifecycle_simulation(
                 else:
                     remainder = withdrawal - safe
                     safe = 0.0
+                    # コストベースを按分で減少（税計算精度のため）
+                    if risk > 0:
+                        cost_basis -= remainder * (cost_basis / risk)
+                        cost_basis = max(cost_basis, 0.0)
                     risk -= remainder
 
                 if risk + safe <= 0:
