@@ -5257,6 +5257,9 @@ class Handler(BaseHTTPRequestHandler):
             if not (ca <= ra <= ea):
                 self._json_error(400, "現在の年齢 ≤ 退職年齢 ≤ 終了年齢 にしてください")
                 return
+            if not (60 <= psa <= 75):
+                self._json_error(400, "年金受給開始年齢は60〜75歳の範囲にしてください")
+                return
             # 数値範囲チェック（UIのmin/maxと同じ制約）
             _MAX_LUMP = 200_000_000  # 一括金額上限（初期投資・安全資産）
             _MAX_MONTHLY = 1_000_000  # 月額上限（積立・取崩し）
