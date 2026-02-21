@@ -14,9 +14,11 @@ from src.web.server import (
     _build_html,
     _build_plan_html,
     _build_settings_html,
+    _build_simulator_html,
     _demo_cf_data,
     _demo_data,
     _demo_plan_data,
+    _demo_simulator_data,
     _nav_html,
 )
 
@@ -46,12 +48,21 @@ class TestNavToolbar:
 
     def test_nav_html_all_pages(self):
         html = _nav_html("/")
-        for label in ["ダッシュボード", "家計簿分析", "ライフプラン", "設定"]:
+        for label in ["ダッシュボード", "家計簿分析", "ライフプラン", "シミュレーター", "設定"]:
             assert label in html
+
+    def test_nav_html_simulator_active(self):
+        html = _nav_html("/simulator")
+        assert 'class="active">シミュレーター' in html
+
+    def test_simulator_has_toolbar(self):
+        html = _build_simulator_html(_demo_simulator_data())
+        nav = self._extract_nav(html)
+        assert 'class="active">シミュレーター' in nav
 
     def test_no_arrows_in_nav(self):
         """ナビゲーション内に矢印文字がない。"""
-        for active in ["/", "/cf", "/plan", "/settings"]:
+        for active in ["/", "/cf", "/plan", "/simulator", "/settings"]:
             nav = _nav_html(active)
             assert "&larr;" not in nav
             assert "&rarr;" not in nav
@@ -84,6 +95,7 @@ class TestNavToolbar:
             lambda: _build_html(_demo_data(), [_demo_data()["date"]]),
             lambda: _build_cf_html(_demo_cf_data()),
             lambda: _build_plan_html(_demo_plan_data()),
+            lambda: _build_simulator_html(_demo_simulator_data()),
         ]:
             html = gen()
             assert "nav-link" not in html
@@ -535,6 +547,10 @@ class TestFavicon:
         html = _build_plan_html(_demo_plan_data())
         assert 'rel="icon"' in html
 
+    def test_simulator_has_favicon(self):
+        html = _build_simulator_html(_demo_simulator_data())
+        assert 'rel="icon"' in html
+
     def test_settings_has_favicon(self, tmp_path):
         html = _build_settings_html_for_test(tmp_path)
         assert 'rel="icon"' in html
@@ -584,3 +600,91 @@ class TestPrediction6Periods:
         assert "1年後" in self.html
         assert "3年後" in self.html
         assert "5年後" in self.html
+
+
+# --- シミュレーターページ (#43) ---
+
+
+class TestSimulator:
+    """シミュレーターページの HTML 構造テスト。"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.data = _demo_simulator_data()
+        self.html = _build_simulator_html(self.data)
+
+    def test_all_cards_exist(self):
+        """全カード（sim-params, sim-summary, sim-projection）が存在。"""
+        for cid in ["sim-params", "sim-summary", "sim-projection"]:
+            assert f'data-card-id="{cid}"' in self.html, f"Card {cid} missing"
+
+    def test_collapse_buttons_on_all_cards(self):
+        """全カードに折りたたみボタンがある。"""
+        for cid in ["sim-params", "sim-summary", "sim-projection"]:
+            pattern = f'data-card-id="{cid}"[^>]*>.*?collapse-btn'
+            assert re.search(pattern, self.html, re.DOTALL), f"collapse-btn missing for {cid}"
+
+    def test_parameter_sliders_exist(self):
+        """年齢系スライダーが存在する。"""
+        for fid in ["current_age", "retirement_age", "end_age", "pension_start_age"]:
+            assert f'id="{fid}"' in self.html, f"Slider {fid} missing"
+
+    def test_parameter_number_inputs_exist(self):
+        """金額系の数値入力が存在する。"""
+        for fid in ["initial_investment", "monthly_contribution", "monthly_withdrawal", "monthly_pension"]:
+            assert f'id="{fid}"' in self.html, f"Number input {fid} missing"
+
+    def test_return_sliders_exist(self):
+        """リターン系スライダーが存在する。"""
+        for fid in ["annual_return", "annual_volatility", "inflation_rate", "expense_ratio"]:
+            assert f'id="{fid}"' in self.html, f"Slider {fid} missing"
+
+    def test_recalc_button_exists(self):
+        """「再計算」ボタンが存在する。"""
+        assert "再計算" in self.html
+        assert "recalcSimulator" in self.html
+
+    def test_api_endpoint_in_js(self):
+        """/api/simulator が JS 内に含まれる。"""
+        assert "/api/simulator" in self.html
+
+    def test_summary_values_displayed(self):
+        """財務サマリーの値が表示される。"""
+        assert "投入元本" in self.html
+        assert "運用益" in self.html
+        assert "税金合計" in self.html
+        assert "最終残高" in self.html
+
+    def test_probabilities_displayed(self):
+        """枯渇確率と元本割れ確率が表示される。"""
+        assert "枯渇確率" in self.html
+        assert "元本割れ確率" in self.html
+
+    def test_projection_table_has_percentiles(self):
+        """年次パーセンタイル表に P10/P25/P50/P75/P90 がある。"""
+        assert "P10" in self.html
+        assert "P25" in self.html
+        assert "P50" in self.html
+        assert "P75" in self.html
+        assert "P90" in self.html
+
+    def test_projection_table_has_age_rows(self):
+        """年齢行がテーブルに含まれる。"""
+        assert "36歳" in self.html  # current_age + 1
+        assert "65歳" in self.html  # retirement_age
+
+    def test_has_favicon(self):
+        """favicon が設定されている。"""
+        assert 'rel="icon"' in self.html
+
+    def test_uses_flex_layout(self):
+        """Flexbox レイアウトを使用している。"""
+        assert "display: flex; flex-wrap: wrap;" in self.html or "display: flex;flex-wrap: wrap;" in self.html
+
+    def test_demo_data_structure(self):
+        """デモデータが正しい構造を持つ。"""
+        assert "params" in self.data
+        assert "result" in self.data
+        result = self.data["result"]
+        assert len(result.yearly_balances) > 0
+        assert result.total_principal > 0
