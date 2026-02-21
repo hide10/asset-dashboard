@@ -5223,11 +5223,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": "invalid JSON"}).encode())
                 return
 
+            # 年齢の整合性バリデーション
+            ca = int(req.get("current_age", 35))
+            ra = int(req.get("retirement_age", 65))
+            ea = int(req.get("end_age", 95))
+            if not (ca <= ra <= ea):
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps({"ok": False, "error": "現在の年齢 ≤ 退職年齢 ≤ 終了年齢 にしてください"}).encode()
+                )
+                return
+
             try:
                 result = run_lifecycle_simulation(
-                    current_age=int(req.get("current_age", 35)),
-                    retirement_age=int(req.get("retirement_age", 65)),
-                    end_age=int(req.get("end_age", 95)),
+                    current_age=ca,
+                    retirement_age=ra,
+                    end_age=ea,
                     initial_investment=float(req.get("initial_investment", 5_000_000)),
                     safe_value=float(req.get("safe_value", 0)),
                     monthly_contribution=float(req.get("monthly_contribution", 50_000)),

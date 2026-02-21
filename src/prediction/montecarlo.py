@@ -90,6 +90,10 @@ class PredictionRange:
     p90: float
 
 
+DEFAULT_SIMULATIONS = 2000
+DEFAULT_RNG_SEED = 42
+
+
 @dataclass
 class SimulatorResult:
     """ライフサイクルシミュレーション結果。"""
@@ -337,8 +341,8 @@ def run_lifecycle_simulation(
     other_monthly_income: float = 0.0,
     tax_rate: float = 0.20315,
     safe_value: float = 0.0,
-    simulations: int = 2000,
-    rng_seed: int | None = 42,
+    simulations: int = DEFAULT_SIMULATIONS,
+    rng_seed: int | None = DEFAULT_RNG_SEED,
 ) -> SimulatorResult:
     """ライフサイクル全体のモンテカルロシミュレーションを実行する。
 
@@ -450,6 +454,8 @@ def run_lifecycle_simulation(
 
         if depleted:
             depleted_count += 1
+        # total_principal は名目合計、total_value はインフレ調整済み実質値。
+        # 「今の貨幣価値で見て元本を割り込むか」を判定する。
         if total_value < total_principal:
             principal_loss_count += 1
 
