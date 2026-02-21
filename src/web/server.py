@@ -5258,12 +5258,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_error(400, "現在の年齢 ≤ 退職年齢 ≤ 終了年齢 にしてください")
                 return
             # 数値範囲チェック（UIのmin/maxと同じ制約）
-            _MAX_AMOUNT = 200_000_000
+            _MAX_LUMP = 200_000_000  # 一括金額上限（初期投資・安全資産）
+            _MAX_MONTHLY = 1_000_000  # 月額上限（積立・取崩し）
             if inv < 0 or sv < 0 or mc < 0 or mw < 0 or mp < 0 or omi < 0:
                 self._json_error(400, "金額は0以上にしてください")
                 return
-            if inv > _MAX_AMOUNT or sv > _MAX_AMOUNT or mc > _MAX_AMOUNT or mw > _MAX_AMOUNT:
+            if inv > _MAX_LUMP or sv > _MAX_LUMP:
                 self._json_error(400, "金額が上限を超えています")
+                return
+            if mc > _MAX_MONTHLY or mw > _MAX_MONTHLY:
+                self._json_error(400, "月額は100万円以下にしてください")
                 return
             if mp > 500_000 or omi > 500_000:
                 self._json_error(400, "月額収入は50万円以下にしてください")
