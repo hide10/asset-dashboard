@@ -5265,6 +5265,9 @@ class Handler(BaseHTTPRequestHandler):
             if inv > _MAX_AMOUNT or sv > _MAX_AMOUNT or mc > _MAX_AMOUNT or mw > _MAX_AMOUNT:
                 self._json_error(400, "金額が上限を超えています")
                 return
+            if mp > 500_000 or omi > 500_000:
+                self._json_error(400, "月額収入は50万円以下にしてください")
+                return
             if not (0.0 <= ar <= 0.15):
                 self._json_error(400, "期待リターンは0〜15%の範囲にしてください")
                 return
