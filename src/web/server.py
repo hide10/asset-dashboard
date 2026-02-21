@@ -11,6 +11,7 @@ import contextlib
 import html as html_mod
 import json
 import logging
+import math
 import sqlite3
 import threading
 from datetime import datetime
@@ -5246,13 +5247,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_error(400, "パラメータの値が不正です")
                 return
 
+            # 有限値チェック（inf/nan 防止）
+            all_floats = [inv, sv, mc, ar, av, mw, ir, er, mp, omi]
+            if not all(math.isfinite(v) for v in all_floats):
+                self._json_error(400, "パラメータの値が不正です")
+                return
+
             # 年齢整合性
             if not (ca <= ra <= ea):
                 self._json_error(400, "現在の年齢 ≤ 退職年齢 ≤ 終了年齢 にしてください")
                 return
             # 数値範囲チェック（UIのmin/maxと同じ制約）
+            _MAX_AMOUNT = 200_000_000
             if inv < 0 or sv < 0 or mc < 0 or mw < 0 or mp < 0 or omi < 0:
                 self._json_error(400, "金額は0以上にしてください")
+                return
+            if inv > _MAX_AMOUNT or sv > _MAX_AMOUNT or mc > _MAX_AMOUNT or mw > _MAX_AMOUNT:
+                self._json_error(400, "金額が上限を超えています")
                 return
             if not (0.0 <= ar <= 0.15):
                 self._json_error(400, "期待リターンは0〜15%の範囲にしてください")
