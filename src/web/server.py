@@ -1816,17 +1816,67 @@ def _demo_simulator_data() -> dict:
     return {"params": params, "result": result}
 
 
+def _sanitize_simulator_params(params: dict) -> dict:
+    """DB から読み込んだシミュレーターパラメータを正規化し、範囲外ならデフォルトに戻す。"""
+    defaults = _SIMULATOR_DEFAULTS
+    clean: dict = {}
+    # 各キーを型変換＋範囲チェック（失敗時はデフォルト値にフォールバック）
+    int_keys = {"current_age", "retirement_age", "end_age", "pension_start_age"}
+    for k, default_v in defaults.items():
+        try:
+            v = int(params[k]) if k in int_keys else float(params[k])
+            if not math.isfinite(v) if isinstance(v, float) else False:
+                v = default_v
+        except (ValueError, TypeError, KeyError):
+            v = default_v
+        clean[k] = v
+    # 年齢整合性: 崩れていたら全てデフォルトに戻す
+    if not (clean["current_age"] <= clean["retirement_age"] <= clean["end_age"]):
+        for k in ("current_age", "retirement_age", "end_age"):
+            clean[k] = defaults[k]
+    # pension_start_age 範囲
+    if not (60 <= clean["pension_start_age"] <= 75):
+        clean["pension_start_age"] = defaults["pension_start_age"]
+    # 金額非負 + 上限
+    _MAX_LUMP = 200_000_000
+    _MAX_MONTHLY = 1_000_000
+    for k, upper in [
+        ("initial_investment", _MAX_LUMP),
+        ("safe_value", _MAX_LUMP),
+        ("monthly_contribution", _MAX_MONTHLY),
+        ("monthly_withdrawal", _MAX_MONTHLY),
+        ("monthly_pension", 500_000),
+        ("other_monthly_income", 500_000),
+    ]:
+        if clean[k] < 0 or clean[k] > upper:
+            clean[k] = defaults[k]
+    # レート範囲
+    for k, lo, hi in [
+        ("annual_return", 0.0, 0.15),
+        ("annual_volatility", 0.01, 0.40),
+        ("inflation_rate", 0.0, 0.10),
+        ("expense_ratio", 0.0, 0.03),
+    ]:
+        if not (lo <= clean[k] <= hi):
+            clean[k] = defaults[k]
+    return clean
+
+
 def _get_simulator_data(db_path: str) -> dict:
     """DB設定からシミュレーターパラメータを読み込み、シミュレーションを実行する。"""
     conn = get_connection(db_path)
     try:
         raw = get_setting(conn, "simulator_params", "")
         if raw:
-            params = json.loads(raw)
-            # デフォルト値で補完
+            try:
+                params = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                params = {}
+            # デフォルト値で補完 → 正規化
             for k, v in _SIMULATOR_DEFAULTS.items():
                 if k not in params:
                     params[k] = v
+            params = _sanitize_simulator_params(params)
         else:
             # 初回: ライフプランの実データからデフォルト値を構築
             params = dict(_SIMULATOR_DEFAULTS)
@@ -1853,7 +1903,9 @@ def _get_simulator_data(db_path: str) -> dict:
                 params["safe_value"] = total_asset - risk_value
             contrib = get_setting(conn, "monthly_contribution", "")
             if contrib:
-                params["monthly_contribution"] = float(contrib)
+                with contextlib.suppress(ValueError, TypeError):
+                    params["monthly_contribution"] = float(contrib)
+            params = _sanitize_simulator_params(params)
     finally:
         conn.close()
 
