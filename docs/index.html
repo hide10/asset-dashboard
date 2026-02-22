@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
+<title>資産ダッシュボード - 2026-02-22</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f6fa; color: #2d3436; line-height: 1.6; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  .header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 4px; }
+  h1 { font-size: 1.5rem; }
+  .date-picker { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }
+  .date-picker label { color: #636e72; font-size: 0.9rem; }
+  .date-picker select {
+    font-size: 0.9rem; padding: 4px 8px; border: 1px solid #dfe6e9;
+    border-radius: 6px; background: #fff; cursor: pointer;
+  }
+  .date-picker .nav-btn {
+    background: #fff; border: 1px solid #dfe6e9; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; font-size: 0.9rem; color: #2d3436;
+  }
+  .date-picker .nav-btn:hover { background: #f1f2f6; }
+  .date-picker .nav-btn:disabled { color: #b2bec3; cursor: default; background: #fff; }
+  .total { font-size: 1.4rem; font-weight: 700; color: #636e72; margin-bottom: 24px; }
+  .total strong { color: #2d3436; font-size: 1.8rem; }
+  .grid { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; align-items: flex-start; }
+  .card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); width: calc(50% - 10px); }
+  .card h2 { font-size: 1.1rem; margin-bottom: 12px; color: #2d3436; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th { text-align: left; padding: 8px 6px; border-bottom: 2px solid #dfe6e9; color: #636e72; font-weight: 600; }
+  td { padding: 6px; border-bottom: 1px solid #f1f2f6; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .bar { height: 16px; border-radius: 3px; min-width: 2px; }
+  .group-header td { background: #f8f9fa; font-weight: 600; color: #636e72; padding: 10px 6px 6px; font-size: 0.85rem; }
+  .code { color: #636e72; font-size: 0.8rem; }
+  .qty { color: #636e72; font-size: 0.8rem; }
+  .full { width: 100%; }
+  .pie-wrap canvas { max-width: 280px; }
+  canvas { margin: 0 auto; display: block; }
+  .pie-wrap { display: flex; align-items: center; gap: 20px; position: relative; }
+  .pie-tooltip {
+    position: fixed; pointer-events: none; z-index: 9999;
+    background: rgba(45,52,54,0.92); color: #fff; border-radius: 8px;
+    padding: 8px 14px; font-size: 0.82rem; line-height: 1.5;
+    white-space: nowrap; opacity: 0; transition: opacity 0.15s ease;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .pie-tooltip.show { opacity: 1; }
+  .has-tip { cursor: pointer; }
+  .has-tip:hover { background: #f0f4ff; }
+  .pie-legend { font-size: 0.85rem; }
+  .pie-legend li { list-style: none; margin-bottom: 4px; }
+  .dividend-total { font-size: 1.8rem; font-weight: 700; color: #0F7F30; margin-bottom: 2px; }
+  .dividend-total span { font-size: 0.9rem; color: #636e72; font-weight: 400; }
+  .dividend-monthly { font-size: 0.9rem; color: #636e72; margin-bottom: 8px; }
+  .compare-cards { display: flex; gap: 12px; margin-bottom: 20px; }
+  .compare-card { flex: 1; background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; }
+  .compare-card h3 { font-size: 0.85rem; color: #636e72; margin-bottom: 6px; font-weight: 600; }
+  .compare-card .diff { font-size: 1.3rem; font-weight: 700; }
+  .compare-card .ratio { font-size: 0.85rem; margin-top: 2px; }
+  .compare-card .compare-date { font-size: 0.75rem; color: #b2bec3; margin-top: 4px; }
+  .class-diff { font-size: 0.7rem; margin-top: 2px; }
+  .plus { color: #e74c3c; }
+  .minus { color: #2881D7; }
+  .diff-zero { color: #dfe6e9; }
+  .no-data { color: #b2bec3; font-size: 0.9rem; }
+  .info-btn {
+    width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid #b2bec3;
+    background: transparent; color: #636e72; font-size: 0.7rem; font-weight: 700;
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; vertical-align: middle; margin-left: 4px;
+  }
+  .info-btn:hover { background: #f1f2f6; border-color: #636e72; }
+  .info-panel {
+    display: none; background: #f8f9fa; border-radius: 8px; padding: 12px 14px;
+    font-size: 0.8rem; color: #636e72; line-height: 1.7; margin-bottom: 12px;
+    border: 1px solid #dfe6e9;
+  }
+  .info-panel.show { display: block; }
+  .info-panel strong { color: #2d3436; }
+  .info-panel ul { margin: 4px 0 4px 18px; }
+  .info-panel li { margin-bottom: 2px; }
+  .section-header { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .section-header h3 { font-size: 0.95rem; color: #636e72; font-weight: 600; margin: 0; }
+  .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .card-header h2 { margin-bottom: 0; }
+  .hold-table th { white-space: nowrap; }
+  .hold-table td:nth-child(n+3) { font-size: 0.82rem; }
+  
+  .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .nav-toolbar { display: flex; gap: 0; }
+  .nav-toolbar a {
+    color: #636e72; text-decoration: none; font-size: 0.85rem; font-weight: 600;
+    padding: 7px 16px; border: 1px solid #dfe6e9; background: #fff;
+  }
+  .nav-toolbar a:first-child { border-radius: 6px 0 0 6px; }
+  .nav-toolbar a:last-child { border-radius: 0 6px 6px 0; }
+  .nav-toolbar a:not(:first-child) { border-left: none; }
+  .nav-toolbar a:hover { background: #f1f2f6; color: #2d3436; }
+  .nav-toolbar a.active { background: #2881D7; color: #fff; border-color: #2881D7; }
+  .nav-toolbar a.active + a { border-left-color: #2881D7; }
+
+  .ai-comment-card {
+    background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
+    border: 1px solid #d4ddee; border-radius: 12px;
+    padding: 16px 20px; margin-bottom: 20px;
+    display: flex; align-items: flex-start; gap: 12px;
+    font-size: 0.9rem; line-height: 1.7;
+  }
+  .ai-icon {
+    background: #2881D7; color: #fff; font-size: 0.7rem; font-weight: 700;
+    padding: 3px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
+  }
+  #reload-banner {
+    display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    background: #0F7F30; color: #fff; padding: 10px 20px;
+    align-items: center; justify-content: center; gap: 12px;
+    font-size: 0.9rem; font-weight: 600;
+  }
+  #reload-banner button {
+    background: #fff; color: #0F7F30; border: none; border-radius: 6px;
+    padding: 4px 14px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  }
+  #reload-banner button:hover { background: #f1f2f6; }
+  
+  .collapse-btn {
+    background: none; border: none; cursor: pointer; font-size: 0.9rem;
+    color: #b2bec3; padding: 2px 6px; line-height: 1; flex-shrink: 0;
+  }
+  .collapse-btn:hover { color: #636e72; }
+  [data-card-id].collapsed > .card-body { display: none; }
+  [data-card-id].collapsed { padding-bottom: 8px; }
+
+  
+  @media (max-width: 768px) {
+    .container { padding: 10px; }
+    .grid { gap: 12px; }
+    .card, .card.full { width: 100% !important; }
+    .page-header { flex-direction: column; gap: 8px; align-items: flex-start; }
+    .nav-toolbar a { padding: 6px 10px; font-size: 0.78rem; }
+    .summary-cards { flex-direction: column; }
+    .summary-card { min-width: auto; }
+    .pie-wrap { flex-direction: column; align-items: center; }
+    table { font-size: 0.8rem; }
+    .card-body { overflow-x: auto; }
+    .compare-cards { flex-direction: column; }
+    .compare-card { min-width: auto; }
+    h1 { font-size: 1.2rem; }
+    canvas { max-width: 100%; height: auto !important; }
+  }
+
+</style>
+</head>
+<body>
+<div style="background:#DF3727;color:#fff;text-align:center;padding:8px 12px;font-size:0.8rem;font-weight:700;letter-spacing:0.05em">DEMO — 表示データはすべてダミーです <a href="https://github.com/hide10/asset-dashboard" style="color:#fff;text-decoration:underline;margin-left:8px">GitHub</a></div>
+<div id="reload-banner">
+  データが更新されました
+  <button onclick="location.reload()">再読み込み</button>
+</div>
+<div class="container">
+  <div class="page-header">
+    <h1>資産ダッシュボード</h1>
+    <div class="nav-toolbar"><a href="index.html" class="active">ダッシュボード</a><a href="cf.html">家計簿分析</a><a href="plan.html">ライフプラン</a><a href="simulator.html">シミュレーター</a></div>
+  </div>
+  
+  <div class="date-picker">
+    <button class="nav-btn" id="prev-btn" title="前の日">&larr;</button>
+    <select id="date-select" onchange="location.href='/?date='+this.value">
+      <option value="2026-02-22" selected>2026-02-22</option>
+    </select>
+    <button class="nav-btn" id="next-btn" title="次の日">&rarr;</button>
+    <label>(1日分のデータ)</label>
+  </div>
+  <div class="total">現在の総資産: <strong>21,500,000</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">(2026-02-22時点)</span></div>
+  <div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">総資産約2,150万円のポートフォリオは、株式・投資信託・預金・年金にバランスよく分散されています。前日比+4.2万円、前月比+28.5万円と堅調に推移しており、特にリスク資産（株式+投信）の貢献が大きいです。年間配当予測は約12.5万円（利回り約1.9%）で、高配当銘柄の追加や業種の偏り（電気機器が大きい）の分散を検討すると、より安定したポートフォリオになるでしょう。</div></div>
+
+  <div class="compare-cards">
+    
+    <div class="compare-card">
+      <h3>前日比</h3>
+      <div class="diff plus">+42,300円</div>
+      <div class="ratio plus">+0.20%</div>
+      <div class="compare-date">vs 2026-02-21</div>
+      <div class="class-diff plus">株式（現物） +35,800</div><div class="class-diff plus">投資信託 +12,500</div><div class="class-diff minus">預金・現金・暗号資産 -6,000</div>
+    </div>
+    <div class="compare-card">
+      <h3>前月比</h3>
+      <div class="diff plus">+285,000円</div>
+      <div class="ratio plus">+1.35%</div>
+      <div class="compare-date">vs 2026-01-23</div>
+      <div class="class-diff plus">株式（現物） +180,000</div><div class="class-diff plus">投資信託 +95,000</div><div class="class-diff plus">年金 +25,000</div><div class="class-diff minus">預金・現金・暗号資産 -15,000</div>
+    </div>
+    <div class="compare-card">
+      <h3>前年比</h3>
+      <div class="diff plus">+3,420,000円</div>
+      <div class="ratio plus">+18.90%</div>
+      <div class="compare-date">vs 2025-02-22</div>
+      <div class="class-diff plus">株式（現物） +1,650,000</div><div class="class-diff plus">投資信託 +1,280,000</div><div class="class-diff plus">年金 +580,000</div><div class="class-diff minus">預金・現金・暗号資産 -90,000</div>
+    </div>
+  </div>
+  <div class="section-header">
+    <h3>リスク指標</h3>
+    <button class="info-btn" onclick="document.getElementById('risk-info').classList.toggle('show')" title="リスク指標について">?</button>
+  </div>
+  <div class="info-panel" id="risk-info">
+    <ul>
+      <li><strong>ボラティリティ（年率）</strong> — 資産額の日々の変動幅を年率に換算した数値です。数値が大きいほど資産の値動きが激しいことを意味します。一般的に 10% 以下なら安定的、20% を超えるとハイリスクとされます。</li>
+      <li><strong>最大ドローダウン</strong> — 過去の最高値から最も大きく下落した割合です。「最悪の場合にどれだけ資産が減ったか」を示します。-5% なら最高値から5%下がった期間があったということです。</li>
+      <li><strong>上位5銘柄集中度</strong> — 総資産のうち上位5つの保有銘柄が占める割合です。集中度が高い（例: 50%超）と特定銘柄の値動きに資産全体が左右されやすくなります。</li>
+    </ul>
+  </div>
+  <div class="compare-cards" style="margin-bottom:20px">
+    
+    <div class="compare-card">
+      <h3>ボラティリティ（年率）</h3>
+      <div class="diff" style="color:#2d3436">14.2%</div>
+      <div class="compare-date">直近30日</div>
+    </div>
+    <div class="compare-card">
+      <h3>最大ドローダウン</h3>
+      <div class="diff minus">-3.8%</div>
+      <div class="compare-date">全期間</div>
+    </div>
+    <div class="compare-card">
+      <h3>上位5銘柄集中度</h3>
+      <div class="diff" style="color:#2d3436">32.5%</div>
+      <div class="compare-date">総資産に対する割合</div>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="card" data-card-id="dash-class">
+      <div class="card-header">
+        <h2>資産クラス別内訳</h2>
+        <button class="info-btn" onclick="document.getElementById('class-info').classList.toggle('show')" title="資産クラスについて">?</button>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="info-panel" id="class-info">
+        <ul>
+          <li><strong>資産クラス</strong> — 資産を性質ごとにグループ分けしたものです。値動きの異なるクラスに分散することでリスクを抑えられます。</li>
+          <li><strong>株式（現物）</strong> — 個別企業の株式。値動きが大きい（ハイリスク・ハイリターン）。</li>
+          <li><strong>投資信託</strong> — 複数の株式や債券をまとめた商品。個別株より分散が効いています。</li>
+          <li><strong>預金・現金</strong> — 元本保証。インフレ時は実質目減りするリスクがあります。</li>
+        </ul>
+      </div>
+      <div class="pie-wrap">
+        <canvas id="pie" width="220" height="220"></canvas>
+        <ul class="pie-legend" id="legend"></ul>
+      </div>
+      <table style="margin-top:16px">
+        
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;みずほ銀行 / 普通預金&quot;, &quot;value&quot;: 2150000}, {&quot;name&quot;: &quot;三井住友銀行 / 普通預金&quot;, &quot;value&quot;: 1380000}, {&quot;name&quot;: &quot;住信SBIネット銀行 / 定期預金&quot;, &quot;value&quot;: 1000000}, {&quot;name&quot;: &quot;楽天銀行 / 円預金&quot;, &quot;value&quot;: 245000}, {&quot;name&quot;: &quot;SBI証券 / 預り金&quot;, &quot;value&quot;: 41800}, {&quot;name&quot;: &quot;モバイルSuica / Suica&quot;, &quot;value&quot;: 3200}]" data-label="預金・現金・暗号資産">
+          <td><span class="dot" style="background:#2881D7"></span>預金・現金・暗号資産</td>
+          <td class="num">4,820,000円</td>
+          <td class="num">22.4%</td>
+          <td><div class="bar" style="width:44.83720930232558px;background:#2881D7"></div></td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;トヨタ自動車&quot;, &quot;value&quot;: 1260000}, {&quot;name&quot;: &quot;ソニーグループ&quot;, &quot;value&quot;: 980000}, {&quot;name&quot;: &quot;三菱商事&quot;, &quot;value&quot;: 875000}, {&quot;name&quot;: &quot;信越化学工業&quot;, &quot;value&quot;: 720000}, {&quot;name&quot;: &quot;日立製作所&quot;, &quot;value&quot;: 685000}, {&quot;name&quot;: &quot;キーエンス&quot;, &quot;value&quot;: 650000}, {&quot;name&quot;: &quot;任天堂&quot;, &quot;value&quot;: 580000}, {&quot;name&quot;: &quot;ダイキン工業&quot;, &quot;value&quot;: 350000}, {&quot;name&quot;: &quot;INPEX&quot;, &quot;value&quot;: 250000}]" data-label="株式（現物）">
+          <td><span class="dot" style="background:#DF3727"></span>株式（現物）</td>
+          <td class="num">6,350,000円</td>
+          <td class="num">29.5%</td>
+          <td><div class="bar" style="width:59.06976744186046px;background:#DF3727"></div></td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;eMAXIS Slim 全世界株式(オルカン)&quot;, &quot;value&quot;: 2480000}, {&quot;name&quot;: &quot;eMAXIS Slim 米国株式(S&amp;P500)&quot;, &quot;value&quot;: 1850000}, {&quot;name&quot;: &quot;ニッセイ外国株式インデックスファンド&quot;, &quot;value&quot;: 850000}]" data-label="投資信託">
+          <td><span class="dot" style="background:#FCAD4C"></span>投資信託</td>
+          <td class="num">5,180,000円</td>
+          <td class="num">24.1%</td>
+          <td><div class="bar" style="width:48.18604651162791px;background:#FCAD4C"></div></td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;不動産クラウドファンディング&quot;, &quot;value&quot;: 1200000}]" data-label="不動産">
+          <td><span class="dot" style="background:#0F7F30"></span>不動産</td>
+          <td class="num">1,200,000円</td>
+          <td class="num">5.6%</td>
+          <td><div class="bar" style="width:11.162790697674419px;background:#0F7F30"></div></td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;企業型確定拠出年金&quot;, &quot;value&quot;: 2800000}, {&quot;name&quot;: &quot;iDeCo（先進国株式）&quot;, &quot;value&quot;: 850000}, {&quot;name&quot;: &quot;個人年金保険&quot;, &quot;value&quot;: 300000}]" data-label="年金">
+          <td><span class="dot" style="background:#008986"></span>年金</td>
+          <td class="num">3,950,000円</td>
+          <td class="num">18.4%</td>
+          <td><div class="bar" style="width:36.74418604651163px;background:#008986"></div></td>
+        </tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="card" data-card-id="dash-accounts">
+      <div class="card-header">
+        <h2>口座一覧 (6)</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <table>
+        <tr><th>口座</th><th class="num">残高</th></tr>
+        <tr><td>みずほ銀行 / 普通預金</td><td class="num">2,150,000円</td></tr><tr><td>三井住友銀行 / 普通預金</td><td class="num">1,380,000円</td></tr><tr><td>住信SBIネット銀行 / 定期預金</td><td class="num">1,000,000円</td></tr><tr><td>楽天銀行 / 円預金</td><td class="num">245,000円</td></tr><tr><td>モバイルSuica / Suica</td><td class="num">3,200円</td></tr><tr><td>SBI証券 / 預り金</td><td class="num">41,800円</td></tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="card" data-card-id="dash-sector">
+      <div class="card-header">
+        <h2>株式 業種別内訳</h2>
+        <button class="info-btn" onclick="document.getElementById('sector-info').classList.toggle('show')" title="業種別内訳について">?</button>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="info-panel" id="sector-info">
+        <ul>
+          <li><strong>業種別内訳</strong> — 保有株式を東証の業種分類ごとに集計したものです。特定の業種に偏りすぎていないかを確認し、分散投資の参考にします。</li>
+          <li><strong>利回り</strong> — 各業種の年間配当合計 &divide; 評価額。業種ごとの配当効率の比較に使えます。</li>
+        </ul>
+      </div>
+      <div class="pie-wrap">
+        <canvas id="sector-pie" width="220" height="220"></canvas>
+        <ul class="pie-legend" id="sector-legend"></ul>
+      </div>
+      <table style="margin-top:16px">
+        <tr><th>業種</th><th class="num">評価額</th><th class="num">比率</th><th class="num">年間配当</th><th class="num">利回り</th></tr>
+        
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;ソニーグループ&quot;, &quot;value&quot;: 980000}, {&quot;name&quot;: &quot;日立製作所&quot;, &quot;value&quot;: 685000}, {&quot;name&quot;: &quot;キーエンス&quot;, &quot;value&quot;: 650000}]" data-label="電気機器">
+          <td><span class="dot" style="background:#2881D7"></span>電気機器</td>
+          <td class="num">2,315,000円</td>
+          <td class="num">36.5%</td>
+          <td class="num">21,900円</td>
+          <td class="num">0.95%</td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;トヨタ自動車&quot;, &quot;value&quot;: 1260000}]" data-label="輸送用機器">
+          <td><span class="dot" style="background:#DF3727"></span>輸送用機器</td>
+          <td class="num">1,260,000円</td>
+          <td class="num">19.8%</td>
+          <td class="num">22,500円</td>
+          <td class="num">1.79%</td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;三菱商事&quot;, &quot;value&quot;: 875000}]" data-label="卸売業">
+          <td><span class="dot" style="background:#FCAD4C"></span>卸売業</td>
+          <td class="num">875,000円</td>
+          <td class="num">13.8%</td>
+          <td class="num">10,000円</td>
+          <td class="num">1.14%</td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;信越化学工業&quot;, &quot;value&quot;: 720000}]" data-label="化学">
+          <td><span class="dot" style="background:#0F7F30"></span>化学</td>
+          <td class="num">720,000円</td>
+          <td class="num">11.3%</td>
+          <td class="num">12,000円</td>
+          <td class="num">1.67%</td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;任天堂&quot;, &quot;value&quot;: 580000}]" data-label="その他製品">
+          <td><span class="dot" style="background:#008986"></span>その他製品</td>
+          <td class="num">580,000円</td>
+          <td class="num">9.1%</td>
+          <td class="num">18,300円</td>
+          <td class="num">3.16%</td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;ダイキン工業&quot;, &quot;value&quot;: 350000}]" data-label="機械">
+          <td><span class="dot" style="background:#9C39B6"></span>機械</td>
+          <td class="num">350,000円</td>
+          <td class="num">5.5%</td>
+          <td class="num">10,000円</td>
+          <td class="num">2.86%</td>
+        </tr>
+        <tr class="has-tip" data-details="[{&quot;name&quot;: &quot;INPEX&quot;, &quot;value&quot;: 250000}]" data-label="鉱業">
+          <td><span class="dot" style="background:#FF5266"></span>鉱業</td>
+          <td class="num">250,000円</td>
+          <td class="num">3.9%</td>
+          <td class="num">30,000円</td>
+          <td class="num">12.00%</td>
+        </tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="card" data-card-id="dash-dividend">
+      <div class="card-header">
+        <h2>年間配当予測</h2>
+        <button class="info-btn" onclick="document.getElementById('div-info').classList.toggle('show')" title="配当予測について">?</button>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="info-panel" id="div-info">
+        <ul>
+          <li><strong>年間配当予測</strong> — 各銘柄の「予想1株配当 &times; 保有株数」を合計した金額です。実際の配当は業績により増減します。</li>
+          <li><strong>加重平均利回り</strong> — 保有株式全体の配当利回りを評価額で加重平均した数値です。ポートフォリオ全体の配当効率を示します。</li>
+          <li><strong>配当利回り</strong> — 1株配当 &divide; 現在の株価 &times; 100。株価に対して年間どれだけ配当がもらえるかの指標です。</li>
+          <li><strong>取得利回り</strong> — 1株配当 &divide; 取得時の株価 &times; 100。自分の買値に対する配当の割合で、投資効率の評価に使います。</li>
+          <li><strong>利回り別内訳</strong> — 低配当(0-2%)・中配当(2-4%)・高配当(4%超)の3区間で保有株式を分類したものです。</li>
+        </ul>
+      </div>
+      <div class="dividend-total">124,700<span> 円/年</span></div>
+      <div class="dividend-monthly">月平均 10,392円　加重平均利回り 1.96%</div>
+      <div style="margin:16px 0;display:flex;align-items:center;gap:16px">
+        <canvas id="yield-pie" width="140" height="140"></canvas>
+        <table style="font-size:0.85rem;width:auto">
+          
+            <tr>
+              <td><span class="dot" style="background:#80BD45"></span>低配当 (0-2%)</td>
+              <td class="num">5,170,000円</td>
+              <td class="num">81.4%</td>
+            </tr>
+            <tr>
+              <td><span class="dot" style="background:#FCAD4C"></span>中配当 (2-4%)</td>
+              <td class="num">930,000円</td>
+              <td class="num">14.6%</td>
+            </tr>
+            <tr>
+              <td><span class="dot" style="background:#DF3727"></span>高配当 (4%超)</td>
+              <td class="num">250,000円</td>
+              <td class="num">3.9%</td>
+            </tr>
+        </table>
+      </div>
+      <table style="margin-top:12px">
+        <tr><th>銘柄</th><th class="num">保有数</th><th class="num">配当/株</th><th class="num">年間配当</th><th class="num">利回り</th><th class="num">取得利回り</th></tr>
+        <tr><td><span class="code">1605</span> INPEX</td><td class="num">500</td><td class="num">60.0円</td><td class="num">30,000円</td><td class="num">12.00%</td><td class="num">14.29%</td></tr><tr><td><span class="code">7203</span> トヨタ自動車</td><td class="num">300</td><td class="num">75.0円</td><td class="num">22,500円</td><td class="num">1.79%</td><td class="num">1.97%</td></tr><tr><td><span class="code">7974</span> 任天堂</td><td class="num">100</td><td class="num">183.0円</td><td class="num">18,300円</td><td class="num">3.16%</td><td class="num">3.52%</td></tr><tr><td><span class="code">4063</span> 信越化学工業</td><td class="num">100</td><td class="num">120.0円</td><td class="num">12,000円</td><td class="num">1.67%</td><td class="num">1.85%</td></tr><tr><td><span class="code">6501</span> 日立製作所</td><td class="num">200</td><td class="num">52.0円</td><td class="num">10,400円</td><td class="num">1.52%</td><td class="num">1.86%</td></tr><tr><td><span class="code">8058</span> 三菱商事</td><td class="num">100</td><td class="num">100.0円</td><td class="num">10,000円</td><td class="num">1.14%</td><td class="num">1.39%</td></tr><tr><td><span class="code">6367</span> ダイキン工業</td><td class="num">100</td><td class="num">100.0円</td><td class="num">10,000円</td><td class="num">2.86%</td><td class="num">3.33%</td></tr><tr><td><span class="code">6758</span> ソニーグループ</td><td class="num">100</td><td class="num">85.0円</td><td class="num">8,500円</td><td class="num">0.87%</td><td class="num">1.00%</td></tr><tr><td><span class="code">6861</span> キーエンス</td><td class="num">10</td><td class="num">300.0円</td><td class="num">3,000円</td><td class="num">0.46%</td><td class="num">0.52%</td></tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="card full" data-card-id="dash-holdings">
+      <div class="card-header">
+        <h2>保有銘柄 (16)</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <table class="hold-table">
+        <tr><th>銘柄</th><th class="num">評価額</th><th class="num">損益</th><th class="num">前日比</th><th class="num">前月比</th><th class="num">前年比</th></tr>
+        <tr class="group-header"><td colspan="6">株式（現物）</td></tr><tr><td><span class="code">7203</span> トヨタ自動車 <span class="qty">x300</span></td><td class="num">1,260,000円</td><td class="num plus">+120,000円 (+10.5%)</td><td class="num plus">+18,000</td><td class="num plus">+72,000</td><td class="num plus">+320,000</td></tr><tr><td><span class="code">6758</span> ソニーグループ <span class="qty">x100</span></td><td class="num">980,000円</td><td class="num plus">+130,000円 (+15.3%)</td><td class="num plus">+12,500</td><td class="num plus">+45,000</td><td class="num plus">+215,000</td></tr><tr><td><span class="code">8058</span> 三菱商事 <span class="qty">x100</span></td><td class="num">875,000円</td><td class="num plus">+155,000円 (+21.5%)</td><td class="num plus">+8,200</td><td class="num plus">+32,000</td><td class="num plus">+195,000</td></tr><tr><td><span class="code">4063</span> 信越化学工業 <span class="qty">x100</span></td><td class="num">720,000円</td><td class="num plus">+70,000円 (+10.8%)</td><td class="num minus">-5,400</td><td class="num minus">-18,000</td><td class="num plus">+140,000</td></tr><tr><td><span class="code">6501</span> 日立製作所 <span class="qty">x200</span></td><td class="num">685,000円</td><td class="num plus">+125,000円 (+22.3%)</td><td class="num plus">+9,800</td><td class="num plus">+28,000</td><td class="num plus">+285,000</td></tr><tr><td><span class="code">6861</span> キーエンス <span class="qty">x10</span></td><td class="num">650,000円</td><td class="num plus">+70,000円 (+12.1%)</td><td class="num minus">-3,200</td><td class="num plus">+15,000</td><td class="num plus">+180,000</td></tr><tr><td><span class="code">7974</span> 任天堂 <span class="qty">x100</span></td><td class="num">580,000円</td><td class="num plus">+60,000円 (+11.5%)</td><td class="num plus">+4,100</td><td class="num plus">+22,000</td><td class="num plus">+125,000</td></tr><tr><td><span class="code">6367</span> ダイキン工業 <span class="qty">x100</span></td><td class="num">350,000円</td><td class="num plus">+50,000円 (+16.7%)</td><td class="num minus">-2,500</td><td class="num minus">-8,000</td><td class="num plus">+60,000</td></tr><tr><td><span class="code">1605</span> INPEX <span class="qty">x500</span></td><td class="num">250,000円</td><td class="num plus">+40,000円 (+19.0%)</td><td class="num minus">-5,700</td><td class="num minus">-12,000</td><td class="num plus">+130,000</td></tr><tr class="group-header"><td colspan="6">投資信託</td></tr><tr><td>eMAXIS Slim 全世界株式(オルカン) <span class="qty">x680,000</span></td><td class="num">2,480,000円</td><td class="num plus">+480,000円 (+24.0%)</td><td class="num plus">+8,300</td><td class="num plus">+52,000</td><td class="num plus">+680,000</td></tr><tr><td>eMAXIS Slim 米国株式(S&amp;P500) <span class="qty">x520,000</span></td><td class="num">1,850,000円</td><td class="num plus">+350,000円 (+23.3%)</td><td class="num plus">+5,200</td><td class="num plus">+38,000</td><td class="num plus">+520,000</td></tr><tr><td>ニッセイ外国株式インデックスファンド <span class="qty">x290,000</span></td><td class="num">850,000円</td><td class="num plus">+80,000円 (+10.4%)</td><td class="num minus">-1,000</td><td class="num plus">+5,000</td><td class="num plus">+80,000</td></tr><tr class="group-header"><td colspan="6">不動産</td></tr><tr><td>不動産クラウドファンディング</td><td class="num">1,200,000円</td><td class="num diff-zero">-</td><td class="num diff-zero">-</td><td class="num diff-zero">-</td><td class="num diff-zero">-</td></tr><tr class="group-header"><td colspan="6">年金</td></tr><tr><td>企業型確定拠出年金</td><td class="num">2,800,000円</td><td class="num diff-zero">-</td><td class="num diff-zero">-</td><td class="num plus">+18,000</td><td class="num plus">+420,000</td></tr><tr><td>iDeCo（先進国株式）</td><td class="num">850,000円</td><td class="num diff-zero">-</td><td class="num diff-zero">-</td><td class="num plus">+7,000</td><td class="num plus">+160,000</td></tr><tr><td>個人年金保険</td><td class="num">300,000円</td><td class="num diff-zero">-</td><td class="num diff-zero">-</td><td class="num diff-zero">-</td><td class="num diff-zero">-</td></tr>
+      </table>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="pie-tooltip" id="pie-tooltip"></div>
+
+<script>
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+const tooltip = document.getElementById('pie-tooltip');
+function fmt(v) { return v.toLocaleString('ja-JP', {maximumFractionDigits:0}); }
+
+function hitTest(e, canvas, cx, cy, r, chartData) {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const dx = mx - cx, dy = my - cy;
+  if (dx * dx + dy * dy > r * r) return null;
+  let angle = Math.atan2(dy, dx);
+  const offset = -Math.PI / 2;
+  angle = angle - offset;
+  if (angle < 0) angle += 2 * Math.PI;
+  const total = chartData.reduce((s, d) => s + d.value, 0);
+  let cumAngle = 0;
+  for (const d of chartData) {
+    const sl = (d.value / total) * 2 * Math.PI;
+    if (angle >= cumAngle && angle < cumAngle + sl) {
+      return { label: d.label, value: d.value, pct: (d.value / total * 100).toFixed(1), details: d.details || [] };
+    }
+    cumAngle += sl;
+  }
+  return null;
+}
+
+function attachTooltip(canvas, cx, cy, r, chartData) {
+  canvas.addEventListener('mousemove', e => {
+    const hit = hitTest(e, canvas, cx, cy, r, chartData);
+    if (hit) {
+      let html = '<strong>' + esc(hit.label) + '</strong>　' + fmt(hit.value) + ' 円（' + hit.pct + '%）';
+      if (hit.details.length > 0) {
+        html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
+        const show = hit.details.slice(0, 8);
+        show.forEach(item => {
+          html += '<div style="display:flex;justify-content:space-between;gap:16px">'
+            + '<span>' + esc(item.name) + '</span><span>' + fmt(item.value) + ' 円</span></div>';
+        });
+        if (hit.details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (hit.details.length - 8) + ' 件</div>';
+        html += '</div>';
+      }
+      tooltip.innerHTML = html;
+      tooltip.classList.add('show');
+      requestAnimationFrame(() => {
+        const tw = tooltip.offsetWidth, th2 = tooltip.offsetHeight;
+        tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - tw - 16) + 'px';
+        tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - th2 - 16) + 'px';
+      });
+      canvas.style.cursor = 'pointer';
+    } else {
+      tooltip.classList.remove('show');
+      canvas.style.cursor = '';
+    }
+  });
+  canvas.addEventListener('mouseleave', () => {
+    tooltip.classList.remove('show');
+    canvas.style.cursor = '';
+  });
+}
+
+function drawPieChart(canvasId, legendId, chartData, size) {
+  const c = document.getElementById(canvasId);
+  if (!c || chartData.length === 0) return;
+  const x = c.getContext('2d');
+  const w = size / 2, h = size / 2, rad = w - 10;
+  let angle = -Math.PI / 2;
+  const t = chartData.reduce((s, d) => s + d.value, 0);
+  chartData.forEach(d => {
+    const sl = (d.value / t) * 2 * Math.PI;
+    x.beginPath(); x.moveTo(w, h); x.arc(w, h, rad, angle, angle + sl);
+    x.closePath(); x.fillStyle = d.color; x.fill();
+    angle += sl;
+  });
+  if (legendId) {
+    const leg = document.getElementById(legendId);
+    chartData.forEach(d => {
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="dot" style="background:' + esc(d.color) + '"></span>' + esc(d.label);
+      leg.appendChild(li);
+    });
+  }
+  attachTooltip(c, w, h, rad, chartData);
+}
+
+// テーブル行ホバーツールチップ
+document.querySelectorAll('.has-tip').forEach(row => {
+  row.addEventListener('mousemove', e => {
+    const details = JSON.parse(row.dataset.details || '[]');
+    const label = row.dataset.label || '';
+    if (details.length === 0) return;
+    let html = '<strong>' + esc(label) + '</strong>';
+    html += '<div style="margin-top:5px;border-top:1px solid rgba(255,255,255,0.2);padding-top:5px">';
+    const show = details.slice(0, 8);
+    show.forEach(item => {
+      html += '<div style="display:flex;justify-content:space-between;gap:16px">'
+        + '<span>' + esc(item.name) + '</span><span>' + fmt(item.value) + ' 円</span></div>';
+    });
+    if (details.length > 8) html += '<div style="color:rgba(255,255,255,0.6)">…他 ' + (details.length - 8) + ' 件</div>';
+    html += '</div>';
+    tooltip.innerHTML = html;
+    tooltip.classList.add('show');
+    requestAnimationFrame(() => {
+      const tw = tooltip.offsetWidth, th2 = tooltip.offsetHeight;
+      tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - tw - 16) + 'px';
+      tooltip.style.top = Math.min(e.clientY - 10, window.innerHeight - th2 - 16) + 'px';
+    });
+  });
+  row.addEventListener('mouseleave', () => {
+    tooltip.classList.remove('show');
+  });
+});
+
+
+const data = [{"label": "預金・現金・暗号資産", "value": 4820000, "color": "#2881D7", "details": [{"name": "みずほ銀行 / 普通預金", "value": 2150000}, {"name": "三井住友銀行 / 普通預金", "value": 1380000}, {"name": "住信SBIネット銀行 / 定期預金", "value": 1000000}, {"name": "楽天銀行 / 円預金", "value": 245000}, {"name": "SBI証券 / 預り金", "value": 41800}, {"name": "モバイルSuica / Suica", "value": 3200}]}, {"label": "株式（現物）", "value": 6350000, "color": "#DF3727", "details": [{"name": "トヨタ自動車", "value": 1260000}, {"name": "ソニーグループ", "value": 980000}, {"name": "三菱商事", "value": 875000}, {"name": "信越化学工業", "value": 720000}, {"name": "日立製作所", "value": 685000}, {"name": "キーエンス", "value": 650000}, {"name": "任天堂", "value": 580000}, {"name": "ダイキン工業", "value": 350000}, {"name": "INPEX", "value": 250000}]}, {"label": "投資信託", "value": 5180000, "color": "#FCAD4C", "details": [{"name": "eMAXIS Slim 全世界株式(オルカン)", "value": 2480000}, {"name": "eMAXIS Slim 米国株式(S&P500)", "value": 1850000}, {"name": "ニッセイ外国株式インデックスファンド", "value": 850000}]}, {"label": "不動産", "value": 1200000, "color": "#0F7F30", "details": [{"name": "不動産クラウドファンディング", "value": 1200000}]}, {"label": "年金", "value": 3950000, "color": "#008986", "details": [{"name": "企業型確定拠出年金", "value": 2800000}, {"name": "iDeCo（先進国株式）", "value": 850000}, {"name": "個人年金保険", "value": 300000}]}];
+drawPieChart('pie', 'legend', data, 220);
+
+const sectorData = [{"label": "電気機器", "value": 2315000, "color": "#2881D7", "details": [{"name": "ソニーグループ", "value": 980000}, {"name": "日立製作所", "value": 685000}, {"name": "キーエンス", "value": 650000}]}, {"label": "輸送用機器", "value": 1260000, "color": "#DF3727", "details": [{"name": "トヨタ自動車", "value": 1260000}]}, {"label": "卸売業", "value": 875000, "color": "#FCAD4C", "details": [{"name": "三菱商事", "value": 875000}]}, {"label": "化学", "value": 720000, "color": "#0F7F30", "details": [{"name": "信越化学工業", "value": 720000}]}, {"label": "その他製品", "value": 580000, "color": "#008986", "details": [{"name": "任天堂", "value": 580000}]}, {"label": "機械", "value": 350000, "color": "#9C39B6", "details": [{"name": "ダイキン工業", "value": 350000}]}, {"label": "鉱業", "value": 250000, "color": "#FF5266", "details": [{"name": "INPEX", "value": 250000}]}];
+drawPieChart('sector-pie', 'sector-legend', sectorData, 220);
+
+const yieldData = [{"label": "低配当 (0-2%)", "value": 5170000.0, "color": "#80BD45", "details": [{"name": "トヨタ自動車", "value": 1260000.0}, {"name": "ソニーグループ", "value": 980000.0}, {"name": "三菱商事", "value": 875000.0}, {"name": "信越化学工業", "value": 720000.0}, {"name": "日立製作所", "value": 685000.0}, {"name": "キーエンス", "value": 649999.9999999999}]}, {"label": "中配当 (2-4%)", "value": 929999.9999999999, "color": "#FCAD4C", "details": [{"name": "任天堂", "value": 579999.9999999999}, {"name": "ダイキン工業", "value": 350000.0}]}, {"label": "高配当 (4%超)", "value": 250000.0, "color": "#DF3727", "details": [{"name": "INPEX", "value": 250000.0}]}];
+drawPieChart('yield-pie', null, yieldData, 140);
+
+// 日付ナビゲーション
+const sel = document.getElementById('date-select');
+const dates = Array.from(sel.options).map(o => o.value);
+const idx = sel.selectedIndex;
+const prevBtn = document.getElementById('prev-btn');
+const nextBtn = document.getElementById('next-btn');
+
+// dates[0]が最新、dates[n-1]が最古。prevは古い方向、nextは新しい方向
+nextBtn.disabled = idx === 0;
+prevBtn.disabled = idx === dates.length - 1;
+
+prevBtn.onclick = () => { if (idx < dates.length - 1) location.href = '/?date=' + dates[idx + 1]; };
+nextBtn.onclick = () => { if (idx > 0) location.href = '/?date=' + dates[idx - 1]; };
+
+
+
+// 折りたたみ
+(function() {
+  const saved = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
+  document.querySelectorAll('[data-card-id]').forEach(card => {
+    const id = card.dataset.cardId;
+    const body = card.querySelector('.card-body');
+    const btn = card.querySelector('.collapse-btn');
+    if (!body || !btn) return;
+    if (saved[id]) {
+      card.classList.add('collapsed');
+      btn.textContent = '\u25B6';
+    }
+    btn.addEventListener('click', () => {
+      const isCollapsed = card.classList.toggle('collapsed');
+      btn.textContent = isCollapsed ? '\u25B6' : '\u25BC';
+      const s = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
+      if (isCollapsed) { s[id] = true; } else { delete s[id]; }
+      localStorage.setItem('collapsed_cards', JSON.stringify(s));
+    });
+  });
+})();
+
+</script>
+</body>
+</html>
