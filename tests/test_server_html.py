@@ -497,6 +497,7 @@ class TestAiChatExport:
         assert "資産分析" in html
         assert "家計簿分析" in html
         assert "ライフプラン" in html
+        assert "シミュレーター" in html
 
 
 class TestClosingDaySetting:
