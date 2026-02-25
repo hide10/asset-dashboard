@@ -1929,6 +1929,81 @@ def _get_simulator_data(db_path: str) -> dict:
     return {"params": params, "result": result}
 
 
+def _build_ai_prompt_simulator(data: dict) -> str:
+    """シミュレーター結果からAIチャット用Markdownプロンプトを生成する。"""
+    params = data["params"]
+    result: SimulatorResult = data["result"]
+
+    lines = [
+        "# ライフサイクル・シミュレーション結果",
+        "",
+        "## 前提条件",
+        "",
+        "| 項目 | 値 |",
+        "|---|---:|",
+        f"| 現在の年齢 | {int(params['current_age'])}歳 |",
+        f"| 退職年齢 | {int(params['retirement_age'])}歳 |",
+        f"| シミュレーション終了年齢 | {int(params['end_age'])}歳 |",
+        f"| リスク資産（運用元本） | {params['initial_investment']:,.0f}円 |",
+        f"| 安全資産（預金等） | {params['safe_value']:,.0f}円 |",
+        f"| 毎月の積立額（退職まで） | {params['monthly_contribution']:,.0f}円 |",
+        f"| 期待リターン（年率） | {params['annual_return'] * 100:.1f}% |",
+        f"| リスク（年率ボラティリティ） | {params['annual_volatility'] * 100:.1f}% |",
+        f"| 退職後の毎月取り崩し額 | {params['monthly_withdrawal']:,.0f}円 |",
+        f"| インフレ率 | {params['inflation_rate'] * 100:.1f}% |",
+        f"| 信託報酬率 | {params['expense_ratio'] * 100:.2f}% |",
+        f"| 年金受給開始年齢 | {int(params['pension_start_age'])}歳 |",
+        f"| 年金月額 | {params['monthly_pension']:,.0f}円 |",
+        f"| その他月収入 | {params['other_monthly_income']:,.0f}円 |",
+        "",
+        "## シミュレーション結果（モンテカルロ法 2,000回）",
+        "",
+        f"- 資産枯渇確率: **{result.depletion_probability * 100:.1f}%**",
+        f"- 元本割れ確率: **{result.principal_loss_probability * 100:.1f}%**",
+        f"- 投入元本合計: {result.total_principal:,.0f}円",
+        f"- 運用益（中央値）: {result.total_gains:,.0f}円",
+        f"- 税金合計（中央値）: {result.total_tax:,.0f}円",
+        f"- 最終残高（中央値）: {result.net_final:,.0f}円",
+        "",
+        "## 年齢別資産残高（パーセンタイル）",
+        "",
+        "| 年齢 | 悲観(P10) | P25 | 中央値(P50) | P75 | 楽観(P90) |",
+        "|---:|---:|---:|---:|---:|---:|",
+    ]
+
+    # 主要な年齢ポイントのみ抽出（全年表示だと長すぎる）
+    balances = result.yearly_balances
+    key_ages = set()
+    if balances:
+        key_ages.add(balances[0]["age"])  # 開始年齢
+        key_ages.add(balances[-1]["age"])  # 終了年齢
+    key_ages.add(int(params["retirement_age"]))
+    key_ages.add(int(params["pension_start_age"]))
+    # 5歳刻みも追加
+    for b in balances:
+        if b["age"] % 5 == 0:
+            key_ages.add(b["age"])
+
+    for b in balances:
+        if b["age"] in key_ages:
+            lines.append(
+                f"| {b['age']}歳 | {b['p10']:,.0f}円 | {b['p25']:,.0f}円 "
+                f"| {b['p50']:,.0f}円 | {b['p75']:,.0f}円 | {b['p90']:,.0f}円 |"
+            )
+
+    lines += [
+        "",
+        "---",
+        "",
+        "上記はモンテカルロ・シミュレーションの結果です。以下の観点でアドバイスをお願いします：",
+        "1. 資産枯渇リスクの評価と対策",
+        "2. 前提条件（積立額・取り崩し額・リターン等）の妥当性",
+        "3. 退職後の収支バランスの改善提案",
+        "4. シミュレーション結果を踏まえた具体的なアクションプラン",
+    ]
+    return "\n".join(lines)
+
+
 def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     """シミュレーターページの HTML を生成する。"""
     params = data["params"]
@@ -3450,6 +3525,10 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:0.85rem;width:140px">ライフプラン</span>
         <button class="btn" style="font-size:0.8rem;padding:5px 12px" onclick="copyAiPrompt('plan',this)">コピー</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:0.85rem;width:140px">シミュレーター</span>
+        <button class="btn" style="font-size:0.8rem;padding:5px 12px" onclick="copyAiPrompt('simulator',this)">コピー</button>
       </div>
     </div>
     <div id="ai-preview" style="display:none;margin-top:12px;background:#f8f9fa;border-radius:8px;padding:12px;font-size:0.8rem;white-space:pre-wrap;max-height:300px;overflow-y:auto;border:1px solid #dfe6e9"></div>
@@ -5007,6 +5086,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _build_ai_prompt(self, prompt_type: str) -> str:
         """AIチャット用のMarkdownプロンプトを生成する。"""
+        # simulator は _get_simulator_data が内部で接続を管理するため先に分岐
+        if prompt_type == "simulator":
+            return self._ai_prompt_simulator()
         conn = get_connection(self.db_path)
         try:
             if prompt_type == "asset":
@@ -5165,6 +5247,11 @@ class Handler(BaseHTTPRequestHandler):
             "3. 将来の資産目標に向けた提案",
         ]
         return "\n".join(lines)
+
+    def _ai_prompt_simulator(self) -> str:
+        """シミュレーター用プロンプトを生成する。"""
+        data = _get_simulator_data(self.db_path)
+        return _build_ai_prompt_simulator(data)
 
     def _check_origin(self) -> bool:
         """Origin ヘッダを検証し、ローカルホストからのリクエストのみ許可する。"""
