@@ -10,6 +10,7 @@ import pytest
 
 from src.db.schema import init_db
 from src.web.server import (
+    _build_ai_prompt_simulator,
     _build_cf_html,
     _build_html,
     _build_plan_html,
@@ -498,6 +499,39 @@ class TestAiChatExport:
         assert "家計簿分析" in html
         assert "ライフプラン" in html
         assert "シミュレーター" in html
+
+    def test_simulator_prompt_has_sections(self):
+        """シミュレーター用プロンプトに前提条件・結果・年齢別テーブルが含まれる。"""
+        data = _demo_simulator_data()
+        md = _build_ai_prompt_simulator(data)
+        assert "# ライフサイクル・シミュレーション結果" in md
+        assert "## 前提条件" in md
+        assert "## シミュレーション結果（モンテカルロ法" in md
+        assert "## 年齢別資産残高（パーセンタイル）" in md
+        assert "資産枯渇確率" in md
+        assert "元本割れ確率" in md
+
+    def test_simulator_prompt_has_params(self):
+        """シミュレーター用プロンプトに全パラメータが含まれる。"""
+        data = _demo_simulator_data()
+        md = _build_ai_prompt_simulator(data)
+        assert "現在の年齢" in md
+        assert "退職年齢" in md
+        assert "リスク資産" in md
+        assert "安全資産" in md
+        assert "毎月の積立額" in md
+        assert "期待リターン" in md
+        assert "年金月額" in md
+
+    def test_simulator_prompt_has_age_rows(self):
+        """シミュレーター用プロンプトに年齢別残高の行がある。"""
+        data = _demo_simulator_data()
+        md = _build_ai_prompt_simulator(data)
+        # 開始年齢（35歳）と終了年齢（95歳）が含まれる
+        assert "35歳" in md
+        assert "95歳" in md
+        # 退職年齢（65歳）が含まれる
+        assert "65歳" in md
 
 
 class TestClosingDaySetting:
