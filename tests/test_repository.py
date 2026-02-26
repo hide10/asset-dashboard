@@ -931,3 +931,137 @@ class TestGetAllComparisons:
         assert len(results) == 3
         assert results[1].label == "前月比"
         assert results[2].label == "前年比"
+
+
+# --- 投資信託 評価額・取得価額推移 ---
+
+
+class TestGetFundTotalHistory:
+    """get_fund_total_history のテスト。"""
+
+    @pytest.fixture
+    def fund_db(self, tmp_path):
+        """投資信託テストデータを持つDB。"""
+        db_path = tmp_path / "fund_test.db"
+        c = init_db(str(db_path))
+
+        # スナップショット3日分
+        for d in ["2025-10-13", "2025-10-14", "2025-10-15"]:
+            c.execute("INSERT OR IGNORE INTO snapshots VALUES (?, 10000000, '{}', '')", (d,))
+
+        # 投資信託の保有データ（value, unrealized_gain あり）
+        holdings = [
+            # date, code, name, qty, value, class, pos, acq_price, cur_price, unrealized_gain, unrealized_gain_pct
+            ("2025-10-13", "", "ファンドA", 100000, 2_000_000, "投資信託", 0, 15000, 20000, 200_000, 11.11),
+            ("2025-10-13", "", "ファンドB", 80000, 1_500_000, "投資信託", 1, 14000, 18750, 150_000, 11.11),
+            ("2025-10-14", "", "ファンドA", 100000, 2_050_000, "投資信託", 0, 15000, 20500, 250_000, 13.89),
+            ("2025-10-14", "", "ファンドB", 80000, 1_520_000, "投資信託", 1, 14000, 19000, 170_000, 12.59),
+            ("2025-10-15", "", "ファンドA", 100000, 2_100_000, "投資信託", 0, 15000, 21000, 300_000, 16.67),
+            ("2025-10-15", "", "ファンドB", 80000, 1_550_000, "投資信託", 1, 14000, 19375, 200_000, 14.81),
+            # 株式（投資信託以外は含まれないことを確認）
+            ("2025-10-15", "7203", "トヨタ自動車", 100, 1_000_000, "株式（現物）", 0, 8000, 10000, 200_000, 25.0),
+        ]
+        c.executemany(
+            """INSERT INTO snapshot_holdings
+               (date, symbol_or_code, name, quantity, value, asset_class, position,
+                acquisition_price, current_price, unrealized_gain, unrealized_gain_pct)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            holdings,
+        )
+        c.commit()
+        return str(db_path)
+
+    def test_basic_history(self, fund_db):
+        """投資信託の評価額・取得価額合計が日付順に返る。"""
+        from src.db.repository import get_fund_total_history
+
+        conn = init_db(fund_db)
+        result = get_fund_total_history(conn, months=6)
+        conn.close()
+
+        assert len(result) == 3
+        # 日付が昇順
+        assert result[0]["date"] == "2025-10-13"
+        assert result[2]["date"] == "2025-10-15"
+
+        # 2025-10-13: value=2M+1.5M=3.5M, cost=(2M-200K)+(1.5M-150K)=3.15M
+        assert result[0]["total_value"] == 3_500_000
+        assert result[0]["total_cost"] == 3_150_000
+
+        # 2025-10-15: value=2.1M+1.55M=3.65M, cost=(2.1M-300K)+(1.55M-200K)=3.15M
+        assert result[2]["total_value"] == 3_650_000
+        assert result[2]["total_cost"] == 3_150_000
+
+    def test_empty_db(self, tmp_path):
+        """投資信託データがない場合は空リスト。"""
+        from src.db.repository import get_fund_total_history
+
+        db_path = tmp_path / "empty.db"
+        conn = init_db(str(db_path))
+        result = get_fund_total_history(conn, months=6)
+        conn.close()
+        assert result == []
+
+    def test_null_unrealized_gain(self, tmp_path):
+        """unrealized_gain が NULL の場合、total_cost は NULL になる。"""
+        from src.db.repository import get_fund_total_history
+
+        db_path = tmp_path / "null_gain.db"
+        conn = init_db(str(db_path))
+        conn.execute("INSERT INTO snapshots VALUES ('2025-10-15', 5000000, '{}', '')")
+        conn.execute(
+            """INSERT INTO snapshot_holdings
+               (date, symbol_or_code, name, quantity, value, asset_class, position,
+                acquisition_price, current_price, unrealized_gain, unrealized_gain_pct)
+               VALUES ('2025-10-15', '', 'ファンドA', 100000, 2000000, '投資信託', 0, NULL, NULL, NULL, NULL)"""
+        )
+        conn.commit()
+
+        result = get_fund_total_history(conn, months=6)
+        conn.close()
+
+        assert len(result) == 1
+        assert result[0]["total_value"] == 2_000_000
+        assert result[0]["total_cost"] is None
+
+    def test_partial_null_unrealized_gain(self, tmp_path):
+        """一部銘柄だけ unrealized_gain が NULL なら、その日の total_cost は NULL。"""
+        from src.db.repository import get_fund_total_history
+
+        db_path = tmp_path / "partial_null.db"
+        conn = init_db(str(db_path))
+        conn.execute("INSERT INTO snapshots VALUES ('2025-10-15', 5000000, '{}', '')")
+        # ファンドA: unrealized_gain あり
+        conn.execute(
+            """INSERT INTO snapshot_holdings
+               (date, symbol_or_code, name, quantity, value, asset_class, position,
+                acquisition_price, current_price, unrealized_gain, unrealized_gain_pct)
+               VALUES ('2025-10-15', '', 'ファンドA', 100000, 2000000, '投資信託', 0, 15000, 20000, 200000, 11.11)"""
+        )
+        # ファンドB: unrealized_gain が NULL
+        conn.execute(
+            """INSERT INTO snapshot_holdings
+               (date, symbol_or_code, name, quantity, value, asset_class, position,
+                acquisition_price, current_price, unrealized_gain, unrealized_gain_pct)
+               VALUES ('2025-10-15', '', 'ファンドB', 80000, 1500000, '投資信託', 1, NULL, NULL, NULL, NULL)"""
+        )
+        conn.commit()
+
+        result = get_fund_total_history(conn, months=6)
+        conn.close()
+
+        assert len(result) == 1
+        assert result[0]["total_value"] == 3_500_000  # 両方の value 合計
+        assert result[0]["total_cost"] is None  # 一部 NULL → 全体 NULL
+
+    def test_excludes_stocks(self, fund_db):
+        """株式（現物）は集計に含まれない。"""
+        from src.db.repository import get_fund_total_history
+
+        conn = init_db(fund_db)
+        result = get_fund_total_history(conn, months=6)
+        conn.close()
+
+        # 2025-10-15 の total_value に株式の100万は含まれない
+        day15 = [r for r in result if r["date"] == "2025-10-15"][0]
+        assert day15["total_value"] == 3_650_000  # ファンドA+B のみ

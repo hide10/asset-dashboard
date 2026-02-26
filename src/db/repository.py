@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date as date_cls
+from datetime import timedelta
 
 from src.parser.cashflow import CashflowMonth
 from src.parser.cf_csv import CfTransaction
@@ -849,3 +851,41 @@ def get_cf_dividend_history(conn: sqlite3.Connection, closing_day: int = 1, holi
     annual = [{"year": y, "amount": a} for y, a in sorted(yearly.items())]
 
     return {"monthly": monthly, "annual": annual}
+
+
+# --- 投資信託 評価額・取得価額推移 ---
+
+
+def get_fund_total_history(conn: sqlite3.Connection, months: int = 13) -> list[dict]:
+    """投資信託の評価額合計・取得価額合計の時系列データを返す。
+
+    取得価額 = value - unrealized_gain で算出。
+    ある日付で一部銘柄でも unrealized_gain が NULL なら、その日の total_cost は NULL とする。
+
+    Args:
+        months: 取得期間（月数、1ヶ月=30日換算）。デフォルト13ヶ月（JS側の1年表示+余裕）。
+
+    Returns: [{"date": "2026-02-15", "total_value": 6280000, "total_cost": 5500000}, ...]
+    """
+    # DB 内の最新日を基準にカットオフを計算
+    latest_row = conn.execute("SELECT MAX(date) FROM snapshot_holdings WHERE asset_class = '投資信託'").fetchone()
+    if not latest_row or not latest_row[0]:
+        return []
+
+    latest_dt = date_cls.fromisoformat(latest_row[0])
+    cutoff = (latest_dt - timedelta(days=months * 30)).isoformat()
+
+    rows = conn.execute(
+        """SELECT date,
+                  SUM(value),
+                  CASE WHEN COUNT(*) = COUNT(unrealized_gain)
+                       THEN SUM(value - unrealized_gain)
+                  END
+           FROM snapshot_holdings
+           WHERE asset_class = '投資信託' AND date >= ?
+           GROUP BY date
+           ORDER BY date ASC""",
+        (cutoff,),
+    ).fetchall()
+
+    return [{"date": r[0], "total_value": r[1], "total_cost": r[2]} for r in rows if r[1] is not None]
