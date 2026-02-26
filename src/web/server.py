@@ -36,6 +36,7 @@ from src.db.repository import (
     get_cf_income_trend,
     get_cf_monthly_trend,
     get_daily_assets,
+    get_fund_total_history,
     get_setting,
     save_budgets,
     save_cf_csv_month,
@@ -323,6 +324,8 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
                 (date,),
             ).fetchall()
         ]
+
+        fund_total_history = get_fund_total_history(conn)
     finally:
         conn.close()
 
@@ -430,6 +433,7 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         "max_drawdown": mdd,
         "concentration": conc,
         "comparisons": comparisons,
+        "fund_total_history": fund_total_history,
     }
 
 
@@ -448,6 +452,52 @@ def _avg_yield_html(dividends: list[dict]) -> str:
         avg_yield = total_div / total_value * 100
         return f"　加重平均利回り {avg_yield:.2f}%"
     return ""
+
+
+def _fund_total_card_html(fund_total_history: list[dict]) -> str:
+    """投資信託 評価額・取得価額推移カードの HTML を返す。"""
+    if not fund_total_history:
+        return ""
+
+    latest = fund_total_history[-1]
+    total_value = latest["total_value"]
+    total_cost = latest.get("total_cost")
+
+    # サマリー行
+    value_str = f"¥{total_value:,.0f}"
+    summary_html = f'<span style="font-size:1.5em;font-weight:bold">{value_str}</span>'
+
+    if total_cost is not None and total_cost > 0:
+        gain = total_value - total_cost
+        gain_pct = gain / total_cost * 100
+        gain_color = "#e17055" if gain >= 0 else "#0984e3"
+        sign = "+" if gain >= 0 else ""
+        summary_html += f"""
+        <div style="margin-top:8px;display:flex;gap:24px;flex-wrap:wrap">
+          <div><span style="color:#888">取得価額</span> ¥{total_cost:,.0f}</div>
+          <div><span style="color:#888">評価損益</span>
+            <span style="color:{gain_color};font-weight:bold">{sign}¥{gain:,.0f} ({gain_pct:.2f}%)</span>
+          </div>
+        </div>"""
+
+    # 期間切り替えボタン
+    range_btns = """<div style="text-align:right;margin-bottom:8px">
+      <button class="ft-range-btn active" data-days="90" style="padding:2px 10px;margin:0 2px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer">3ヶ月</button>
+      <button class="ft-range-btn" data-days="180" style="padding:2px 10px;margin:0 2px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer">6ヶ月</button>
+      <button class="ft-range-btn" data-days="365" style="padding:2px 10px;margin:0 2px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer">1年</button>
+    </div>"""
+
+    return f"""<div class="card full" data-card-id="dash-fund-total">
+      <div class="card-header">
+        <h2>投資信託 評価額・取得価額推移</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div style="margin-bottom:12px">{summary_html}</div>
+        {range_btns}
+        <canvas id="fund-total-chart" height="260"></canvas>
+      </div>
+    </div>"""
 
 
 def _build_html(
@@ -475,6 +525,7 @@ def _build_html(
     mdd = data.get("max_drawdown")
     conc = data.get("concentration")
     comparisons = data.get("comparisons", [])
+    fund_total_history = data.get("fund_total_history", [])
 
     # 日付セレクタ
     date_options = ""
@@ -1022,6 +1073,8 @@ def _build_html(
       </div>
     </div>
 
+    {_fund_total_card_html(fund_total_history)}
+
     <div class="card full" data-card-id="dash-holdings">
       <div class="card-header">
         <h2>保有銘柄 ({len(holdings)})</h2>
@@ -1083,6 +1136,149 @@ const pollId = setInterval(async () => {{
         if not skip_update
         else ""
     }
+
+// --- 投資信託 評価額・取得価額推移グラフ ---
+(function() {{
+  const ftData = {json.dumps(fund_total_history, ensure_ascii=False)};
+  const ftCanvas = document.getElementById('fund-total-chart');
+  if (!ftData.length || !ftCanvas) return;
+
+  let ftRange = 90;  // デフォルト3ヶ月
+  const ftBtns = document.querySelectorAll('.ft-range-btn');
+  ftBtns.forEach(btn => btn.addEventListener('click', function() {{
+    ftBtns.forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    ftRange = parseInt(this.dataset.days);
+    drawFundTotalChart();
+  }}));
+
+  function drawFundTotalChart() {{
+    // 期間フィルタ
+    const now = new Date(ftData[ftData.length - 1].date);
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - ftRange);
+    const filtered = ftData.filter(d => new Date(d.date) >= cutoff);
+    if (!filtered.length) return;
+
+    const ctx = ftCanvas.getContext('2d');
+    const W = ftCanvas.parentElement.clientWidth - 40;
+    ftCanvas.width = W;
+    ftCanvas.height = 260;
+    ctx.clearRect(0, 0, W, 260);
+
+    const pad = {{ left: 80, right: 20, top: 20, bottom: 30 }};
+    const cW = W - pad.left - pad.right;
+    const cH = 260 - pad.top - pad.bottom;
+
+    // Y軸レンジ
+    let allVals = [];
+    filtered.forEach(d => {{
+      allVals.push(d.total_value || 0);
+      if (d.total_cost != null) allVals.push(d.total_cost);
+    }});
+    const minVal = Math.min(...allVals) * 0.95;
+    const maxVal = Math.max(...allVals) * 1.05;
+    const range = maxVal - minVal || 1;
+
+    const toY = v => pad.top + cH * (1 - (v - minVal) / range);
+    const toX = i => pad.left + (cW / (filtered.length - 1 || 1)) * i;
+
+    // Y軸グリッド
+    ctx.strokeStyle = '#f1f2f6';
+    ctx.fillStyle = '#b2bec3';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {{
+      const y = pad.top + cH * (1 - i / 4);
+      const val = minVal + range * i / 4;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+      ctx.fillText((val / 10000).toFixed(0) + '\u4e07', pad.left - 6, y + 4);
+    }}
+
+    // 取得価額ライン（グレー）
+    const hasCost = filtered.some(d => d.total_cost != null);
+    if (hasCost) {{
+      ctx.strokeStyle = '#b2bec3';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      let started = false;
+      filtered.forEach((d, i) => {{
+        if (d.total_cost == null) return;
+        const x = toX(i), y = toY(d.total_cost);
+        if (!started) {{ ctx.moveTo(x, y); started = true; }} else ctx.lineTo(x, y);
+      }});
+      ctx.stroke();
+    }}
+
+    // 評価額ライン（オレンジ）
+    ctx.strokeStyle = '#E67E22';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    filtered.forEach((d, i) => {{
+      const x = toX(i), y = toY(d.total_value);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }});
+    ctx.stroke();
+
+    // X軸ラベル
+    const step = Math.max(1, Math.floor(filtered.length / 8));
+    ctx.fillStyle = '#636e72';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    filtered.forEach((d, i) => {{
+      if (i % step === 0 || i === filtered.length - 1) {{
+        ctx.fillText(d.date.substring(5), toX(i), pad.top + cH + 18);
+      }}
+    }});
+
+    // 凡例
+    let lx = pad.left;
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'left';
+    [['#E67E22', '\u8a55\u4fa1\u984d'], ['#b2bec3', '\u53d6\u5f97\u4fa1\u984d']].forEach(([color, label]) => {{
+      ctx.fillStyle = color;
+      ctx.fillRect(lx, 6, 14, 10);
+      ctx.fillStyle = '#2d3436';
+      ctx.fillText(label, lx + 17, 14);
+      lx += ctx.measureText(label).width + 32;
+    }});
+
+    // ツールチップ
+    ftCanvas.onmousemove = function(e) {{
+      const rect = ftCanvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const idx = Math.round((mx - pad.left) / (cW / (filtered.length - 1 || 1)));
+      if (idx < 0 || idx >= filtered.length) {{ const tip = document.getElementById('pie-tooltip'); if (tip) tip.classList.remove('show'); return; }}
+      const d = filtered[idx];
+      let html = '<strong>' + esc(d.date) + '</strong>';
+      html += '<div style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.2);padding-top:4px">';
+      html += '<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#E67E22">\u25cf \u8a55\u4fa1\u984d</span><span>' + (d.total_value/10000).toLocaleString('ja-JP',{{maximumFractionDigits:0}}) + '\u4e07</span></div>';
+      if (d.total_cost != null && d.total_cost > 0) {{
+        html += '<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#b2bec3">\u25cf \u53d6\u5f97\u4fa1\u984d</span><span>' + (d.total_cost/10000).toLocaleString('ja-JP',{{maximumFractionDigits:0}}) + '\u4e07</span></div>';
+        const gain = d.total_value - d.total_cost;
+        const pct = (gain / d.total_cost * 100).toFixed(2);
+        const clr = gain >= 0 ? '#e17055' : '#0984e3';
+        html += '<div style="display:flex;justify-content:space-between;gap:12px"><span>\u640d\u76ca</span><span style="color:' + clr + '">' + (gain >= 0 ? '+' : '') + (gain/10000).toLocaleString('ja-JP',{{maximumFractionDigits:0}}) + '\u4e07 (' + pct + '%)</span></div>';
+      }}
+      html += '</div>';
+      const tip = document.getElementById('pie-tooltip');
+      if (tip) {{
+        tip.innerHTML = html;
+        tip.classList.add('show');
+        tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 260) + 'px';
+        tip.style.top = (e.clientY - 10) + 'px';
+      }}
+    }};
+    ftCanvas.onmouseleave = function() {{
+      const tip = document.getElementById('pie-tooltip');
+      if (tip) tip.classList.remove('show');
+    }};
+  }}
+
+  drawFundTotalChart();
+  window.addEventListener('resize', drawFundTotalChart);
+}})();
+
 {_COLLAPSE_JS}
 </script>
 </body>
@@ -1540,6 +1736,29 @@ def _demo_data() -> dict:
     for v in demo_sector_holdings.values():
         v.sort(key=lambda x: x["value"], reverse=True)
 
+    # 投資信託 評価額・取得価額推移デモデータ（365日分）
+    import random
+
+    rng = random.Random(42)
+    fund_base_cost = 3_600_000  # 取得価額の開始値
+    fund_total_history = []
+    cost = fund_base_cost
+    for i in range(365):
+        d = date.today() - timedelta(days=364 - i)
+        # 取得価額: 毎月1日に積立で階段状に増加
+        if d.day == 1:
+            cost += 50_000
+        # 評価額: 取得価額 + 含み益（市場変動あり）
+        growth_rate = 1 + 0.0002 * i + rng.uniform(-0.008, 0.008)
+        value = cost * growth_rate * (1 + 0.1)  # 約10%の含み益ベース
+        fund_total_history.append(
+            {
+                "date": d.isoformat(),
+                "total_value": round(value),
+                "total_cost": round(cost),
+            }
+        )
+
     return {
         "date": today,
         "total_asset": total_asset,
@@ -1556,6 +1775,7 @@ def _demo_data() -> dict:
         "concentration": {"top_n": [], "concentration_pct": 32.5},
         "comparisons": demo_comparisons,
         "_sector_holdings": demo_sector_holdings,
+        "fund_total_history": fund_total_history,
     }
 
 

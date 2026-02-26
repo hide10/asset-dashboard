@@ -723,3 +723,50 @@ class TestSimulator:
         result = self.data["result"]
         assert len(result.yearly_balances) > 0
         assert result.total_principal > 0
+
+
+class TestFundTotalCard:
+    """投資信託 評価額・取得価額推移カードのテスト。"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        data = _demo_data()
+        self.html = _build_html(data, [data["date"]], skip_update=True, demo=True)
+
+    def test_card_exists(self):
+        """投資信託カードが存在する。"""
+        assert 'data-card-id="dash-fund-total"' in self.html
+
+    def test_card_title(self):
+        """カードタイトルが表示されている。"""
+        assert "投資信託 評価額・取得価額推移" in self.html
+
+    def test_canvas_exists(self):
+        """グラフ用 canvas が存在する。"""
+        assert 'id="fund-total-chart"' in self.html
+
+    def test_range_buttons(self):
+        """期間切り替えボタンが存在する。"""
+        assert "3ヶ月" in self.html
+        assert "6ヶ月" in self.html
+        assert "1年" in self.html
+
+    def test_summary_values(self):
+        """評価額と取得価額のサマリーが表示されている。"""
+        assert "取得価額" in self.html
+        assert "評価損益" in self.html
+
+    def test_demo_data_has_fund_history(self):
+        """デモデータに fund_total_history が含まれる。"""
+        data = _demo_data()
+        fth = data.get("fund_total_history", [])
+        assert len(fth) == 365
+        assert "total_value" in fth[0]
+        assert "total_cost" in fth[0]
+
+    def test_no_card_when_empty(self):
+        """fund_total_history が空ならカードは表示されない。"""
+        data = _demo_data()
+        data["fund_total_history"] = []
+        html = _build_html(data, [data["date"]], skip_update=True, demo=True)
+        assert 'data-card-id="dash-fund-total"' not in html
