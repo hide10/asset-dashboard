@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
-<title>資産ダッシュボード - 2026-02-22</title>
+<title>資産ダッシュボード - 2026-03-02</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -170,12 +170,12 @@
   <div class="date-picker">
     <button class="nav-btn" id="prev-btn" title="前の日">&larr;</button>
     <select id="date-select" onchange="location.href='/?date='+this.value">
-      <option value="2026-02-22" selected>2026-02-22</option>
+      <option value="2026-03-02" selected>2026-03-02</option>
     </select>
     <button class="nav-btn" id="next-btn" title="次の日">&rarr;</button>
     <label>(1日分のデータ)</label>
   </div>
-  <div class="total">現在の総資産: <strong>21,500,000</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">(2026-02-22時点)</span></div>
+  <div class="total">現在の総資産: <strong>21,500,000</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">(2026-03-02時点)</span></div>
   <div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">総資産約2,150万円のポートフォリオは、株式・投資信託・預金・年金にバランスよく分散されています。前日比+4.2万円、前月比+28.5万円と堅調に推移しており、特にリスク資産（株式+投信）の貢献が大きいです。年間配当予測は約12.5万円（利回り約1.9%）で、高配当銘柄の追加や業種の偏り（電気機器が大きい）の分散を検討すると、より安定したポートフォリオになるでしょう。</div></div>
 
   <div class="compare-cards">
@@ -184,21 +184,21 @@
       <h3>前日比</h3>
       <div class="diff plus">+42,300円</div>
       <div class="ratio plus">+0.20%</div>
-      <div class="compare-date">vs 2026-02-21</div>
+      <div class="compare-date">vs 2026-03-01</div>
       <div class="class-diff plus">株式（現物） +35,800</div><div class="class-diff plus">投資信託 +12,500</div><div class="class-diff minus">預金・現金・暗号資産 -6,000</div>
     </div>
     <div class="compare-card">
       <h3>前月比</h3>
       <div class="diff plus">+285,000円</div>
       <div class="ratio plus">+1.35%</div>
-      <div class="compare-date">vs 2026-01-23</div>
+      <div class="compare-date">vs 2026-01-31</div>
       <div class="class-diff plus">株式（現物） +180,000</div><div class="class-diff plus">投資信託 +95,000</div><div class="class-diff plus">年金 +25,000</div><div class="class-diff minus">預金・現金・暗号資産 -15,000</div>
     </div>
     <div class="compare-card">
       <h3>前年比</h3>
       <div class="diff plus">+3,420,000円</div>
       <div class="ratio plus">+18.90%</div>
-      <div class="compare-date">vs 2025-02-22</div>
+      <div class="compare-date">vs 2025-03-02</div>
       <div class="class-diff plus">株式（現物） +1,650,000</div><div class="class-diff plus">投資信託 +1,280,000</div><div class="class-diff plus">年金 +580,000</div><div class="class-diff minus">預金・現金・暗号資産 -90,000</div>
     </div>
   </div>
@@ -419,6 +419,28 @@
       </div>
     </div>
 
+    <div class="card full" data-card-id="dash-fund-total">
+      <div class="card-header">
+        <h2>投資信託 評価額・取得価額推移</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div style="margin-bottom:12px"><span style="font-size:1.5em;font-weight:bold">¥4,947,850</span>
+        <div style="margin-top:8px;display:flex;gap:24px;flex-wrap:wrap">
+          <div><span style="color:#888">取得価額</span> ¥4,200,000</div>
+          <div><span style="color:#888">評価損益</span>
+            <span style="color:#e17055;font-weight:bold">+¥747,850 (17.81%)</span>
+          </div>
+        </div></div>
+        <div style="text-align:right;margin-bottom:8px">
+      <button class="ft-range-btn active" data-days="90" style="padding:2px 10px;margin:0 2px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer">3ヶ月</button>
+      <button class="ft-range-btn" data-days="180" style="padding:2px 10px;margin:0 2px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer">6ヶ月</button>
+      <button class="ft-range-btn" data-days="365" style="padding:2px 10px;margin:0 2px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer">1年</button>
+    </div>
+        <canvas id="fund-total-chart" height="260"></canvas>
+      </div>
+    </div>
+
     <div class="card full" data-card-id="dash-holdings">
       <div class="card-header">
         <h2>保有銘柄 (16)</h2>
@@ -572,6 +594,149 @@ prevBtn.disabled = idx === dates.length - 1;
 prevBtn.onclick = () => { if (idx < dates.length - 1) location.href = '/?date=' + dates[idx + 1]; };
 nextBtn.onclick = () => { if (idx > 0) location.href = '/?date=' + dates[idx - 1]; };
 
+
+
+// --- 投資信託 評価額・取得価額推移グラフ ---
+(function() {
+  const ftData = [{"date": "2025-03-03", "total_value": 3968834, "total_cost": 3600000}, {"date": "2025-03-04", "total_value": 3930697, "total_cost": 3600000}, {"date": "2025-03-05", "total_value": 3947330, "total_cost": 3600000}, {"date": "2025-03-06", "total_value": 3944839, "total_cost": 3600000}, {"date": "2025-03-07", "total_value": 3978151, "total_cost": 3600000}, {"date": "2025-03-08", "total_value": 3975156, "total_cost": 3600000}, {"date": "2025-03-09", "total_value": 3989600, "total_cost": 3600000}, {"date": "2025-03-10", "total_value": 3939372, "total_cost": 3600000}, {"date": "2025-03-11", "total_value": 3961389, "total_cost": 3600000}, {"date": "2025-03-12", "total_value": 3937336, "total_cost": 3600000}, {"date": "2025-03-13", "total_value": 3950093, "total_cost": 3600000}, {"date": "2025-03-14", "total_value": 3969051, "total_cost": 3600000}, {"date": "2025-03-15", "total_value": 3939505, "total_cost": 3600000}, {"date": "2025-03-16", "total_value": 3951214, "total_cost": 3600000}, {"date": "2025-03-17", "total_value": 3980585, "total_cost": 3600000}, {"date": "2025-03-18", "total_value": 3974727, "total_cost": 3600000}, {"date": "2025-03-19", "total_value": 3954959, "total_cost": 3600000}, {"date": "2025-03-20", "total_value": 3979120, "total_cost": 3600000}, {"date": "2025-03-21", "total_value": 3993862, "total_cost": 3600000}, {"date": "2025-03-22", "total_value": 3943780, "total_cost": 3600000}, {"date": "2025-03-23", "total_value": 3995217, "total_cost": 3600000}, {"date": "2025-03-24", "total_value": 3989186, "total_cost": 3600000}, {"date": "2025-03-25", "total_value": 3967302, "total_cost": 3600000}, {"date": "2025-03-26", "total_value": 3956387, "total_cost": 3600000}, {"date": "2025-03-27", "total_value": 4007977, "total_cost": 3600000}, {"date": "2025-03-28", "total_value": 3969447, "total_cost": 3600000}, {"date": "2025-03-29", "total_value": 3954788, "total_cost": 3600000}, {"date": "2025-03-30", "total_value": 3955832, "total_cost": 3600000}, {"date": "2025-03-31", "total_value": 4004193, "total_cost": 3600000}, {"date": "2025-04-01", "total_value": 4044950, "total_cost": 3650000}, {"date": "2025-04-02", "total_value": 4058820, "total_cost": 3650000}, {"date": "2025-04-03", "total_value": 4054651, "total_cost": 3650000}, {"date": "2025-04-04", "total_value": 4043023, "total_cost": 3650000}, {"date": "2025-04-05", "total_value": 4071892, "total_cost": 3650000}, {"date": "2025-04-06", "total_value": 4034499, "total_cost": 3650000}, {"date": "2025-04-07", "total_value": 4046448, "total_cost": 3650000}, {"date": "2025-04-08", "total_value": 4065069, "total_cost": 3650000}, {"date": "2025-04-09", "total_value": 4052325, "total_cost": 3650000}, {"date": "2025-04-10", "total_value": 4068750, "total_cost": 3650000}, {"date": "2025-04-11", "total_value": 4051286, "total_cost": 3650000}, {"date": "2025-04-12", "total_value": 4060262, "total_cost": 3650000}, {"date": "2025-04-13", "total_value": 4018747, "total_cost": 3650000}, {"date": "2025-04-14", "total_value": 4031246, "total_cost": 3650000}, {"date": "2025-04-15", "total_value": 4035999, "total_cost": 3650000}, {"date": "2025-04-16", "total_value": 4023338, "total_cost": 3650000}, {"date": "2025-04-17", "total_value": 4033969, "total_cost": 3650000}, {"date": "2025-04-18", "total_value": 4026306, "total_cost": 3650000}, {"date": "2025-04-19", "total_value": 4038478, "total_cost": 3650000}, {"date": "2025-04-20", "total_value": 4062260, "total_cost": 3650000}, {"date": "2025-04-21", "total_value": 4045664, "total_cost": 3650000}, {"date": "2025-04-22", "total_value": 4046810, "total_cost": 3650000}, {"date": "2025-04-23", "total_value": 4037292, "total_cost": 3650000}, {"date": "2025-04-24", "total_value": 4041787, "total_cost": 3650000}, {"date": "2025-04-25", "total_value": 4085610, "total_cost": 3650000}, {"date": "2025-04-26", "total_value": 4067872, "total_cost": 3650000}, {"date": "2025-04-27", "total_value": 4066176, "total_cost": 3650000}, {"date": "2025-04-28", "total_value": 4038842, "total_cost": 3650000}, {"date": "2025-04-29", "total_value": 4075490, "total_cost": 3650000}, {"date": "2025-04-30", "total_value": 4039951, "total_cost": 3650000}, {"date": "2025-05-01", "total_value": 4110176, "total_cost": 3700000}, {"date": "2025-05-02", "total_value": 4150718, "total_cost": 3700000}, {"date": "2025-05-03", "total_value": 4128771, "total_cost": 3700000}, {"date": "2025-05-04", "total_value": 4124177, "total_cost": 3700000}, {"date": "2025-05-05", "total_value": 4133304, "total_cost": 3700000}, {"date": "2025-05-06", "total_value": 4144423, "total_cost": 3700000}, {"date": "2025-05-07", "total_value": 4140883, "total_cost": 3700000}, {"date": "2025-05-08", "total_value": 4106080, "total_cost": 3700000}, {"date": "2025-05-09", "total_value": 4094068, "total_cost": 3700000}, {"date": "2025-05-10", "total_value": 4113334, "total_cost": 3700000}, {"date": "2025-05-11", "total_value": 4111041, "total_cost": 3700000}, {"date": "2025-05-12", "total_value": 4108159, "total_cost": 3700000}, {"date": "2025-05-13", "total_value": 4156636, "total_cost": 3700000}, {"date": "2025-05-14", "total_value": 4153117, "total_cost": 3700000}, {"date": "2025-05-15", "total_value": 4117354, "total_cost": 3700000}, {"date": "2025-05-16", "total_value": 4140358, "total_cost": 3700000}, {"date": "2025-05-17", "total_value": 4124254, "total_cost": 3700000}, {"date": "2025-05-18", "total_value": 4158859, "total_cost": 3700000}, {"date": "2025-05-19", "total_value": 4129998, "total_cost": 3700000}, {"date": "2025-05-20", "total_value": 4118181, "total_cost": 3700000}, {"date": "2025-05-21", "total_value": 4117806, "total_cost": 3700000}, {"date": "2025-05-22", "total_value": 4139116, "total_cost": 3700000}, {"date": "2025-05-23", "total_value": 4120484, "total_cost": 3700000}, {"date": "2025-05-24", "total_value": 4142256, "total_cost": 3700000}, {"date": "2025-05-25", "total_value": 4163468, "total_cost": 3700000}, {"date": "2025-05-26", "total_value": 4131825, "total_cost": 3700000}, {"date": "2025-05-27", "total_value": 4120912, "total_cost": 3700000}, {"date": "2025-05-28", "total_value": 4172404, "total_cost": 3700000}, {"date": "2025-05-29", "total_value": 4141438, "total_cost": 3700000}, {"date": "2025-05-30", "total_value": 4114992, "total_cost": 3700000}, {"date": "2025-05-31", "total_value": 4112954, "total_cost": 3700000}, {"date": "2025-06-01", "total_value": 4173487, "total_cost": 3750000}, {"date": "2025-06-02", "total_value": 4208486, "total_cost": 3750000}, {"date": "2025-06-03", "total_value": 4220177, "total_cost": 3750000}, {"date": "2025-06-04", "total_value": 4196588, "total_cost": 3750000}, {"date": "2025-06-05", "total_value": 4173743, "total_cost": 3750000}, {"date": "2025-06-06", "total_value": 4195562, "total_cost": 3750000}, {"date": "2025-06-07", "total_value": 4236944, "total_cost": 3750000}, {"date": "2025-06-08", "total_value": 4206947, "total_cost": 3750000}, {"date": "2025-06-09", "total_value": 4236941, "total_cost": 3750000}, {"date": "2025-06-10", "total_value": 4230486, "total_cost": 3750000}, {"date": "2025-06-11", "total_value": 4175258, "total_cost": 3750000}, {"date": "2025-06-12", "total_value": 4222893, "total_cost": 3750000}, {"date": "2025-06-13", "total_value": 4221143, "total_cost": 3750000}, {"date": "2025-06-14", "total_value": 4212415, "total_cost": 3750000}, {"date": "2025-06-15", "total_value": 4195410, "total_cost": 3750000}, {"date": "2025-06-16", "total_value": 4220928, "total_cost": 3750000}, {"date": "2025-06-17", "total_value": 4186812, "total_cost": 3750000}, {"date": "2025-06-18", "total_value": 4208970, "total_cost": 3750000}, {"date": "2025-06-19", "total_value": 4211046, "total_cost": 3750000}, {"date": "2025-06-20", "total_value": 4244877, "total_cost": 3750000}, {"date": "2025-06-21", "total_value": 4240556, "total_cost": 3750000}, {"date": "2025-06-22", "total_value": 4200959, "total_cost": 3750000}, {"date": "2025-06-23", "total_value": 4217439, "total_cost": 3750000}, {"date": "2025-06-24", "total_value": 4197016, "total_cost": 3750000}, {"date": "2025-06-25", "total_value": 4246283, "total_cost": 3750000}, {"date": "2025-06-26", "total_value": 4244329, "total_cost": 3750000}, {"date": "2025-06-27", "total_value": 4207397, "total_cost": 3750000}, {"date": "2025-06-28", "total_value": 4230696, "total_cost": 3750000}, {"date": "2025-06-29", "total_value": 4229542, "total_cost": 3750000}, {"date": "2025-06-30", "total_value": 4200262, "total_cost": 3750000}, {"date": "2025-07-01", "total_value": 4297877, "total_cost": 3800000}, {"date": "2025-07-02", "total_value": 4283790, "total_cost": 3800000}, {"date": "2025-07-03", "total_value": 4300627, "total_cost": 3800000}, {"date": "2025-07-04", "total_value": 4284858, "total_cost": 3800000}, {"date": "2025-07-05", "total_value": 4250262, "total_cost": 3800000}, {"date": "2025-07-06", "total_value": 4272740, "total_cost": 3800000}, {"date": "2025-07-07", "total_value": 4253199, "total_cost": 3800000}, {"date": "2025-07-08", "total_value": 4314870, "total_cost": 3800000}, {"date": "2025-07-09", "total_value": 4312337, "total_cost": 3800000}, {"date": "2025-07-10", "total_value": 4310026, "total_cost": 3800000}, {"date": "2025-07-11", "total_value": 4275807, "total_cost": 3800000}, {"date": "2025-07-12", "total_value": 4259950, "total_cost": 3800000}, {"date": "2025-07-13", "total_value": 4315633, "total_cost": 3800000}, {"date": "2025-07-14", "total_value": 4321080, "total_cost": 3800000}, {"date": "2025-07-15", "total_value": 4264313, "total_cost": 3800000}, {"date": "2025-07-16", "total_value": 4291923, "total_cost": 3800000}, {"date": "2025-07-17", "total_value": 4264885, "total_cost": 3800000}, {"date": "2025-07-18", "total_value": 4311961, "total_cost": 3800000}, {"date": "2025-07-19", "total_value": 4313147, "total_cost": 3800000}, {"date": "2025-07-20", "total_value": 4271351, "total_cost": 3800000}, {"date": "2025-07-21", "total_value": 4295387, "total_cost": 3800000}, {"date": "2025-07-22", "total_value": 4301207, "total_cost": 3800000}, {"date": "2025-07-23", "total_value": 4282999, "total_cost": 3800000}, {"date": "2025-07-24", "total_value": 4324456, "total_cost": 3800000}, {"date": "2025-07-25", "total_value": 4295243, "total_cost": 3800000}, {"date": "2025-07-26", "total_value": 4281945, "total_cost": 3800000}, {"date": "2025-07-27", "total_value": 4304684, "total_cost": 3800000}, {"date": "2025-07-28", "total_value": 4318270, "total_cost": 3800000}, {"date": "2025-07-29", "total_value": 4283741, "total_cost": 3800000}, {"date": "2025-07-30", "total_value": 4291972, "total_cost": 3800000}, {"date": "2025-07-31", "total_value": 4338516, "total_cost": 3800000}, {"date": "2025-08-01", "total_value": 4373053, "total_cost": 3850000}, {"date": "2025-08-02", "total_value": 4359550, "total_cost": 3850000}, {"date": "2025-08-03", "total_value": 4365782, "total_cost": 3850000}, {"date": "2025-08-04", "total_value": 4339757, "total_cost": 3850000}, {"date": "2025-08-05", "total_value": 4347630, "total_cost": 3850000}, {"date": "2025-08-06", "total_value": 4356161, "total_cost": 3850000}, {"date": "2025-08-07", "total_value": 4373963, "total_cost": 3850000}, {"date": "2025-08-08", "total_value": 4350539, "total_cost": 3850000}, {"date": "2025-08-09", "total_value": 4350715, "total_cost": 3850000}, {"date": "2025-08-10", "total_value": 4341450, "total_cost": 3850000}, {"date": "2025-08-11", "total_value": 4380251, "total_cost": 3850000}, {"date": "2025-08-12", "total_value": 4353847, "total_cost": 3850000}, {"date": "2025-08-13", "total_value": 4400532, "total_cost": 3850000}, {"date": "2025-08-14", "total_value": 4398277, "total_cost": 3850000}, {"date": "2025-08-15", "total_value": 4345676, "total_cost": 3850000}, {"date": "2025-08-16", "total_value": 4357849, "total_cost": 3850000}, {"date": "2025-08-17", "total_value": 4387899, "total_cost": 3850000}, {"date": "2025-08-18", "total_value": 4357933, "total_cost": 3850000}, {"date": "2025-08-19", "total_value": 4353228, "total_cost": 3850000}, {"date": "2025-08-20", "total_value": 4408500, "total_cost": 3850000}, {"date": "2025-08-21", "total_value": 4384651, "total_cost": 3850000}, {"date": "2025-08-22", "total_value": 4378832, "total_cost": 3850000}, {"date": "2025-08-23", "total_value": 4400817, "total_cost": 3850000}, {"date": "2025-08-24", "total_value": 4403214, "total_cost": 3850000}, {"date": "2025-08-25", "total_value": 4362247, "total_cost": 3850000}, {"date": "2025-08-26", "total_value": 4356760, "total_cost": 3850000}, {"date": "2025-08-27", "total_value": 4380247, "total_cost": 3850000}, {"date": "2025-08-28", "total_value": 4380588, "total_cost": 3850000}, {"date": "2025-08-29", "total_value": 4384379, "total_cost": 3850000}, {"date": "2025-08-30", "total_value": 4402982, "total_cost": 3850000}, {"date": "2025-08-31", "total_value": 4400054, "total_cost": 3850000}, {"date": "2025-09-01", "total_value": 4479389, "total_cost": 3900000}, {"date": "2025-09-02", "total_value": 4419449, "total_cost": 3900000}, {"date": "2025-09-03", "total_value": 4441188, "total_cost": 3900000}, {"date": "2025-09-04", "total_value": 4437700, "total_cost": 3900000}, {"date": "2025-09-05", "total_value": 4474413, "total_cost": 3900000}, {"date": "2025-09-06", "total_value": 4433194, "total_cost": 3900000}, {"date": "2025-09-07", "total_value": 4430040, "total_cost": 3900000}, {"date": "2025-09-08", "total_value": 4448635, "total_cost": 3900000}, {"date": "2025-09-09", "total_value": 4447658, "total_cost": 3900000}, {"date": "2025-09-10", "total_value": 4438677, "total_cost": 3900000}, {"date": "2025-09-11", "total_value": 4437563, "total_cost": 3900000}, {"date": "2025-09-12", "total_value": 4484647, "total_cost": 3900000}, {"date": "2025-09-13", "total_value": 4452548, "total_cost": 3900000}, {"date": "2025-09-14", "total_value": 4482113, "total_cost": 3900000}, {"date": "2025-09-15", "total_value": 4461622, "total_cost": 3900000}, {"date": "2025-09-16", "total_value": 4428178, "total_cost": 3900000}, {"date": "2025-09-17", "total_value": 4494155, "total_cost": 3900000}, {"date": "2025-09-18", "total_value": 4483807, "total_cost": 3900000}, {"date": "2025-09-19", "total_value": 4493792, "total_cost": 3900000}, {"date": "2025-09-20", "total_value": 4491724, "total_cost": 3900000}, {"date": "2025-09-21", "total_value": 4487250, "total_cost": 3900000}, {"date": "2025-09-22", "total_value": 4441270, "total_cost": 3900000}, {"date": "2025-09-23", "total_value": 4464046, "total_cost": 3900000}, {"date": "2025-09-24", "total_value": 4446242, "total_cost": 3900000}, {"date": "2025-09-25", "total_value": 4459955, "total_cost": 3900000}, {"date": "2025-09-26", "total_value": 4437311, "total_cost": 3900000}, {"date": "2025-09-27", "total_value": 4460157, "total_cost": 3900000}, {"date": "2025-09-28", "total_value": 4502634, "total_cost": 3900000}, {"date": "2025-09-29", "total_value": 4454064, "total_cost": 3900000}, {"date": "2025-09-30", "total_value": 4490537, "total_cost": 3900000}, {"date": "2025-10-01", "total_value": 4526100, "total_cost": 3950000}, {"date": "2025-10-02", "total_value": 4524744, "total_cost": 3950000}, {"date": "2025-10-03", "total_value": 4562759, "total_cost": 3950000}, {"date": "2025-10-04", "total_value": 4566277, "total_cost": 3950000}, {"date": "2025-10-05", "total_value": 4536581, "total_cost": 3950000}, {"date": "2025-10-06", "total_value": 4548757, "total_cost": 3950000}, {"date": "2025-10-07", "total_value": 4510443, "total_cost": 3950000}, {"date": "2025-10-08", "total_value": 4521178, "total_cost": 3950000}, {"date": "2025-10-09", "total_value": 4568765, "total_cost": 3950000}, {"date": "2025-10-10", "total_value": 4542554, "total_cost": 3950000}, {"date": "2025-10-11", "total_value": 4540851, "total_cost": 3950000}, {"date": "2025-10-12", "total_value": 4556026, "total_cost": 3950000}, {"date": "2025-10-13", "total_value": 4508870, "total_cost": 3950000}, {"date": "2025-10-14", "total_value": 4546377, "total_cost": 3950000}, {"date": "2025-10-15", "total_value": 4541592, "total_cost": 3950000}, {"date": "2025-10-16", "total_value": 4566784, "total_cost": 3950000}, {"date": "2025-10-17", "total_value": 4519317, "total_cost": 3950000}, {"date": "2025-10-18", "total_value": 4576034, "total_cost": 3950000}, {"date": "2025-10-19", "total_value": 4515679, "total_cost": 3950000}, {"date": "2025-10-20", "total_value": 4523898, "total_cost": 3950000}, {"date": "2025-10-21", "total_value": 4553215, "total_cost": 3950000}, {"date": "2025-10-22", "total_value": 4559658, "total_cost": 3950000}, {"date": "2025-10-23", "total_value": 4529937, "total_cost": 3950000}, {"date": "2025-10-24", "total_value": 4522790, "total_cost": 3950000}, {"date": "2025-10-25", "total_value": 4577217, "total_cost": 3950000}, {"date": "2025-10-26", "total_value": 4533310, "total_cost": 3950000}, {"date": "2025-10-27", "total_value": 4558393, "total_cost": 3950000}, {"date": "2025-10-28", "total_value": 4560990, "total_cost": 3950000}, {"date": "2025-10-29", "total_value": 4547945, "total_cost": 3950000}, {"date": "2025-10-30", "total_value": 4560246, "total_cost": 3950000}, {"date": "2025-10-31", "total_value": 4556882, "total_cost": 3950000}, {"date": "2025-11-01", "total_value": 4644443, "total_cost": 4000000}, {"date": "2025-11-02", "total_value": 4593900, "total_cost": 4000000}, {"date": "2025-11-03", "total_value": 4630820, "total_cost": 4000000}, {"date": "2025-11-04", "total_value": 4598083, "total_cost": 4000000}, {"date": "2025-11-05", "total_value": 4610023, "total_cost": 4000000}, {"date": "2025-11-06", "total_value": 4630327, "total_cost": 4000000}, {"date": "2025-11-07", "total_value": 4605040, "total_cost": 4000000}, {"date": "2025-11-08", "total_value": 4607059, "total_cost": 4000000}, {"date": "2025-11-09", "total_value": 4638611, "total_cost": 4000000}, {"date": "2025-11-10", "total_value": 4591667, "total_cost": 4000000}, {"date": "2025-11-11", "total_value": 4619703, "total_cost": 4000000}, {"date": "2025-11-12", "total_value": 4658611, "total_cost": 4000000}, {"date": "2025-11-13", "total_value": 4659325, "total_cost": 4000000}, {"date": "2025-11-14", "total_value": 4595238, "total_cost": 4000000}, {"date": "2025-11-15", "total_value": 4605966, "total_cost": 4000000}, {"date": "2025-11-16", "total_value": 4610510, "total_cost": 4000000}, {"date": "2025-11-17", "total_value": 4658421, "total_cost": 4000000}, {"date": "2025-11-18", "total_value": 4655613, "total_cost": 4000000}, {"date": "2025-11-19", "total_value": 4656381, "total_cost": 4000000}, {"date": "2025-11-20", "total_value": 4621375, "total_cost": 4000000}, {"date": "2025-11-21", "total_value": 4607345, "total_cost": 4000000}, {"date": "2025-11-22", "total_value": 4655816, "total_cost": 4000000}, {"date": "2025-11-23", "total_value": 4647529, "total_cost": 4000000}, {"date": "2025-11-24", "total_value": 4641942, "total_cost": 4000000}, {"date": "2025-11-25", "total_value": 4669261, "total_cost": 4000000}, {"date": "2025-11-26", "total_value": 4646680, "total_cost": 4000000}, {"date": "2025-11-27", "total_value": 4602071, "total_cost": 4000000}, {"date": "2025-11-28", "total_value": 4659924, "total_cost": 4000000}, {"date": "2025-11-29", "total_value": 4624356, "total_cost": 4000000}, {"date": "2025-11-30", "total_value": 4650863, "total_cost": 4000000}, {"date": "2025-12-01", "total_value": 4729530, "total_cost": 4050000}, {"date": "2025-12-02", "total_value": 4673066, "total_cost": 4050000}, {"date": "2025-12-03", "total_value": 4672613, "total_cost": 4050000}, {"date": "2025-12-04", "total_value": 4672906, "total_cost": 4050000}, {"date": "2025-12-05", "total_value": 4705601, "total_cost": 4050000}, {"date": "2025-12-06", "total_value": 4686471, "total_cost": 4050000}, {"date": "2025-12-07", "total_value": 4711061, "total_cost": 4050000}, {"date": "2025-12-08", "total_value": 4719991, "total_cost": 4050000}, {"date": "2025-12-09", "total_value": 4684243, "total_cost": 4050000}, {"date": "2025-12-10", "total_value": 4715830, "total_cost": 4050000}, {"date": "2025-12-11", "total_value": 4690330, "total_cost": 4050000}, {"date": "2025-12-12", "total_value": 4707227, "total_cost": 4050000}, {"date": "2025-12-13", "total_value": 4737827, "total_cost": 4050000}, {"date": "2025-12-14", "total_value": 4734496, "total_cost": 4050000}, {"date": "2025-12-15", "total_value": 4681656, "total_cost": 4050000}, {"date": "2025-12-16", "total_value": 4706160, "total_cost": 4050000}, {"date": "2025-12-17", "total_value": 4696581, "total_cost": 4050000}, {"date": "2025-12-18", "total_value": 4678003, "total_cost": 4050000}, {"date": "2025-12-19", "total_value": 4733606, "total_cost": 4050000}, {"date": "2025-12-20", "total_value": 4724945, "total_cost": 4050000}, {"date": "2025-12-21", "total_value": 4699095, "total_cost": 4050000}, {"date": "2025-12-22", "total_value": 4734149, "total_cost": 4050000}, {"date": "2025-12-23", "total_value": 4721529, "total_cost": 4050000}, {"date": "2025-12-24", "total_value": 4713582, "total_cost": 4050000}, {"date": "2025-12-25", "total_value": 4684676, "total_cost": 4050000}, {"date": "2025-12-26", "total_value": 4690241, "total_cost": 4050000}, {"date": "2025-12-27", "total_value": 4748717, "total_cost": 4050000}, {"date": "2025-12-28", "total_value": 4751092, "total_cost": 4050000}, {"date": "2025-12-29", "total_value": 4726441, "total_cost": 4050000}, {"date": "2025-12-30", "total_value": 4747932, "total_cost": 4050000}, {"date": "2025-12-31", "total_value": 4730854, "total_cost": 4050000}, {"date": "2026-01-01", "total_value": 4758814, "total_cost": 4100000}, {"date": "2026-01-02", "total_value": 4758226, "total_cost": 4100000}, {"date": "2026-01-03", "total_value": 4772176, "total_cost": 4100000}, {"date": "2026-01-04", "total_value": 4815705, "total_cost": 4100000}, {"date": "2026-01-05", "total_value": 4809184, "total_cost": 4100000}, {"date": "2026-01-06", "total_value": 4814746, "total_cost": 4100000}, {"date": "2026-01-07", "total_value": 4818406, "total_cost": 4100000}, {"date": "2026-01-08", "total_value": 4769601, "total_cost": 4100000}, {"date": "2026-01-09", "total_value": 4773350, "total_cost": 4100000}, {"date": "2026-01-10", "total_value": 4763664, "total_cost": 4100000}, {"date": "2026-01-11", "total_value": 4813441, "total_cost": 4100000}, {"date": "2026-01-12", "total_value": 4821849, "total_cost": 4100000}, {"date": "2026-01-13", "total_value": 4788276, "total_cost": 4100000}, {"date": "2026-01-14", "total_value": 4804641, "total_cost": 4100000}, {"date": "2026-01-15", "total_value": 4771909, "total_cost": 4100000}, {"date": "2026-01-16", "total_value": 4828758, "total_cost": 4100000}, {"date": "2026-01-17", "total_value": 4824950, "total_cost": 4100000}, {"date": "2026-01-18", "total_value": 4833905, "total_cost": 4100000}, {"date": "2026-01-19", "total_value": 4822869, "total_cost": 4100000}, {"date": "2026-01-20", "total_value": 4828869, "total_cost": 4100000}, {"date": "2026-01-21", "total_value": 4767957, "total_cost": 4100000}, {"date": "2026-01-22", "total_value": 4820220, "total_cost": 4100000}, {"date": "2026-01-23", "total_value": 4791943, "total_cost": 4100000}, {"date": "2026-01-24", "total_value": 4836042, "total_cost": 4100000}, {"date": "2026-01-25", "total_value": 4827665, "total_cost": 4100000}, {"date": "2026-01-26", "total_value": 4833029, "total_cost": 4100000}, {"date": "2026-01-27", "total_value": 4830084, "total_cost": 4100000}, {"date": "2026-01-28", "total_value": 4791735, "total_cost": 4100000}, {"date": "2026-01-29", "total_value": 4830201, "total_cost": 4100000}, {"date": "2026-01-30", "total_value": 4782086, "total_cost": 4100000}, {"date": "2026-01-31", "total_value": 4838124, "total_cost": 4100000}, {"date": "2026-02-01", "total_value": 4897047, "total_cost": 4150000}, {"date": "2026-02-02", "total_value": 4851495, "total_cost": 4150000}, {"date": "2026-02-03", "total_value": 4895804, "total_cost": 4150000}, {"date": "2026-02-04", "total_value": 4870695, "total_cost": 4150000}, {"date": "2026-02-05", "total_value": 4860278, "total_cost": 4150000}, {"date": "2026-02-06", "total_value": 4896992, "total_cost": 4150000}, {"date": "2026-02-07", "total_value": 4856437, "total_cost": 4150000}, {"date": "2026-02-08", "total_value": 4842454, "total_cost": 4150000}, {"date": "2026-02-09", "total_value": 4855745, "total_cost": 4150000}, {"date": "2026-02-10", "total_value": 4866528, "total_cost": 4150000}, {"date": "2026-02-11", "total_value": 4906597, "total_cost": 4150000}, {"date": "2026-02-12", "total_value": 4915000, "total_cost": 4150000}, {"date": "2026-02-13", "total_value": 4865678, "total_cost": 4150000}, {"date": "2026-02-14", "total_value": 4893058, "total_cost": 4150000}, {"date": "2026-02-15", "total_value": 4876310, "total_cost": 4150000}, {"date": "2026-02-16", "total_value": 4919693, "total_cost": 4150000}, {"date": "2026-02-17", "total_value": 4888108, "total_cost": 4150000}, {"date": "2026-02-18", "total_value": 4918458, "total_cost": 4150000}, {"date": "2026-02-19", "total_value": 4859194, "total_cost": 4150000}, {"date": "2026-02-20", "total_value": 4922560, "total_cost": 4150000}, {"date": "2026-02-21", "total_value": 4865638, "total_cost": 4150000}, {"date": "2026-02-22", "total_value": 4923812, "total_cost": 4150000}, {"date": "2026-02-23", "total_value": 4873811, "total_cost": 4150000}, {"date": "2026-02-24", "total_value": 4863252, "total_cost": 4150000}, {"date": "2026-02-25", "total_value": 4887988, "total_cost": 4150000}, {"date": "2026-02-26", "total_value": 4910373, "total_cost": 4150000}, {"date": "2026-02-27", "total_value": 4880984, "total_cost": 4150000}, {"date": "2026-02-28", "total_value": 4903263, "total_cost": 4150000}, {"date": "2026-03-01", "total_value": 4956256, "total_cost": 4200000}, {"date": "2026-03-02", "total_value": 4947850, "total_cost": 4200000}];
+  const ftCanvas = document.getElementById('fund-total-chart');
+  if (!ftData.length || !ftCanvas) return;
+
+  let ftRange = 90;  // デフォルト3ヶ月
+  const ftBtns = document.querySelectorAll('.ft-range-btn');
+  ftBtns.forEach(btn => btn.addEventListener('click', function() {
+    ftBtns.forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    ftRange = parseInt(this.dataset.days);
+    drawFundTotalChart();
+  }));
+
+  function drawFundTotalChart() {
+    // 期間フィルタ
+    const now = new Date(ftData[ftData.length - 1].date);
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - ftRange);
+    const filtered = ftData.filter(d => new Date(d.date) >= cutoff);
+    if (!filtered.length) return;
+
+    const ctx = ftCanvas.getContext('2d');
+    const W = ftCanvas.parentElement.clientWidth - 40;
+    ftCanvas.width = W;
+    ftCanvas.height = 260;
+    ctx.clearRect(0, 0, W, 260);
+
+    const pad = { left: 80, right: 20, top: 20, bottom: 30 };
+    const cW = W - pad.left - pad.right;
+    const cH = 260 - pad.top - pad.bottom;
+
+    // Y軸レンジ
+    let allVals = [];
+    filtered.forEach(d => {
+      allVals.push(d.total_value || 0);
+      if (d.total_cost != null) allVals.push(d.total_cost);
+    });
+    const minVal = Math.min(...allVals) * 0.95;
+    const maxVal = Math.max(...allVals) * 1.05;
+    const range = maxVal - minVal || 1;
+
+    const toY = v => pad.top + cH * (1 - (v - minVal) / range);
+    const toX = i => pad.left + (cW / (filtered.length - 1 || 1)) * i;
+
+    // Y軸グリッド
+    ctx.strokeStyle = '#f1f2f6';
+    ctx.fillStyle = '#b2bec3';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + cH * (1 - i / 4);
+      const val = minVal + range * i / 4;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+      ctx.fillText((val / 10000).toFixed(0) + '万', pad.left - 6, y + 4);
+    }
+
+    // 取得価額ライン（グレー）
+    const hasCost = filtered.some(d => d.total_cost != null);
+    if (hasCost) {
+      ctx.strokeStyle = '#b2bec3';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      let started = false;
+      filtered.forEach((d, i) => {
+        if (d.total_cost == null) return;
+        const x = toX(i), y = toY(d.total_cost);
+        if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    // 評価額ライン（オレンジ）
+    ctx.strokeStyle = '#E67E22';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    filtered.forEach((d, i) => {
+      const x = toX(i), y = toY(d.total_value);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // X軸ラベル
+    const step = Math.max(1, Math.floor(filtered.length / 8));
+    ctx.fillStyle = '#636e72';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    filtered.forEach((d, i) => {
+      if (i % step === 0 || i === filtered.length - 1) {
+        ctx.fillText(d.date.substring(5), toX(i), pad.top + cH + 18);
+      }
+    });
+
+    // 凡例
+    let lx = pad.left;
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'left';
+    [['#E67E22', '評価額'], ['#b2bec3', '取得価額']].forEach(([color, label]) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(lx, 6, 14, 10);
+      ctx.fillStyle = '#2d3436';
+      ctx.fillText(label, lx + 17, 14);
+      lx += ctx.measureText(label).width + 32;
+    });
+
+    // ツールチップ
+    ftCanvas.onmousemove = function(e) {
+      const rect = ftCanvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const idx = Math.round((mx - pad.left) / (cW / (filtered.length - 1 || 1)));
+      if (idx < 0 || idx >= filtered.length) { const tip = document.getElementById('pie-tooltip'); if (tip) tip.classList.remove('show'); return; }
+      const d = filtered[idx];
+      let html = '<strong>' + esc(d.date) + '</strong>';
+      html += '<div style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.2);padding-top:4px">';
+      html += '<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#E67E22">● 評価額</span><span>' + (d.total_value/10000).toLocaleString('ja-JP',{maximumFractionDigits:0}) + '万</span></div>';
+      if (d.total_cost != null && d.total_cost > 0) {
+        html += '<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#b2bec3">● 取得価額</span><span>' + (d.total_cost/10000).toLocaleString('ja-JP',{maximumFractionDigits:0}) + '万</span></div>';
+        const gain = d.total_value - d.total_cost;
+        const pct = (gain / d.total_cost * 100).toFixed(2);
+        const clr = gain >= 0 ? '#e17055' : '#0984e3';
+        html += '<div style="display:flex;justify-content:space-between;gap:12px"><span>損益</span><span style="color:' + clr + '">' + (gain >= 0 ? '+' : '') + (gain/10000).toLocaleString('ja-JP',{maximumFractionDigits:0}) + '万 (' + pct + '%)</span></div>';
+      }
+      html += '</div>';
+      const tip = document.getElementById('pie-tooltip');
+      if (tip) {
+        tip.innerHTML = html;
+        tip.classList.add('show');
+        tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 260) + 'px';
+        tip.style.top = (e.clientY - 10) + 'px';
+      }
+    };
+    ftCanvas.onmouseleave = function() {
+      const tip = document.getElementById('pie-tooltip');
+      if (tip) tip.classList.remove('show');
+    };
+  }
+
+  drawFundTotalChart();
+  window.addEventListener('resize', drawFundTotalChart);
+})();
 
 
 // 折りたたみ
