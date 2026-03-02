@@ -210,10 +210,14 @@ class TestCfCards:
 class TestManualMonthFetch:
     """任意の過去月を指定してCSV取得するUIが存在する。"""
 
-    def test_month_input_exists(self):
+    def test_year_month_select_exists(self):
         html = _build_cf_html(_demo_cf_data())
-        assert 'type="month"' in html
-        assert 'id="manual-month"' in html
+        assert 'id="manual-year"' in html
+        assert 'id="manual-month-sel"' in html
+        # 現在年が選択肢に含まれる
+        from datetime import datetime
+
+        assert f'value="{datetime.now().year}"' in html
 
     def test_fetch_button_exists(self):
         html = _build_cf_html(_demo_cf_data())

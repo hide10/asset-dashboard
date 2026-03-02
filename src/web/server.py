@@ -4320,6 +4320,15 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         )
         dl_rows += f"<tr><td>{safe_ym}</td><td>{status}</td><td>{dl_btn}</td></tr>"
 
+    # 年・月セレクトボックスの選択肢を生成
+    now = datetime.now()
+    year_options = "".join(
+        f'<option value="{y}"{" selected" if y == now.year else ""}>{y}</option>' for y in range(now.year, 2019, -1)
+    )
+    month_options = "".join(
+        f'<option value="{m:02d}"{" selected" if m == now.month else ""}>{m}月</option>' for m in range(1, 13)
+    )
+
     balance_sign = "+" if balance >= 0 else ""
     balance_css = "plus" if balance >= 0 else "minus"
 
@@ -4660,7 +4669,12 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
       </div>
       <div class="card-body">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-          <input type="month" id="manual-month" style="padding:4px 8px;border:1px solid #dfe6e9;border-radius:6px;font-size:0.9rem">
+          <select id="manual-year" style="padding:4px 8px;border:1px solid #dfe6e9;border-radius:6px;font-size:0.9rem">{
+        year_options
+    }</select>
+          <select id="manual-month-sel" style="padding:4px 8px;border:1px solid #dfe6e9;border-radius:6px;font-size:0.9rem">{
+        month_options
+    }</select>
           <button class="dl-btn" onclick="fetchManualMonth()">取得</button>
           <span id="manual-msg" style="font-size:0.8rem;color:#636e72"></span>
         </div>
@@ -4864,10 +4878,11 @@ async function downloadMonth(ym, btn) {{
 }}
 
 async function fetchManualMonth() {{
-  const input = document.getElementById('manual-month');
+  const year = document.getElementById('manual-year').value;
+  const month = document.getElementById('manual-month-sel').value;
   const msg = document.getElementById('manual-msg');
-  const ym = input.value;
-  if (!ym) {{ msg.textContent = '年月を選択してください'; return; }}
+  const ym = year + '-' + month;
+  if (!year || !month) {{ msg.textContent = '年月を選択してください'; return; }}
   // YYYY-MM format validation
   const today = new Date();
   const sel = new Date(ym + '-01');
