@@ -96,7 +96,11 @@ def fetch_us_dividend(ticker: str) -> tuple[float | None, str | None]:
         raw = gzip.decompress(raw)
     data = json.loads(raw)
 
-    detail = data["quoteSummary"]["result"][0]["summaryDetail"]
+    results = data.get("quoteSummary", {}).get("result") or []
+    if not results:
+        logger.warning("[dividend] %s: quoteSummary result が空", ticker)
+        return None, None
+    detail = results[0].get("summaryDetail", {})
     # dividendRate（予想）を優先、ETF等では trailingAnnualDividendRate にフォールバック
     dps = detail.get("dividendRate", {}).get("raw", 0) or detail.get("trailingAnnualDividendRate", {}).get("raw", 0)
     ex_date = detail.get("exDividendDate", {}).get("fmt")

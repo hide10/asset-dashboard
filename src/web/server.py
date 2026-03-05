@@ -1293,7 +1293,7 @@ def _demo_data() -> dict:
 
     by_class = {
         "預金・現金・暗号資産": 4_820_000,
-        "株式（現物）": 9_110_000,
+        "株式（現物）": 9_115_000,
         "投資信託": 5_180_000,
         "不動産": 1_200_000,
         "年金": 3_950_000,
@@ -1422,7 +1422,7 @@ def _demo_data() -> dict:
             "name": "Apple",
             "code": "AAPL",
             "asset_class": "株式（現物）",
-            "value": 1_120_000,
+            "value": 1_125_000,
             "quantity": 50,
             "acquisition_price": 135,
             "current_price": 150,
@@ -1539,7 +1539,7 @@ def _demo_data() -> dict:
         "その他製品": 580_000,
         "機械": 350_000,
         "鉱業": 250_000,
-        "テクノロジー": 2_010_000,
+        "テクノロジー": 2_015_000,
         "米国ETF": 750_000,
     }
     demo_sectors = dict(sorted(demo_sectors.items(), key=lambda x: x[1], reverse=True))
@@ -1675,7 +1675,7 @@ def _demo_data() -> dict:
         {"name": "任天堂", "asset_class": "株式（現物）", "current": 580_000, "diff": 4_100},
         {"name": "ダイキン工業", "asset_class": "株式（現物）", "current": 350_000, "diff": -2_500},
         {"name": "INPEX", "asset_class": "株式（現物）", "current": 250_000, "diff": -5_700},
-        {"name": "Apple", "asset_class": "株式（現物）", "current": 1_120_000, "diff": 15_000},
+        {"name": "Apple", "asset_class": "株式（現物）", "current": 1_125_000, "diff": 15_000},
         {"name": "Microsoft", "asset_class": "株式（現物）", "current": 890_000, "diff": -8_500},
         {"name": "Vanguard S&P 500 ETF", "asset_class": "株式（現物）", "current": 750_000, "diff": 6_200},
         {"name": "eMAXIS Slim 全世界株式(オルカン)", "asset_class": "投資信託", "current": 2_480_000, "diff": 8_300},
@@ -1692,7 +1692,7 @@ def _demo_data() -> dict:
         {"name": "任天堂", "asset_class": "株式（現物）", "current": 580_000, "diff": 22_000},
         {"name": "ダイキン工業", "asset_class": "株式（現物）", "current": 350_000, "diff": -8_000},
         {"name": "INPEX", "asset_class": "株式（現物）", "current": 250_000, "diff": -12_000},
-        {"name": "Apple", "asset_class": "株式（現物）", "current": 1_120_000, "diff": 58_000},
+        {"name": "Apple", "asset_class": "株式（現物）", "current": 1_125_000, "diff": 58_000},
         {"name": "Microsoft", "asset_class": "株式（現物）", "current": 890_000, "diff": -25_000},
         {"name": "Vanguard S&P 500 ETF", "asset_class": "株式（現物）", "current": 750_000, "diff": 32_000},
         {"name": "eMAXIS Slim 全世界株式(オルカン)", "asset_class": "投資信託", "current": 2_480_000, "diff": 52_000},
@@ -1711,7 +1711,7 @@ def _demo_data() -> dict:
         {"name": "任天堂", "asset_class": "株式（現物）", "current": 580_000, "diff": 125_000},
         {"name": "ダイキン工業", "asset_class": "株式（現物）", "current": 350_000, "diff": 60_000},
         {"name": "INPEX", "asset_class": "株式（現物）", "current": 250_000, "diff": 130_000},
-        {"name": "Apple", "asset_class": "株式（現物）", "current": 1_120_000, "diff": 280_000},
+        {"name": "Apple", "asset_class": "株式（現物）", "current": 1_125_000, "diff": 280_000},
         {"name": "Microsoft", "asset_class": "株式（現物）", "current": 890_000, "diff": 195_000},
         {"name": "Vanguard S&P 500 ETF", "asset_class": "株式（現物）", "current": 750_000, "diff": 150_000},
         {"name": "eMAXIS Slim 全世界株式(オルカン)", "asset_class": "投資信託", "current": 2_480_000, "diff": 680_000},

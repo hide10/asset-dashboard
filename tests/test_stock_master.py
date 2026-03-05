@@ -135,6 +135,25 @@ class TestFetchUsDividend:
             dps, ex_date = fetch_us_dividend("VOO")
             assert dps == 5.44
 
+    def test_fetch_us_dividend_empty_result(self):
+        """quoteSummary の result が空の場合 (None, None) を返すこと。"""
+        from src.data.dividend_fetcher import fetch_us_dividend
+
+        mock_response_data = {"quoteSummary": {"result": []}}
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(mock_response_data).encode()
+
+        mock_opener = MagicMock()
+        mock_opener.open.return_value = mock_resp
+
+        with (
+            patch("src.data.dividend_fetcher._yahoo_us_session", mock_opener),
+            patch("src.data.dividend_fetcher._yahoo_us_crumb", "test_crumb"),
+        ):
+            dps, ex_date = fetch_us_dividend("XYZW")
+            assert dps is None
+            assert ex_date is None
+
     def test_fetch_us_dividend_no_dividend(self):
         """無配当銘柄の場合 (None, None) を返すこと。"""
         from src.data.dividend_fetcher import fetch_us_dividend
