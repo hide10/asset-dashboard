@@ -10,9 +10,11 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 
 from src.db.repository import (
+    _current_fiscal_month,
+    _fiscal_month_range,
     get_budgets,
     get_cashflows,
     get_cf_available_months,
@@ -254,6 +256,24 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
     if not summary:
         return ""
 
+    # fiscal month の期間と経過日数を計算
+    today = date.today()
+    current_fm = _current_fiscal_month(closing_day, holiday_mode)
+    start_str, end_str = _fiscal_month_range(year_month, closing_day, holiday_mode)
+    start_date = date.fromisoformat(start_str)
+    end_date = date.fromisoformat(end_str)
+    total_days = (end_date - start_date).days + 1
+    if year_month == current_fm:
+        elapsed_days = (today - start_date).days + 1
+        is_partial = today <= end_date
+    elif year_month < current_fm:
+        elapsed_days = total_days
+        is_partial = False
+    else:
+        elapsed_days = 0
+        is_partial = True
+    elapsed_pct = round(elapsed_days / total_days * 100) if total_days else 0
+
     # カテゴリ別支出
     cat_lines = []
     for c in summary["major_categories"]:
@@ -280,7 +300,15 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
         f"  {t['date'][5:]}: {t['description']} {t['amount']:,.0f}円" for t in summary.get("top_expenses", [])[:5]
     ]
 
+    # 経過情報テキスト
+    period_info = f"{start_str}〜{end_str}（{total_days}日間）"
+    if is_partial:
+        elapsed_text = f"■ 集計期間: {period_info}\n■ 経過: {elapsed_days}日目 / {total_days}日中（経過率{elapsed_pct}%）※月途中のデータ"
+    else:
+        elapsed_text = f"■ 集計期間: {period_info}（月末確定データ）"
+
     data_text = f"""【家計簿データ ({year_month})】
+{elapsed_text}
 ■ 支出合計: {summary["total_expense"]:,.0f}円
 ■ 収入合計: {summary["total_income"]:,.0f}円
 ■ 収支: {summary["balance"]:+,.0f}円
@@ -298,9 +326,19 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
 ■ 高額支出（上位5件）:
 {chr(10).join(top_lines) if top_lines else "  データなし"}"""
 
+    # 月途中の場合はペース分析を指示に含める
+    if is_partial:
+        pace_instruction = (
+            f"このデータは集計期間{total_days}日中{elapsed_days}日目（経過率{elapsed_pct}%）の途中経過です。"
+            f"月末時点の支出見込み（日割りペース換算）や、予算に対する消化ペースが適正かどうか（経過率{elapsed_pct}%に対して消化率が高すぎないか）にも触れてください。"
+        )
+    else:
+        pace_instruction = "このデータは月末確定データです。"
+
     return f"""{data_text}
 
 あなたは家計アドバイザーです。上記の家計簿データを分析し、3〜4文で簡潔にコメントしてください。
+{pace_instruction}
 支出の傾向、前月との比較、予算の消化状況、改善ポイントなどに触れてください。日本語で回答してください。"""
 
 
