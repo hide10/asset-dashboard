@@ -240,6 +240,8 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
 
 def _build_cf_prompt(db_path: str, year_month: str) -> str:
     """家計簿分析用のプロンプトを組み立てる。"""
+    import calendar
+
     conn = init_db(db_path)
     try:
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
@@ -253,6 +255,22 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
 
     if not summary:
         return ""
+
+    # 経過日数の計算
+    today = datetime.now()
+    ym_year, ym_month = int(year_month[:4]), int(year_month[5:7])
+    days_in_month = calendar.monthrange(ym_year, ym_month)[1]
+    today_ym = today.strftime("%Y-%m")
+    if year_month == today_ym:
+        elapsed_days = today.day
+        is_partial = elapsed_days < days_in_month
+    elif year_month < today_ym:
+        elapsed_days = days_in_month
+        is_partial = False
+    else:
+        elapsed_days = 0
+        is_partial = True
+    elapsed_pct = round(elapsed_days / days_in_month * 100) if days_in_month else 0
 
     # カテゴリ別支出
     cat_lines = []
@@ -280,7 +298,14 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
         f"  {t['date'][5:]}: {t['description']} {t['amount']:,.0f}円" for t in summary.get("top_expenses", [])[:5]
     ]
 
+    # 経過情報テキスト
+    if is_partial:
+        elapsed_text = f"■ 集計時点: {ym_year}年{ym_month}月{elapsed_days}日（{days_in_month}日中, 経過率{elapsed_pct}%）※月途中のデータ"
+    else:
+        elapsed_text = f"■ 集計時点: {ym_year}年{ym_month}月（{days_in_month}日間, 月末確定データ）"
+
     data_text = f"""【家計簿データ ({year_month})】
+{elapsed_text}
 ■ 支出合計: {summary["total_expense"]:,.0f}円
 ■ 収入合計: {summary["total_income"]:,.0f}円
 ■ 収支: {summary["balance"]:+,.0f}円
@@ -298,9 +323,19 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
 ■ 高額支出（上位5件）:
 {chr(10).join(top_lines) if top_lines else "  データなし"}"""
 
+    # 月途中の場合はペース分析を指示に含める
+    if is_partial:
+        pace_instruction = (
+            f"このデータは{ym_month}月{elapsed_days}日時点（経過率{elapsed_pct}%）の途中経過です。"
+            f"月末時点の支出見込み（日割りペース換算）や、予算に対する消化ペースが適正かどうか（経過率{elapsed_pct}%に対して消化率が高すぎないか）にも触れてください。"
+        )
+    else:
+        pace_instruction = "このデータは月末確定データです。"
+
     return f"""{data_text}
 
 あなたは家計アドバイザーです。上記の家計簿データを分析し、3〜4文で簡潔にコメントしてください。
+{pace_instruction}
 支出の傾向、前月との比較、予算の消化状況、改善ポイントなどに触れてください。日本語で回答してください。"""
 
 
