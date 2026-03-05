@@ -10,9 +10,11 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 
 from src.db.repository import (
+    _current_fiscal_month,
+    _fiscal_month_range,
     get_budgets,
     get_cashflows,
     get_cf_available_months,
@@ -240,8 +242,6 @@ def _build_lifeplan_prompt(db_path: str, date: str) -> str:
 
 def _build_cf_prompt(db_path: str, year_month: str) -> str:
     """家計簿分析用のプロンプトを組み立てる。"""
-    import calendar
-
     conn = init_db(db_path)
     try:
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
@@ -256,21 +256,23 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
     if not summary:
         return ""
 
-    # 経過日数の計算
-    today = datetime.now()
-    ym_year, ym_month = int(year_month[:4]), int(year_month[5:7])
-    days_in_month = calendar.monthrange(ym_year, ym_month)[1]
-    today_ym = today.strftime("%Y-%m")
-    if year_month == today_ym:
-        elapsed_days = today.day
-        is_partial = elapsed_days < days_in_month
-    elif year_month < today_ym:
-        elapsed_days = days_in_month
+    # fiscal month の期間と経過日数を計算
+    today = date.today()
+    current_fm = _current_fiscal_month(closing_day, holiday_mode)
+    start_str, end_str = _fiscal_month_range(year_month, closing_day, holiday_mode)
+    start_date = date.fromisoformat(start_str)
+    end_date = date.fromisoformat(end_str)
+    total_days = (end_date - start_date).days + 1
+    if year_month == current_fm:
+        elapsed_days = (today - start_date).days + 1
+        is_partial = today <= end_date
+    elif year_month < current_fm:
+        elapsed_days = total_days
         is_partial = False
     else:
         elapsed_days = 0
         is_partial = True
-    elapsed_pct = round(elapsed_days / days_in_month * 100) if days_in_month else 0
+    elapsed_pct = round(elapsed_days / total_days * 100) if total_days else 0
 
     # カテゴリ別支出
     cat_lines = []
@@ -299,10 +301,11 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
     ]
 
     # 経過情報テキスト
+    period_info = f"{start_str}〜{end_str}（{total_days}日間）"
     if is_partial:
-        elapsed_text = f"■ 集計時点: {ym_year}年{ym_month}月{elapsed_days}日（{days_in_month}日中, 経過率{elapsed_pct}%）※月途中のデータ"
+        elapsed_text = f"■ 集計期間: {period_info}\n■ 経過: {elapsed_days}日目 / {total_days}日中（経過率{elapsed_pct}%）※月途中のデータ"
     else:
-        elapsed_text = f"■ 集計時点: {ym_year}年{ym_month}月（{days_in_month}日間, 月末確定データ）"
+        elapsed_text = f"■ 集計期間: {period_info}（月末確定データ）"
 
     data_text = f"""【家計簿データ ({year_month})】
 {elapsed_text}
@@ -326,7 +329,7 @@ def _build_cf_prompt(db_path: str, year_month: str) -> str:
     # 月途中の場合はペース分析を指示に含める
     if is_partial:
         pace_instruction = (
-            f"このデータは{ym_month}月{elapsed_days}日時点（経過率{elapsed_pct}%）の途中経過です。"
+            f"このデータは集計期間{total_days}日中{elapsed_days}日目（経過率{elapsed_pct}%）の途中経過です。"
             f"月末時点の支出見込み（日割りペース換算）や、予算に対する消化ペースが適正かどうか（経過率{elapsed_pct}%に対して消化率が高すぎないか）にも触れてください。"
         )
     else:

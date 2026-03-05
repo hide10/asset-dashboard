@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date
 from unittest.mock import patch
 
 from src.analysis import ai_comment
@@ -79,18 +79,21 @@ def _setup_cf_db(db_path, year_month="2026-03"):
 
 
 def test_build_cf_prompt_includes_elapsed_days_for_current_month(tmp_path):
-    """当月データの場合、プロンプトに経過日数・経過率が含まれること。"""
+    """当月データの場合、プロンプトに経過日数・経過率が含まれること（closing_day=1）。"""
     db_path = _setup_cf_db(tmp_path / "assets.db", "2026-03")
 
-    # datetime.now() を 3月10日に固定
-    fake_now = datetime(2026, 3, 10, 12, 0, 0)
-    with patch("src.analysis.ai_comment.datetime") as mock_dt:
-        mock_dt.now.return_value = fake_now
-        mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+    # date.today() を 3月10日に固定、fiscal month も "2026-03"
+    fake_today = date(2026, 3, 10)
+    with (
+        patch("src.analysis.ai_comment.date") as mock_date,
+        patch("src.analysis.ai_comment._current_fiscal_month", return_value="2026-03"),
+    ):
+        mock_date.today.return_value = fake_today
+        mock_date.fromisoformat = date.fromisoformat
         prompt = ai_comment._build_cf_prompt(db_path, "2026-03")
 
     assert "月途中のデータ" in prompt
-    assert "10日" in prompt
+    assert "10日目" in prompt
     assert "31日中" in prompt
     elapsed_pct = round(10 / 31 * 100)
     assert f"経過率{elapsed_pct}%" in prompt
@@ -101,12 +104,44 @@ def test_build_cf_prompt_past_month_is_confirmed(tmp_path):
     """過去月データの場合、月末確定データとして扱われること。"""
     db_path = _setup_cf_db(tmp_path / "assets.db", "2026-01")
 
-    fake_now = datetime(2026, 3, 10, 12, 0, 0)
-    with patch("src.analysis.ai_comment.datetime") as mock_dt:
-        mock_dt.now.return_value = fake_now
-        mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+    fake_today = date(2026, 3, 10)
+    with (
+        patch("src.analysis.ai_comment.date") as mock_date,
+        patch("src.analysis.ai_comment._current_fiscal_month", return_value="2026-03"),
+    ):
+        mock_date.today.return_value = fake_today
+        mock_date.fromisoformat = date.fromisoformat
         prompt = ai_comment._build_cf_prompt(db_path, "2026-01")
 
     assert "月末確定データ" in prompt
     assert "月途中" not in prompt
     assert "日割りペース" not in prompt
+
+
+def test_build_cf_prompt_closing_day_25(tmp_path):
+    """締め日25日の場合、fiscal month の期間で経過日数が計算されること。"""
+    # closing_day=25: "2026-03" の期間は 2026-02-25 〜 2026-03-24（28日間）
+    db_path = _setup_cf_db(tmp_path / "assets.db", "2026-03")
+    conn = ai_comment.init_db(db_path)
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('closing_day', '25')")
+    conn.commit()
+    conn.close()
+
+    # 今日=3/10、fiscal month="2026-03"、期間=2/25〜3/24
+    # 経過日数 = 3/10 - 2/25 + 1 = 14日目
+    fake_today = date(2026, 3, 10)
+    with (
+        patch("src.analysis.ai_comment.date") as mock_date,
+        patch("src.analysis.ai_comment._current_fiscal_month", return_value="2026-03"),
+    ):
+        mock_date.today.return_value = fake_today
+        mock_date.fromisoformat = date.fromisoformat
+        prompt = ai_comment._build_cf_prompt(db_path, "2026-03")
+
+    assert "月途中のデータ" in prompt
+    assert "14日目" in prompt
+    assert "28日中" in prompt
+    assert "2026-02-25" in prompt
+    assert "2026-03-24" in prompt
+    elapsed_pct = round(14 / 28 * 100)
+    assert f"経過率{elapsed_pct}%" in prompt
