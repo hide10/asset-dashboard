@@ -199,3 +199,12 @@ def get_all_codes() -> list[str]:
 def get_all_us_codes() -> list[str]:
     """US_STOCK_MASTER に登録された全ティッカーを返す。"""
     return list(US_STOCK_MASTER.keys())
+
+
+def get_usd_jpy() -> float:
+    """dividends.json に保存された USD/JPY レートを返す。なければ 150.0。"""
+    divs = _load_dividends()
+    for v in divs.values():
+        if isinstance(v, dict) and v.get("currency") == "USD" and v.get("usd_jpy"):
+            return float(v["usd_jpy"])
+    return 150.0

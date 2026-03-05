@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlparse
 from src.analysis.ai_comment import generate_comments, get_comment
 from src.analysis.compare import ComparisonResult, get_all_comparisons
 from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
-from src.data.stock_master import get_dividend, get_sector, is_us_stock
+from src.data.stock_master import get_dividend, get_sector, get_usd_jpy, is_us_stock
 from src.db.repository import (
     get_budgets,
     get_cashflows,
@@ -339,7 +339,7 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
     sector_totals = dict(sorted(sector_totals.items(), key=lambda x: x[1], reverse=True))
 
     # 配当予測（株式のみ）
-    usd_jpy = 150.0  # 米国株配当の円換算レート
+    usd_jpy = get_usd_jpy()
     dividends: list[dict] = []
     total_dividend = 0.0
     for h in holdings:
