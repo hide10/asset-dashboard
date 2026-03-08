@@ -24,6 +24,7 @@ from src.analysis.compare import ComparisonResult, get_all_comparisons
 from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
 from src.data.stock_master import get_dividend, get_sector, is_us_stock
 from src.db.repository import (
+    get_annual_life_event_expenses,
     get_budgets,
     get_cashflows,
     get_cf_actual_savings,
@@ -2082,6 +2083,23 @@ def _sanitize_simulator_params(params: dict) -> dict:
     return clean
 
 
+def _annual_event_expenses_by_age(
+    conn: sqlite3.Connection,
+    current_age: int,
+    end_age: int,
+) -> dict[int, float]:
+    """DBイベントを「年齢 -> 年次支出」へ変換する。"""
+    now_year = datetime.now().year
+    end_year = now_year + max(0, end_age - current_age)
+    by_year = get_annual_life_event_expenses(conn, start_year=now_year, end_year=end_year, include_children=True)
+    by_age: dict[int, float] = {}
+    for year, amount in by_year.items():
+        age = current_age + (year - now_year) + 1  # 年末時点の年齢
+        if current_age < age <= end_age:
+            by_age[age] = by_age.get(age, 0.0) + float(amount)
+    return by_age
+
+
 def _get_simulator_data(db_path: str) -> dict:
     """DB設定からシミュレーターパラメータを読み込み、シミュレーションを実行する。"""
     conn = get_connection(db_path)
@@ -2126,6 +2144,11 @@ def _get_simulator_data(db_path: str) -> dict:
                 with contextlib.suppress(ValueError, TypeError):
                     params["monthly_contribution"] = float(contrib)
             params = _sanitize_simulator_params(params)
+        annual_event_expenses = _annual_event_expenses_by_age(
+            conn=conn,
+            current_age=int(params["current_age"]),
+            end_age=int(params["end_age"]),
+        )
     finally:
         conn.close()
 
@@ -2144,6 +2167,7 @@ def _get_simulator_data(db_path: str) -> dict:
         pension_start_age=int(params["pension_start_age"]),
         monthly_pension=float(params["monthly_pension"]),
         other_monthly_income=float(params["other_monthly_income"]),
+        annual_event_expenses=annual_event_expenses,
         rng_seed=42,
     )
     return {"params": params, "result": result}
@@ -5706,6 +5730,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             try:
+                annual_event_expenses: dict[int, float] = {}
+                if not self.demo:
+                    conn = get_connection(self.db_path)
+                    try:
+                        annual_event_expenses = _annual_event_expenses_by_age(conn, current_age=ca, end_age=ea)
+                    finally:
+                        conn.close()
+
                 result = run_lifecycle_simulation(
                     current_age=ca,
                     retirement_age=ra,
@@ -5721,6 +5753,7 @@ class Handler(BaseHTTPRequestHandler):
                     pension_start_age=psa,
                     monthly_pension=mp,
                     other_monthly_income=omi,
+                    annual_event_expenses=annual_event_expenses,
                     rng_seed=42,
                 )
             except Exception as e:

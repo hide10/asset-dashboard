@@ -62,6 +62,7 @@
 - [x] 2026-03-08: DBスキーマ実装（life_events / children_profiles / life_plan_settings）
 - [x] 2026-03-08: Repository実装（CRUD / 教育費生成 / 年次イベント展開）
 - [x] 2026-03-08: シミュレーション関数に年次イベント支出入力口を追加
-- [x] 2026-03-08: 関連テスト通過（`tests/test_repository.py`, `tests/test_montecarlo.py`）
+- [x] 2026-03-08: サーバー連携（`_get_simulator_data` / `/api/simulator` がイベント支出を反映）
+- [x] 2026-03-08: 関連テスト通過（`tests/test_repository.py`, `tests/test_montecarlo.py`, `tests/test_server_html.py`）
 - [ ] UI実装
 - [ ] テスト追加
