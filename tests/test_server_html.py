@@ -556,6 +556,10 @@ class TestAiChatExport:
         assert "統合データです。総合的に分析し" in md
         assert "優先順位付きで改善アクションを提案してください" in md
         assert md.count("以下の観点で") == 0
+        assert "# 資産データ（" not in md
+        assert "# 家計簿データ（" not in md
+        assert "# ライフプランデータ（" not in md
+        assert "# ライフサイクル・シミュレーション結果" not in md
 
 
 class TestClosingDaySetting:

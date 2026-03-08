@@ -5350,11 +5350,20 @@ class Handler(BaseHTTPRequestHandler):
             """個別プロンプト末尾の依頼文（---以降）を除去してデータ部のみ残す。"""
             return text.rsplit("\n---\n", 1)[0].strip()
 
+        def _strip_leading_title(text: str) -> str:
+            """先頭見出し（# ...）を1行だけ除去して統合時の重複を防ぐ。"""
+            lines = text.splitlines()
+            if lines and lines[0].startswith("# "):
+                lines = lines[1:]
+                while lines and lines[0] == "":
+                    lines = lines[1:]
+            return "\n".join(lines).strip()
+
         sections = [
-            ("資産分析", _strip_section_instruction(self._ai_prompt_asset(conn))),
-            ("家計簿分析", _strip_section_instruction(self._ai_prompt_cf(conn))),
-            ("ライフプラン", _strip_section_instruction(self._ai_prompt_plan(conn))),
-            ("シミュレーター", _strip_section_instruction(self._ai_prompt_simulator())),
+            ("資産分析", _strip_leading_title(_strip_section_instruction(self._ai_prompt_asset(conn)))),
+            ("家計簿分析", _strip_leading_title(_strip_section_instruction(self._ai_prompt_cf(conn)))),
+            ("ライフプラン", _strip_leading_title(_strip_section_instruction(self._ai_prompt_plan(conn)))),
+            ("シミュレーター", _strip_leading_title(_strip_section_instruction(self._ai_prompt_simulator()))),
         ]
 
         lines = ["# AI相談用データ（全種類）", ""]
