@@ -13,6 +13,12 @@ from src.db.repository import (
     _current_fiscal_month,
     _fiscal_month_range,
     _japanese_holidays,
+    build_education_events_for_child,
+    create_child_profile,
+    create_life_event,
+    delete_child_profile,
+    delete_life_event,
+    get_annual_life_event_expenses,
     get_cf_actual_savings,
     get_cf_available_months,
     get_cf_category_summary,
@@ -22,6 +28,12 @@ from src.db.repository import (
     get_cf_income_breakdown,
     get_cf_income_trend,
     get_cf_monthly_trend,
+    get_life_plan_inflation_rate,
+    list_children_profiles,
+    list_life_events,
+    save_life_plan_inflation_rate,
+    update_child_profile,
+    update_life_event,
 )
 from src.db.schema import init_db
 
@@ -1065,3 +1077,153 @@ class TestGetFundTotalHistory:
         # 2025-10-15 の total_value に株式の100万は含まれない
         day15 = [r for r in result if r["date"] == "2025-10-15"][0]
         assert day15["total_value"] == 3_650_000  # ファンドA+B のみ
+
+
+class TestLifePlanSettings:
+    def test_inflation_rate_default(self, tmp_path):
+        conn = init_db(str(tmp_path / "life.db"))
+        rate = get_life_plan_inflation_rate(conn)
+        conn.close()
+        assert rate == pytest.approx(0.01)
+
+    def test_inflation_rate_save_and_load(self, tmp_path):
+        conn = init_db(str(tmp_path / "life.db"))
+        save_life_plan_inflation_rate(conn, 0.025)
+        rate = get_life_plan_inflation_rate(conn)
+        conn.close()
+        assert rate == pytest.approx(0.025)
+
+
+class TestLifeEventsCrud:
+    def test_create_update_delete_life_event(self, tmp_path):
+        conn = init_db(str(tmp_path / "life.db"))
+        event_id = create_life_event(
+            conn=conn,
+            event_type="recurring",
+            title="車買い替え",
+            amount=2_000_000,
+            start_year=2028,
+            repeat_every_years=5,
+            end_year=2040,
+            note="テスト",
+        )
+        events = list_life_events(conn)
+        assert len(events) == 1
+        assert events[0]["id"] == event_id
+        assert events[0]["title"] == "車買い替え"
+
+        update_life_event(
+            conn=conn,
+            event_id=event_id,
+            event_type="recurring",
+            title="車買い替え(更新)",
+            amount=2_200_000,
+            start_year=2029,
+            repeat_every_years=4,
+            end_year=2041,
+            enabled=True,
+            note="更新",
+        )
+        updated = list_life_events(conn)[0]
+        assert updated["title"] == "車買い替え(更新)"
+        assert updated["amount"] == 2_200_000
+        assert updated["repeat_every_years"] == 4
+
+        delete_life_event(conn, event_id)
+        assert list_life_events(conn) == []
+        conn.close()
+
+    def test_enabled_only_filter(self, tmp_path):
+        conn = init_db(str(tmp_path / "life.db"))
+        create_life_event(conn, "one_time", "旅行", 500_000, 2027, enabled=True)
+        create_life_event(conn, "one_time", "無効イベント", 100_000, 2027, enabled=False)
+        enabled = list_life_events(conn, enabled_only=True)
+        conn.close()
+        assert len(enabled) == 1
+        assert enabled[0]["title"] == "旅行"
+
+
+class TestChildrenProfiles:
+    def test_create_update_delete_child_profile(self, tmp_path):
+        conn = init_db(str(tmp_path / "child.db"))
+        cid = create_child_profile(
+            conn,
+            name="長女",
+            birth_year=2020,
+            birth_month=4,
+            education_plan={"elementary": "private"},
+        )
+        items = list_children_profiles(conn)
+        assert len(items) == 1
+        assert items[0]["id"] == cid
+        assert items[0]["education_plan"]["elementary"] == "private"
+
+        update_child_profile(
+            conn,
+            child_id=cid,
+            name="長女(更新)",
+            birth_year=2020,
+            birth_month=5,
+            education_plan={"university": "private_science"},
+            enabled=True,
+        )
+        updated = list_children_profiles(conn)[0]
+        assert updated["name"] == "長女(更新)"
+        assert updated["birth_month"] == 5
+        assert updated["education_plan"]["university"] == "private_science"
+
+        delete_child_profile(conn, cid)
+        assert list_children_profiles(conn) == []
+        conn.close()
+
+
+class TestEducationEvents:
+    def test_build_education_events_for_child(self):
+        child = {
+            "id": 1,
+            "name": "長男",
+            "birth_year": 2020,
+            "birth_month": 4,
+            "education_plan": {
+                "kindergarten": "public",
+                "elementary": "private",
+                "junior_high": "public",
+                "high_school": "public",
+                "university": "private_humanities",
+            },
+            "enabled": True,
+        }
+        events = build_education_events_for_child(
+            child=child,
+            start_year=2024,
+            end_year=2032,
+            inflation_rate=0.0,
+            base_year=2024,
+        )
+        years = sorted({e["start_year"] for e in events})
+        assert years[0] == 2024
+        assert years[-1] == 2032
+        elementary = [e for e in events if e["start_year"] == 2026][0]
+        assert elementary["amount"] == pytest.approx(1_600_000)
+
+    def test_get_annual_life_event_expenses_includes_children(self, tmp_path):
+        conn = init_db(str(tmp_path / "life.db"))
+        save_life_plan_inflation_rate(conn, 0.0)
+        create_life_event(
+            conn=conn,
+            event_type="one_time",
+            title="住宅リフォーム",
+            amount=3_000_000,
+            start_year=2030,
+        )
+        create_child_profile(
+            conn=conn,
+            name="長女",
+            birth_year=2020,
+            birth_month=4,
+            education_plan={"elementary": "private"},
+        )
+        annual = get_annual_life_event_expenses(conn, start_year=2029, end_year=2031, include_children=True)
+        conn.close()
+        assert 2030 in annual
+        assert annual[2030] >= 3_000_000

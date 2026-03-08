@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from datetime import date as date_cls
@@ -143,6 +144,369 @@ def get_budgets(conn: sqlite3.Connection) -> dict[str, int]:
 def save_budgets(conn: sqlite3.Connection, budgets: dict[str, int]) -> None:
     """月間予算を保存する。"""
     save_setting(conn, "monthly_budgets", json.dumps(budgets, ensure_ascii=False))
+
+
+# --- ライフイベント（ライフプラン） ---
+
+EDUCATION_STAGE_RULES = [
+    ("kindergarten", "保育園・幼稚園", 3, 5, {"public": 300_000, "private": 500_000}),
+    ("elementary", "小学校", 6, 11, {"public": 350_000, "private": 1_600_000}),
+    ("junior_high", "中学校", 12, 14, {"public": 500_000, "private": 1_400_000}),
+    ("high_school", "高校", 15, 17, {"public": 500_000, "private": 1_000_000}),
+    (
+        "university",
+        "大学",
+        18,
+        21,
+        {
+            "public": 1_000_000,
+            "private_humanities": 1_500_000,
+            "private_science": 2_000_000,
+        },
+    ),
+]
+
+DEFAULT_EDUCATION_PLAN = {
+    "kindergarten": "public",
+    "elementary": "public",
+    "junior_high": "public",
+    "high_school": "public",
+    "university": "public",
+}
+
+
+def get_life_plan_inflation_rate(conn: sqlite3.Connection, default: float = 0.01) -> float:
+    """ライフプランのグローバル物価上昇率を返す。"""
+    row = conn.execute("SELECT inflation_rate FROM life_plan_settings WHERE id = 1").fetchone()
+    if not row:
+        return default
+    with contextlib.suppress(ValueError, TypeError):
+        return float(row[0])
+    return default
+
+
+def save_life_plan_inflation_rate(conn: sqlite3.Connection, inflation_rate: float) -> None:
+    """ライフプランのグローバル物価上昇率を保存する。"""
+    rate = max(0.0, min(0.10, float(inflation_rate)))
+    conn.execute(
+        """
+        INSERT INTO life_plan_settings (id, inflation_rate, updated_at)
+        VALUES (1, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+            inflation_rate = excluded.inflation_rate,
+            updated_at = datetime('now')
+        """,
+        (rate,),
+    )
+    conn.commit()
+
+
+def list_life_events(conn: sqlite3.Connection, enabled_only: bool = False) -> list[dict]:
+    """ライフイベント一覧を返す。"""
+    where = "WHERE enabled = 1" if enabled_only else ""
+    rows = conn.execute(
+        f"""
+        SELECT id, event_type, title, amount, start_year, repeat_every_years, end_year, enabled, note
+        FROM life_events
+        {where}
+        ORDER BY start_year ASC, id ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "event_type": r[1],
+            "title": r[2],
+            "amount": float(r[3]),
+            "start_year": int(r[4]),
+            "repeat_every_years": int(r[5]) if r[5] is not None else None,
+            "end_year": int(r[6]) if r[6] is not None else None,
+            "enabled": bool(r[7]),
+            "note": r[8] or "",
+        }
+        for r in rows
+    ]
+
+
+def create_life_event(
+    conn: sqlite3.Connection,
+    event_type: str,
+    title: str,
+    amount: float,
+    start_year: int,
+    repeat_every_years: int | None = None,
+    end_year: int | None = None,
+    enabled: bool = True,
+    note: str = "",
+) -> int:
+    """ライフイベントを作成し、id を返す。"""
+    cur = conn.execute(
+        """
+        INSERT INTO life_events
+            (event_type, title, amount, start_year, repeat_every_years, end_year, enabled, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_type,
+            title.strip(),
+            float(amount),
+            int(start_year),
+            int(repeat_every_years) if repeat_every_years else None,
+            int(end_year) if end_year else None,
+            1 if enabled else 0,
+            note.strip(),
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def update_life_event(
+    conn: sqlite3.Connection,
+    event_id: int,
+    event_type: str,
+    title: str,
+    amount: float,
+    start_year: int,
+    repeat_every_years: int | None = None,
+    end_year: int | None = None,
+    enabled: bool = True,
+    note: str = "",
+) -> None:
+    """ライフイベントを更新する。"""
+    conn.execute(
+        """
+        UPDATE life_events
+        SET event_type = ?, title = ?, amount = ?, start_year = ?, repeat_every_years = ?, end_year = ?, enabled = ?, note = ?
+        WHERE id = ?
+        """,
+        (
+            event_type,
+            title.strip(),
+            float(amount),
+            int(start_year),
+            int(repeat_every_years) if repeat_every_years else None,
+            int(end_year) if end_year else None,
+            1 if enabled else 0,
+            note.strip(),
+            int(event_id),
+        ),
+    )
+    conn.commit()
+
+
+def delete_life_event(conn: sqlite3.Connection, event_id: int) -> None:
+    """ライフイベントを削除する。"""
+    conn.execute("DELETE FROM life_events WHERE id = ?", (int(event_id),))
+    conn.commit()
+
+
+def list_children_profiles(conn: sqlite3.Connection, enabled_only: bool = False) -> list[dict]:
+    """子どもプロフィール一覧を返す。"""
+    where = "WHERE enabled = 1" if enabled_only else ""
+    rows = conn.execute(
+        f"""
+        SELECT id, name, birth_year, birth_month, education_plan_json, enabled
+        FROM children_profiles
+        {where}
+        ORDER BY birth_year ASC, birth_month ASC, id ASC
+        """
+    ).fetchall()
+    items: list[dict] = []
+    for r in rows:
+        raw = r[4] or "{}"
+        try:
+            plan = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            plan = {}
+        merged_plan = dict(DEFAULT_EDUCATION_PLAN)
+        merged_plan.update({k: v for k, v in plan.items() if isinstance(v, str)})
+        items.append(
+            {
+                "id": int(r[0]),
+                "name": r[1],
+                "birth_year": int(r[2]),
+                "birth_month": int(r[3]),
+                "education_plan": merged_plan,
+                "enabled": bool(r[5]),
+            }
+        )
+    return items
+
+
+def create_child_profile(
+    conn: sqlite3.Connection,
+    name: str,
+    birth_year: int,
+    birth_month: int,
+    education_plan: dict | None = None,
+    enabled: bool = True,
+) -> int:
+    """子どもプロフィールを作成し、id を返す。"""
+    plan = dict(DEFAULT_EDUCATION_PLAN)
+    if education_plan:
+        plan.update({k: v for k, v in education_plan.items() if isinstance(v, str)})
+    cur = conn.execute(
+        """
+        INSERT INTO children_profiles (name, birth_year, birth_month, education_plan_json, enabled)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            name.strip(),
+            int(birth_year),
+            max(1, min(12, int(birth_month))),
+            json.dumps(plan, ensure_ascii=False),
+            1 if enabled else 0,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def update_child_profile(
+    conn: sqlite3.Connection,
+    child_id: int,
+    name: str,
+    birth_year: int,
+    birth_month: int,
+    education_plan: dict | None = None,
+    enabled: bool = True,
+) -> None:
+    """子どもプロフィールを更新する。"""
+    plan = dict(DEFAULT_EDUCATION_PLAN)
+    if education_plan:
+        plan.update({k: v for k, v in education_plan.items() if isinstance(v, str)})
+    conn.execute(
+        """
+        UPDATE children_profiles
+        SET name = ?, birth_year = ?, birth_month = ?, education_plan_json = ?, enabled = ?
+        WHERE id = ?
+        """,
+        (
+            name.strip(),
+            int(birth_year),
+            max(1, min(12, int(birth_month))),
+            json.dumps(plan, ensure_ascii=False),
+            1 if enabled else 0,
+            int(child_id),
+        ),
+    )
+    conn.commit()
+
+
+def delete_child_profile(conn: sqlite3.Connection, child_id: int) -> None:
+    """子どもプロフィールを削除する。"""
+    conn.execute("DELETE FROM children_profiles WHERE id = ?", (int(child_id),))
+    conn.commit()
+
+
+def build_education_events_for_child(
+    child: dict,
+    start_year: int,
+    end_year: int,
+    inflation_rate: float = 0.0,
+    base_year: int | None = None,
+) -> list[dict]:
+    """子どもプロフィールから教育費イベント（年次）を生成する。"""
+    if base_year is None:
+        base_year = date_cls.today().year
+
+    birth_year = int(child["birth_year"])
+    name = (child.get("name") or "").strip() or f"子ども{child.get('id', '')}"
+    plan = dict(DEFAULT_EDUCATION_PLAN)
+    plan.update(child.get("education_plan") or {})
+
+    events: list[dict] = []
+    for year in range(start_year, end_year + 1):
+        age = year - birth_year
+        for stage_key, stage_label, min_age, max_age, costs in EDUCATION_STAGE_RULES:
+            if not (min_age <= age <= max_age):
+                continue
+            option = plan.get(stage_key, "public")
+            base_cost = costs.get(option, costs.get("public", 0))
+            amount = float(base_cost) * ((1 + inflation_rate) ** max(0, year - base_year))
+            events.append(
+                {
+                    "event_type": "education",
+                    "title": f"{name} 教育費（{stage_label}）",
+                    "amount": amount,
+                    "start_year": year,
+                    "repeat_every_years": None,
+                    "end_year": year,
+                    "enabled": True,
+                    "note": stage_key,
+                }
+            )
+            break
+    return events
+
+
+def expand_life_events_by_year(
+    events: list[dict],
+    start_year: int,
+    end_year: int,
+    inflation_rate: float = 0.0,
+    base_year: int | None = None,
+) -> dict[int, float]:
+    """イベントを年次支出マップへ展開する。"""
+    if base_year is None:
+        base_year = date_cls.today().year
+
+    annual: dict[int, float] = {}
+    for ev in events:
+        if not ev.get("enabled", True):
+            continue
+        first_year = int(ev.get("start_year", start_year))
+        repeat = ev.get("repeat_every_years")
+        repeat_years = int(repeat) if repeat not in (None, 0, "") else None
+        until = ev.get("end_year")
+        last_year = int(until) if until not in (None, "") else end_year
+        last_year = min(last_year, end_year)
+        amount_base = max(0.0, float(ev.get("amount", 0.0)))
+
+        if repeat_years is None:
+            years = [first_year]
+        else:
+            years = list(range(first_year, last_year + 1, repeat_years))
+
+        for year in years:
+            if year < start_year or year > end_year:
+                continue
+            amount = amount_base * ((1 + inflation_rate) ** max(0, year - base_year))
+            annual[year] = annual.get(year, 0.0) + amount
+    return annual
+
+
+def get_annual_life_event_expenses(
+    conn: sqlite3.Connection,
+    start_year: int,
+    end_year: int,
+    include_children: bool = True,
+) -> dict[int, float]:
+    """DB上の有効イベントを年次支出マップに集約する。"""
+    inflation_rate = get_life_plan_inflation_rate(conn)
+    base_year = date_cls.today().year
+
+    events = list_life_events(conn, enabled_only=True)
+    if include_children:
+        for child in list_children_profiles(conn, enabled_only=True):
+            events.extend(
+                build_education_events_for_child(
+                    child=child,
+                    start_year=start_year,
+                    end_year=end_year,
+                    inflation_rate=inflation_rate,
+                    base_year=base_year,
+                )
+            )
+
+    return expand_life_events_by_year(
+        events=events,
+        start_year=start_year,
+        end_year=end_year,
+        inflation_rate=inflation_rate,
+        base_year=base_year,
+    )
 
 
 # --- CF (家計簿) ---

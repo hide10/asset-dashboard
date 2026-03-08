@@ -82,6 +82,34 @@ CREATE TABLE IF NOT EXISTS cf_csv_months (
     fetched     TEXT NOT NULL,
     row_count   INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS life_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type          TEXT NOT NULL,             -- one_time / recurring / education
+    title               TEXT NOT NULL,
+    amount              REAL NOT NULL,             -- 基準年の年額（円）
+    start_year          INTEGER NOT NULL,
+    repeat_every_years  INTEGER,                   -- NULL or 0: 単発
+    end_year            INTEGER,                   -- NULL: 無期限
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    note                TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_life_events_start_year ON life_events(start_year);
+
+CREATE TABLE IF NOT EXISTS children_profiles (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL,
+    birth_year          INTEGER NOT NULL,
+    birth_month         INTEGER NOT NULL,
+    education_plan_json TEXT NOT NULL DEFAULT '{}', -- JSON: {"kindergarten":"public", ...}
+    enabled             INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS life_plan_settings (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    inflation_rate REAL NOT NULL DEFAULT 0.01,
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -110,6 +138,11 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN unrealized_gain REAL")
     if "unrealized_gain_pct" not in cols:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN unrealized_gain_pct REAL")
+
+    # ライフプラン設定の初期行
+    conn.execute(
+        "INSERT OR IGNORE INTO life_plan_settings (id, inflation_rate, updated_at) VALUES (1, 0.01, datetime('now'))"
+    )
     conn.commit()
 
     return conn

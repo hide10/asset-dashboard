@@ -195,3 +195,36 @@ class TestLifecycleSimulation:
             assert "p75" in yb
             assert "p90" in yb
             assert yb["p10"] <= yb["p25"] <= yb["p50"] <= yb["p75"] <= yb["p90"]
+
+    def test_annual_event_expenses_reduce_final_balance(self):
+        """年次イベント支出を与えると最終残高が減る。"""
+        baseline = run_lifecycle_simulation(
+            current_age=35,
+            retirement_age=65,
+            end_age=70,
+            initial_investment=10_000_000,
+            monthly_contribution=50_000,
+            annual_return=0.05,
+            annual_volatility=0.15,
+            monthly_withdrawal=150_000,
+            simulations=400,
+            rng_seed=42,
+        )
+        with_events = run_lifecycle_simulation(
+            current_age=35,
+            retirement_age=65,
+            end_age=70,
+            initial_investment=10_000_000,
+            monthly_contribution=50_000,
+            annual_return=0.05,
+            annual_volatility=0.15,
+            monthly_withdrawal=150_000,
+            annual_event_expenses={
+                40: 2_000_000,
+                45: 2_000_000,
+                50: 2_000_000,
+            },
+            simulations=400,
+            rng_seed=42,
+        )
+        assert with_events.net_final < baseline.net_final

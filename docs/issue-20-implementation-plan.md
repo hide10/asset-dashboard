@@ -59,8 +59,9 @@
 ## 進捗ログ
 - [x] 2026-03-08: 仕様合意（年次減算 / 教育費含む / 物価上昇率グローバル）
 - [x] 2026-03-08: 実装計画メモ作成
-- [ ] DBスキーマ実装
-- [ ] Repository実装
-- [ ] シミュレーション統合
+- [x] 2026-03-08: DBスキーマ実装（life_events / children_profiles / life_plan_settings）
+- [x] 2026-03-08: Repository実装（CRUD / 教育費生成 / 年次イベント展開）
+- [x] 2026-03-08: シミュレーション関数に年次イベント支出入力口を追加
+- [x] 2026-03-08: 関連テスト通過（`tests/test_repository.py`, `tests/test_montecarlo.py`）
 - [ ] UI実装
 - [ ] テスト追加
