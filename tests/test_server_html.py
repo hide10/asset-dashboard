@@ -711,7 +711,10 @@ class TestSimulator:
         """/api/simulator が JS 内に含まれる。"""
         assert "/api/simulator" in self.html
         assert "/api/life-events" in self.html
+        assert "/api/life-events/update" in self.html
         assert "/api/children" in self.html
+        assert "/api/children/update" in self.html
+        assert "/api/children/update-plan" in self.html
         assert "/api/life-settings" in self.html
 
     def test_life_event_section_labels(self):
@@ -719,6 +722,8 @@ class TestSimulator:
         assert "ライフイベント管理" in self.html
         assert "イベント追加" in self.html
         assert "子ども登録（教育費自動反映）" in self.html
+        assert "イベント影響（最終残高差）" in self.html
+        assert "期間内イベント支出合計" in self.html
 
     def test_summary_values_displayed(self):
         """財務サマリーの値が表示される。"""
