@@ -5348,7 +5348,7 @@ class Handler(BaseHTTPRequestHandler):
 
         def _strip_section_instruction(text: str) -> str:
             """個別プロンプト末尾の依頼文（---以降）を除去してデータ部のみ残す。"""
-            return text.split("\n---\n", 1)[0].strip()
+            return text.rsplit("\n---\n", 1)[0].strip()
 
         sections = [
             ("資産分析", _strip_section_instruction(self._ai_prompt_asset(conn))),
