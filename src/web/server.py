@@ -3735,6 +3735,10 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
     </p>
     <div style="display:flex;flex-direction:column;gap:8px">
       <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:0.85rem;width:140px">一括コピー（総合分析）</span>
+        <button class="btn" style="font-size:0.8rem;padding:5px 12px" onclick="copyAiPrompt('all',this)">コピー</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:0.85rem;width:140px">資産分析</span>
         <button class="btn" style="font-size:0.8rem;padding:5px 12px" onclick="copyAiPrompt('asset',this)">コピー</button>
       </div>
@@ -5326,7 +5330,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._ai_prompt_simulator()
         conn = get_connection(self.db_path)
         try:
-            if prompt_type == "asset":
+            if prompt_type == "all":
+                return self._ai_prompt_all(conn)
+            elif prompt_type == "asset":
                 return self._ai_prompt_asset(conn)
             elif prompt_type == "cf":
                 return self._ai_prompt_cf(conn)
@@ -5336,6 +5342,34 @@ class Handler(BaseHTTPRequestHandler):
                 return "不明なタイプです。"
         finally:
             conn.close()
+
+    def _ai_prompt_all(self, conn: sqlite3.Connection) -> str:
+        """AI相談用データ（全種類）を1つのMarkdownにまとめる。"""
+
+        def _strip_section_instruction(text: str) -> str:
+            """個別プロンプト末尾の依頼文（---以降）を除去してデータ部のみ残す。"""
+            return text.split("\n---\n", 1)[0].strip()
+
+        sections = [
+            ("資産分析", _strip_section_instruction(self._ai_prompt_asset(conn))),
+            ("家計簿分析", _strip_section_instruction(self._ai_prompt_cf(conn))),
+            ("ライフプラン", _strip_section_instruction(self._ai_prompt_plan(conn))),
+            ("シミュレーター", _strip_section_instruction(self._ai_prompt_simulator())),
+        ]
+
+        lines = ["# AI相談用データ（全種類）", ""]
+        for i, (title, text) in enumerate(sections):
+            if i > 0:
+                lines += ["", "---", ""]
+            lines += [f"## {title}", "", text.strip()]
+        lines += [
+            "",
+            "---",
+            "",
+            "上記は私の資産・家計簿・ライフプラン・シミュレーションの統合データです。総合的に分析し、",
+            "優先順位付きで改善アクションを提案してください（短期: 3ヶ月 / 中期: 1年 / 長期: 3年以上）。",
+        ]
+        return "\n".join(lines)
 
     def _ai_prompt_asset(self, conn: sqlite3.Connection) -> str:
         """資産分析用プロンプトを生成する。"""

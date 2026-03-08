@@ -10,6 +10,7 @@ import pytest
 
 from src.db.schema import init_db
 from src.web.server import (
+    Handler,
     _build_ai_prompt_simulator,
     _build_cf_html,
     _build_html,
@@ -499,6 +500,8 @@ class TestAiChatExport:
     def test_settings_has_copy_buttons(self, tmp_path):
         html = _build_settings_html_for_test(tmp_path)
         assert "copyAiPrompt" in html
+        assert "一括コピー（総合分析）" in html
+        assert "copyAiPrompt('all',this)" in html
         assert "資産分析" in html
         assert "家計簿分析" in html
         assert "ライフプラン" in html
@@ -536,6 +539,23 @@ class TestAiChatExport:
         assert "95歳" in md
         # 退職年齢（65歳）が含まれる
         assert "65歳" in md
+
+    def test_all_prompt_has_single_integrated_instruction(self, tmp_path):
+        db_path = tmp_path / "all_prompt_test.db"
+        conn = init_db(str(db_path))
+        conn.close()
+
+        handler = Handler.__new__(Handler)
+        handler.db_path = str(db_path)
+        md = Handler._build_ai_prompt(handler, "all")
+
+        assert "## 資産分析" in md
+        assert "## 家計簿分析" in md
+        assert "## ライフプラン" in md
+        assert "## シミュレーター" in md
+        assert "統合データです。総合的に分析し" in md
+        assert "優先順位付きで改善アクションを提案してください" in md
+        assert md.count("以下の観点で") == 0
 
 
 class TestClosingDaySetting:
