@@ -24,6 +24,10 @@ from src.analysis.compare import ComparisonResult, get_all_comparisons
 from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
 from src.data.stock_master import get_dividend, get_sector, is_us_stock
 from src.db.repository import (
+    create_child_profile,
+    create_life_event,
+    delete_child_profile,
+    delete_life_event,
     get_annual_life_event_expenses,
     get_budgets,
     get_cashflows,
@@ -38,10 +42,14 @@ from src.db.repository import (
     get_cf_monthly_trend,
     get_daily_assets,
     get_fund_total_history,
+    get_life_plan_inflation_rate,
     get_setting,
+    list_children_profiles,
+    list_life_events,
     save_budgets,
     save_cf_csv_month,
     save_cf_transactions,
+    save_life_plan_inflation_rate,
     save_setting,
 )
 from src.db.schema import get_connection, init_db
@@ -2034,7 +2042,14 @@ def _demo_simulator_data() -> dict:
     params["safe_value"] = 9_970_000  # _demo_plan_data() の safe_value
     params["monthly_contribution"] = 50_000  # _demo_plan_data() の monthly_contribution
     result = run_lifecycle_simulation(**params, rng_seed=42)
-    return {"params": params, "result": result}
+    return {
+        "params": params,
+        "result": result,
+        "life_events": [],
+        "children_profiles": [],
+        "life_inflation_rate": 0.01,
+        "annual_event_expenses_by_age": {},
+    }
 
 
 def _sanitize_simulator_params(params: dict) -> dict:
@@ -2149,6 +2164,9 @@ def _get_simulator_data(db_path: str) -> dict:
             current_age=int(params["current_age"]),
             end_age=int(params["end_age"]),
         )
+        life_events = list_life_events(conn, enabled_only=False)
+        children_profiles = list_children_profiles(conn, enabled_only=False)
+        life_inflation_rate = get_life_plan_inflation_rate(conn)
     finally:
         conn.close()
 
@@ -2170,7 +2188,14 @@ def _get_simulator_data(db_path: str) -> dict:
         annual_event_expenses=annual_event_expenses,
         rng_seed=42,
     )
-    return {"params": params, "result": result}
+    return {
+        "params": params,
+        "result": result,
+        "life_events": life_events,
+        "children_profiles": children_profiles,
+        "life_inflation_rate": life_inflation_rate,
+        "annual_event_expenses_by_age": annual_event_expenses,
+    }
 
 
 def _build_ai_prompt_simulator(data: dict) -> str:
@@ -2252,6 +2277,10 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     """シミュレーターページの HTML を生成する。"""
     params = data["params"]
     result: SimulatorResult = data["result"]
+    life_events = data.get("life_events", [])
+    children_profiles = data.get("children_profiles", [])
+    life_inflation_rate = float(data.get("life_inflation_rate", 0.01))
+    annual_event_expenses_by_age = data.get("annual_event_expenses_by_age", {})
 
     # パラメータ表示用
     def _fmt_money(v: float) -> str:
@@ -2423,6 +2452,93 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
       </div>
     </div>"""
 
+    event_rows = ""
+    for ev in life_events:
+        repeat = f"{ev['repeat_every_years']}年ごと" if ev.get("repeat_every_years") else "単発"
+        end_year = ev.get("end_year") if ev.get("end_year") is not None else "-"
+        event_rows += (
+            "<tr>"
+            f"<td>{_h(ev['title'])}</td>"
+            f"<td class='num'>{ev['amount']:,.0f}円</td>"
+            f"<td class='num'>{ev['start_year']}</td>"
+            f"<td>{repeat}</td>"
+            f"<td class='num'>{end_year}</td>"
+            f"<td><button class='btn btn-danger-sm' onclick='deleteLifeEvent({int(ev['id'])})'>削除</button></td>"
+            "</tr>"
+        )
+    if not event_rows:
+        event_rows = "<tr><td colspan='6' style='color:#999'>イベント未登録</td></tr>"
+
+    child_rows = ""
+    for ch in children_profiles:
+        child_rows += (
+            "<tr>"
+            f"<td>{_h(ch['name'])}</td>"
+            f"<td class='num'>{int(ch['birth_year'])}/{int(ch['birth_month']):02d}</td>"
+            f"<td><button class='btn btn-danger-sm' onclick='deleteChildProfile({int(ch['id'])})'>削除</button></td>"
+            "</tr>"
+        )
+    if not child_rows:
+        child_rows = "<tr><td colspan='3' style='color:#999'>子ども未登録</td></tr>"
+
+    expense_rows = ""
+    for age, amount in sorted((int(k), float(v)) for k, v in annual_event_expenses_by_age.items()):
+        expense_rows += f"<tr><td class='num'>{age}歳</td><td class='num'>{amount:,.0f}円</td></tr>"
+    if not expense_rows:
+        expense_rows = "<tr><td colspan='2' style='color:#999'>該当期間のイベント支出なし</td></tr>"
+
+    life_events_html = f"""
+    <div class="card full" data-card-id="life-events">
+      <div class="card-header">
+        <h2>ライフイベント管理</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div class="sim-param-grid">
+          <div class="sim-param-section">
+            <h3>イベント追加</h3>
+            <div class="sim-field"><label>タイトル</label><input id="le-title" type="text" class="text-input" placeholder="例: 車買い替え"></div>
+            <div class="sim-field"><label>金額（円）</label><input id="le-amount" type="text" class="money-input" value="2,000,000"></div>
+            <div class="sim-input-row">
+              <div class="sim-field" style="flex:1"><label>開始年</label><input id="le-start-year" type="number" class="stepper-input" min="2000" max="2200" value="{datetime.now().year + 2}"></div>
+              <div class="sim-field" style="flex:1"><label>繰返し年数（0=単発）</label><input id="le-repeat" type="number" class="stepper-input" min="0" max="30" value="0"></div>
+            </div>
+            <div class="sim-field"><label>終了年（任意）</label><input id="le-end-year" type="number" class="stepper-input" min="2000" max="2200" value=""></div>
+            <button class="btn" onclick="createLifeEvent()">イベント追加</button>
+          </div>
+          <div class="sim-param-section">
+            <h3>子ども登録（教育費自動反映）</h3>
+            <div class="sim-field"><label>名前</label><input id="ch-name" type="text" class="text-input" placeholder="例: 長女"></div>
+            <div class="sim-input-row">
+              <div class="sim-field" style="flex:1"><label>生年</label><input id="ch-birth-year" type="number" class="stepper-input" min="1980" max="2100" value="{datetime.now().year - 5}"></div>
+              <div class="sim-field" style="flex:1"><label>生月</label><input id="ch-birth-month" type="number" class="stepper-input" min="1" max="12" value="4"></div>
+            </div>
+            <button class="btn" onclick="createChildProfile()">子ども追加</button>
+            <div class="sim-field" style="margin-top:16px">
+              <label>物価上昇率（グローバル）</label>
+              <div class="sim-input-row">
+                <input id="life-inflation-rate" type="range" min="0" max="0.1" step="0.001" value="{life_inflation_rate}" oninput="document.getElementById('life-inflation-rate-val').textContent=(this.value*100).toFixed(1)">
+                <span id="life-inflation-rate-val">{life_inflation_rate * 100:.1f}</span><span class="sim-unit">%</span>
+                <button class="btn" onclick="saveLifeInflationRate()">保存</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+          <div>
+            <h3 style="font-size:0.9rem;margin-bottom:8px">イベント一覧</h3>
+            <table class="pred-table"><tr><th>名称</th><th class="num">金額</th><th class="num">開始年</th><th>頻度</th><th class="num">終了年</th><th>操作</th></tr>{event_rows}</table>
+          </div>
+          <div>
+            <h3 style="font-size:0.9rem;margin-bottom:8px">子ども一覧</h3>
+            <table class="pred-table"><tr><th>名前</th><th class="num">生年月</th><th>操作</th></tr>{child_rows}</table>
+            <h3 style="font-size:0.9rem;margin:12px 0 8px">期間内イベント支出（年次）</h3>
+            <table class="pred-table"><tr><th class="num">年齢</th><th class="num">支出</th></tr>{expense_rows}</table>
+          </div>
+        </div>
+      </div>
+    </div>"""
+
     # --- 年次パーセンタイル表 ---
     projection_rows = ""
     for yb in result.yearly_balances:
@@ -2509,6 +2625,17 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
   .sim-input-row input[type="range"] {{ flex: 1; }}
   .sim-input-row input[type="number"] {{ width: 140px; padding: 4px 8px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.9rem; }}
   .money-input {{ width: 140px; padding: 4px 8px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.9rem; text-align: right; }}
+  .text-input {{ width: 100%; padding: 6px 8px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.9rem; }}
+  .btn {{
+    background: #2881D7; color: #fff; border: none; border-radius: 6px;
+    padding: 8px 12px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  }}
+  .btn:hover {{ background: #1a6bb5; }}
+  .btn-danger-sm {{
+    background: #fff; color: #c0392b; border: 1px solid #f3b4ae; border-radius: 6px;
+    padding: 4px 8px; font-size: 0.75rem; cursor: pointer;
+  }}
+  .btn-danger-sm:hover {{ background: #fff5f4; }}
   .sim-unit {{ font-size: 0.8rem; color: #636e72; min-width: 20px; }}
   .stepper-btn {{
     width: 32px; height: 32px; border: 1px solid #dfe6e9; border-radius: 4px;
@@ -2621,6 +2748,7 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
       </div>
       </div>
     </div>
+    {life_events_html}
     {summary_html}
     {projection_html}
   </div>
@@ -2936,6 +3064,125 @@ async function resetFromData() {{
   }} finally {{
     btn.disabled = false;
     loading.style.display = 'none';
+  }}
+}}
+
+async function createLifeEvent() {{
+  const payload = {{
+    title: (document.getElementById('le-title')?.value || '').trim(),
+    amount: parseMoney(document.getElementById('le-amount')?.value || '0'),
+    start_year: parseInt(document.getElementById('le-start-year')?.value || '0', 10),
+    repeat_every_years: parseInt(document.getElementById('le-repeat')?.value || '0', 10),
+    end_year: parseInt(document.getElementById('le-end-year')?.value || '0', 10) || null
+  }};
+  if (!payload.title || payload.amount <= 0 || !payload.start_year) {{
+    alert('タイトル・金額・開始年を入力してください');
+    return;
+  }}
+  try {{
+    const resp = await fetch('/api/life-events', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(payload)
+    }});
+    const data = await resp.json();
+    if (!data.ok) {{
+      alert(data.error || '保存に失敗しました');
+      return;
+    }}
+    location.reload();
+  }} catch (e) {{
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }}
+}}
+
+async function deleteLifeEvent(id) {{
+  if (!confirm('このイベントを削除しますか？')) return;
+  try {{
+    const resp = await fetch('/api/life-events/delete', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ id }})
+    }});
+    const data = await resp.json();
+    if (!data.ok) {{
+      alert(data.error || '削除に失敗しました');
+      return;
+    }}
+    location.reload();
+  }} catch (e) {{
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }}
+}}
+
+async function createChildProfile() {{
+  const payload = {{
+    name: (document.getElementById('ch-name')?.value || '').trim(),
+    birth_year: parseInt(document.getElementById('ch-birth-year')?.value || '0', 10),
+    birth_month: parseInt(document.getElementById('ch-birth-month')?.value || '0', 10)
+  }};
+  if (!payload.name || !payload.birth_year || payload.birth_month < 1 || payload.birth_month > 12) {{
+    alert('名前・生年・生月を正しく入力してください');
+    return;
+  }}
+  try {{
+    const resp = await fetch('/api/children', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(payload)
+    }});
+    const data = await resp.json();
+    if (!data.ok) {{
+      alert(data.error || '保存に失敗しました');
+      return;
+    }}
+    location.reload();
+  }} catch (e) {{
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }}
+}}
+
+async function deleteChildProfile(id) {{
+  if (!confirm('この子どもプロフィールを削除しますか？')) return;
+  try {{
+    const resp = await fetch('/api/children/delete', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ id }})
+    }});
+    const data = await resp.json();
+    if (!data.ok) {{
+      alert(data.error || '削除に失敗しました');
+      return;
+    }}
+    location.reload();
+  }} catch (e) {{
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }}
+}}
+
+async function saveLifeInflationRate() {{
+  const rate = parseFloat(document.getElementById('life-inflation-rate')?.value || '0');
+  try {{
+    const resp = await fetch('/api/life-settings', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ inflation_rate: rate }})
+    }});
+    const data = await resp.json();
+    if (!data.ok) {{
+      alert(data.error || '保存に失敗しました');
+      return;
+    }}
+    await recalcSimulator();
+    location.reload();
+  }} catch (e) {{
+    alert('通信エラーが発生しました');
+    console.error(e);
   }}
 }}
 </script>
@@ -5621,6 +5868,142 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(303)
             self.send_header("Location", "/settings?saved=1")
             self.end_headers()
+
+        elif parsed.path == "/api/life-events":
+            if self.demo:
+                self._json_error(400, "デモモードでは変更できません")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+                title = str(req.get("title", "")).strip()
+                amount = float(req.get("amount", 0))
+                start_year = int(req.get("start_year", 0))
+                repeat = int(req.get("repeat_every_years", 0))
+                end_year = req.get("end_year")
+                if end_year in ("", None):
+                    end_year = None
+                else:
+                    end_year = int(end_year)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                self._json_error(400, "invalid payload")
+                return
+            if not title or amount <= 0 or start_year < 1900:
+                self._json_error(400, "入力値が不正です")
+                return
+            conn = get_connection(self.db_path)
+            try:
+                create_life_event(
+                    conn=conn,
+                    event_type="recurring" if repeat and repeat > 0 else "one_time",
+                    title=title,
+                    amount=amount,
+                    start_year=start_year,
+                    repeat_every_years=repeat if repeat > 0 else None,
+                    end_year=end_year,
+                    enabled=True,
+                    note="",
+                )
+            finally:
+                conn.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+
+        elif parsed.path == "/api/life-events/delete":
+            if self.demo:
+                self._json_error(400, "デモモードでは変更できません")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+                event_id = int(req.get("id", 0))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                self._json_error(400, "invalid payload")
+                return
+            conn = get_connection(self.db_path)
+            try:
+                delete_life_event(conn, event_id)
+            finally:
+                conn.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+
+        elif parsed.path == "/api/children":
+            if self.demo:
+                self._json_error(400, "デモモードでは変更できません")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+                name = str(req.get("name", "")).strip()
+                birth_year = int(req.get("birth_year", 0))
+                birth_month = int(req.get("birth_month", 0))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                self._json_error(400, "invalid payload")
+                return
+            if not name or birth_year < 1900 or not (1 <= birth_month <= 12):
+                self._json_error(400, "入力値が不正です")
+                return
+            conn = get_connection(self.db_path)
+            try:
+                create_child_profile(conn, name=name, birth_year=birth_year, birth_month=birth_month)
+            finally:
+                conn.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+
+        elif parsed.path == "/api/children/delete":
+            if self.demo:
+                self._json_error(400, "デモモードでは変更できません")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+                child_id = int(req.get("id", 0))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                self._json_error(400, "invalid payload")
+                return
+            conn = get_connection(self.db_path)
+            try:
+                delete_child_profile(conn, child_id)
+            finally:
+                conn.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+
+        elif parsed.path == "/api/life-settings":
+            if self.demo:
+                self._json_error(400, "デモモードでは変更できません")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+                inflation_rate = float(req.get("inflation_rate", 0.01))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                self._json_error(400, "invalid payload")
+                return
+            conn = get_connection(self.db_path)
+            try:
+                save_life_plan_inflation_rate(conn, inflation_rate)
+            finally:
+                conn.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
 
         elif parsed.path == "/api/simulator/reset":
             # DB の simulator_params を削除して実データから再取得

@@ -678,12 +678,12 @@ class TestSimulator:
 
     def test_all_cards_exist(self):
         """全カード（sim-params, sim-summary, sim-projection）が存在。"""
-        for cid in ["sim-params", "sim-summary", "sim-projection"]:
+        for cid in ["sim-params", "life-events", "sim-summary", "sim-projection"]:
             assert f'data-card-id="{cid}"' in self.html, f"Card {cid} missing"
 
     def test_collapse_buttons_on_all_cards(self):
         """全カードに折りたたみボタンがある。"""
-        for cid in ["sim-params", "sim-summary", "sim-projection"]:
+        for cid in ["sim-params", "life-events", "sim-summary", "sim-projection"]:
             pattern = f'data-card-id="{cid}"[^>]*>.*?collapse-btn'
             assert re.search(pattern, self.html, re.DOTALL), f"collapse-btn missing for {cid}"
 
@@ -710,6 +710,15 @@ class TestSimulator:
     def test_api_endpoint_in_js(self):
         """/api/simulator が JS 内に含まれる。"""
         assert "/api/simulator" in self.html
+        assert "/api/life-events" in self.html
+        assert "/api/children" in self.html
+        assert "/api/life-settings" in self.html
+
+    def test_life_event_section_labels(self):
+        """ライフイベント管理UIの主要ラベルが表示される。"""
+        assert "ライフイベント管理" in self.html
+        assert "イベント追加" in self.html
+        assert "子ども登録（教育費自動反映）" in self.html
 
     def test_summary_values_displayed(self):
         """財務サマリーの値が表示される。"""

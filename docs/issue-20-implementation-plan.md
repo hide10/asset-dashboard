@@ -64,5 +64,5 @@
 - [x] 2026-03-08: シミュレーション関数に年次イベント支出入力口を追加
 - [x] 2026-03-08: サーバー連携（`_get_simulator_data` / `/api/simulator` がイベント支出を反映）
 - [x] 2026-03-08: 関連テスト通過（`tests/test_repository.py`, `tests/test_montecarlo.py`, `tests/test_server_html.py`）
-- [ ] UI実装
+- [x] 2026-03-08: UI初期版（シミュレーター内イベント管理カード: 追加/削除/物価上昇率保存）
 - [ ] テスト追加
