@@ -14,7 +14,8 @@ import logging
 import math
 import sqlite3
 import threading
-from datetime import datetime
+import unicodedata
+from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -76,6 +77,48 @@ _update_state = {"running": False, "version": 0}
 def _h(s: str) -> str:
     """HTML エスケープのショートカット。"""
     return html_mod.escape(str(s))
+
+
+def _is_top_expense_excluded(item: dict) -> bool:
+    """高額支出TOPから除外する項目を判定する。"""
+    text = " ".join(
+        [
+            str(item.get("description", "")),
+            str(item.get("major_category", "")),
+            str(item.get("minor_category", "")),
+            str(item.get("institution", "")),
+        ]
+    )
+    normalized = unicodedata.normalize("NFKC", text).lower().replace(" ", "")
+
+    # 積立・資産形成系（家計改善の観点ではノイズになりやすい）
+    investment_like = [
+        "積立",
+        "つみたて",
+        "投信",
+        "投資信託",
+        "nisa",
+        "ideco",
+        "個人年金",
+        "変額",
+        "終身",
+        "学資",
+        "サワカミ",
+        "さわかみ",
+        "明治安田",
+        "明治安田生命",
+        "メイジヤスダ",
+        "メイジヤスダセイメイ",
+        "meijiyasuda",
+        "年金積立",
+        "個人年金保険",
+    ]
+    if any(unicodedata.normalize("NFKC", k).lower().replace(" ", "") in normalized for k in investment_like):
+        return True
+
+    # マンション管理費・修繕積立等（固定の自動引落）
+    condo_fixed_like = ["管理費", "カンリヒ", "修繕", "修繕積立", "修繕積立金"]
+    return any(unicodedata.normalize("NFKC", k).lower().replace(" ", "") in normalized for k in condo_fixed_like)
 
 
 # --- 共通 JS: 円グラフ描画・ツールチップ ---
@@ -4787,9 +4830,30 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
     holiday_mode = data.get("holiday_mode", "none")
 
     # 当月（途中データ）判定 — fiscal month ベース
-    from src.db.repository import _current_fiscal_month
+    from src.db.repository import _current_fiscal_month, _fiscal_month_range
 
     is_partial_month = year_month == _current_fiscal_month(closing_day, holiday_mode)
+    progress_ratio: float | None = None
+    progress_days_elapsed = 0
+    progress_days_total = 0
+    if is_partial_month:
+        start_s, end_s = _fiscal_month_range(year_month, closing_day, holiday_mode)
+        try:
+            period_start = datetime.strptime(start_s, "%Y-%m-%d").date()
+            period_end = datetime.strptime(end_s, "%Y-%m-%d").date()
+            if period_end >= period_start:
+                progress_days_total = (period_end - period_start).days + 1
+                today = date.today()
+                if today < period_start:
+                    progress_days_elapsed = 0
+                elif today >= period_end:
+                    progress_days_elapsed = progress_days_total
+                else:
+                    progress_days_elapsed = (today - period_start).days + 1
+                if progress_days_total > 0:
+                    progress_ratio = progress_days_elapsed / progress_days_total
+        except ValueError:
+            progress_ratio = None
 
     total_expense = summary["total_expense"]
     total_income = summary["total_income"]
@@ -4908,9 +4972,19 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
       {prev_month_html}
     </div>"""
 
-    # 高額支出テーブル
+    # 高額支出テーブル（生活支出に寄せるため、積立・管理費等は除外）
+    filtered_top_expenses = [t for t in top_expenses if not _is_top_expense_excluded(t)]
+    using_filtered_top = len(filtered_top_expenses) > 0
+    table_top_expenses = (filtered_top_expenses if using_filtered_top else top_expenses)[:15]
+    top_title = "高額支出 TOP15（生活支出）" if using_filtered_top else "高額支出 TOP15"
+    top_note = (
+        '<div style="font-size:0.8rem;color:#636e72;margin:0 0 8px">積立・管理費等を除外して表示しています</div>'
+        if using_filtered_top
+        else '<div style="font-size:0.8rem;color:#636e72;margin:0 0 8px">除外条件に一致したため元データを表示しています</div>'
+    )
+
     top_rows = ""
-    for t in top_expenses:
+    for t in table_top_expenses:
         top_rows += f"""<tr>
           <td>{_h(t["date"][5:])}</td>
           <td>{_h(t["description"])}</td>
@@ -4973,11 +5047,18 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
 
     # 差分テーブル
     diff_rows = ""
+    progress_info_html = ""
     if len(cat_trend_months) >= 2:
         last_m = cat_trend_months[-1]
         prev_m = cat_trend_months[-2]
         last_data = cat_trend_by_month.get(last_m, {})
         prev_data = cat_trend_by_month.get(prev_m, {})
+        if is_partial_month and progress_ratio and progress_days_total > 0:
+            progress_info_html = (
+                f'<div style="font-size:0.82rem;color:#636e72;margin:10px 0 8px">'
+                f"期間進捗: {progress_ratio * 100:.0f}%（{progress_days_elapsed}/{progress_days_total}日）"
+                f" / 着地予測 = 現時点実績 ÷ 期間進捗</div>"
+            )
         for cat in cat_trend_categories:
             cur = last_data.get(cat, 0)
             prev = prev_data.get(cat, 0)
@@ -4985,11 +5066,29 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
             diff = cur - prev
             if diff == 0 and cur == 0:
                 continue
+            vs_prev_now = (cur / prev * 100) if prev > 0 else None
+            vs_prev_proj = None
+            if prev > 0 and is_partial_month and progress_ratio and progress_ratio > 0:
+                projected = cur / progress_ratio
+                vs_prev_proj = projected / prev * 100
+
             diff_sign = "+" if diff > 0 else ""
             diff_color = "color:#e74c3c" if diff > 0 else ("color:#2881D7" if diff < 0 else "")
+            now_color = (
+                "color:#e74c3c" if vs_prev_now and vs_prev_now > 100 else ("color:#2881D7" if vs_prev_now else "")
+            )
+            proj_color = (
+                "color:#e74c3c"
+                if vs_prev_proj and vs_prev_proj > 100
+                else ("color:#2881D7" if vs_prev_proj and vs_prev_proj < 100 else "")
+            )
+            now_text = f"{vs_prev_now:.0f}%" if vs_prev_now is not None else "—"
+            proj_text = f"{vs_prev_proj:.0f}%" if vs_prev_proj is not None else "—"
             diff_rows += (
                 f'<tr><td>{_h(cat)}</td><td class="num">{cur:,.0f}円</td>'
                 f'<td class="num">{prev:,.0f}円</td><td class="num">{avg:,.0f}円</td>'
+                f'<td class="num" style="{now_color}">{now_text}</td>'
+                f'<td class="num" style="{proj_color}">{proj_text}</td>'
                 f'<td class="num" style="{diff_color}">{diff_sign}{diff:,.0f}円</td></tr>'
             )
 
@@ -5005,8 +5104,9 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         <canvas id="cat-trend-chart" height="280"></canvas>
         {
             f'''<h3 style="font-size:0.95rem;margin:16px 0 8px;color:#636e72">{cat_trend_months[-1]} vs {cat_trend_months[-2]} 差分</h3>
+        {progress_info_html}
         <table>
-          <tr><th>カテゴリ</th><th class="num">当月</th><th class="num">前月</th><th class="num">直近{cat_trend_avg_months}ヶ月平均</th><th class="num">差分</th></tr>
+          <tr><th>カテゴリ</th><th class="num">当月</th><th class="num">前月</th><th class="num">直近{cat_trend_avg_months}ヶ月平均</th><th class="num">先月比(現時点)</th><th class="num">先月比(着地予測)</th><th class="num">差分</th></tr>
           {diff_rows}
         </table>'''
             if len(cat_trend_months) >= 2
@@ -5265,20 +5365,17 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
 
     <div class="card" data-card-id="cf-top">
       <div class="card-header">
-        <h2>高額支出 TOP15</h2>
+        <h2>{top_title}</h2>
         <button class="collapse-btn">&#x25BC;</button>
       </div>
       <div class="card-body">
+        {top_note}
         <table>
           <tr><th>日付</th><th>内容</th><th class="num">金額</th><th>カテゴリ</th><th>金融機関</th></tr>
           {top_rows}
         </table>
       </div>
     </div>
-
-    {ib_html}
-
-    {fe_html}
 
     {cat_trend_html}
 
@@ -5295,6 +5392,10 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
     }
       </div>
     </div>
+
+    {fe_html}
+
+    {ib_html}
 
     <div class="card full" data-card-id="cf-download">
       <div class="card-header">
