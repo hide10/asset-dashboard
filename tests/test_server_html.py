@@ -179,6 +179,7 @@ class TestCfCards:
     def test_category_trend_diff_table(self):
         """差分テーブルに前月比が含まれる。"""
         assert "差分" in self.html
+        assert "直近6ヶ月平均" in self.html
 
     def test_fixed_vs_variable(self):
         assert "固定費 vs 変動費" in self.html
@@ -350,6 +351,8 @@ class TestDemoData:
         assert len(ct["year_months"]) == 6
         assert len(ct["categories"]) > 0
         assert len(ct["by_month"]) == 6
+        assert ct["avg_months"] == 6
+        assert "住宅" in ct["avg_by_category"]
 
     def test_cf_fixed_expenses_structure(self):
         d = _demo_cf_data()

@@ -940,7 +940,7 @@ def get_cf_category_trend(
     year_months = [r[0] for r in reversed(ym_rows)]
 
     if not year_months:
-        return {"year_months": [], "categories": [], "by_month": {}}
+        return {"year_months": [], "categories": [], "by_month": {}, "avg_by_category": {}, "avg_months": 0}
 
     rows = conn.execute(
         f"""SELECT {fm} as fm, major_category, SUM(amount) as total
@@ -960,10 +960,15 @@ def get_cf_category_trend(
     for r in rows:
         by_month.setdefault(r[0], {})[r[1]] = abs(r[2])
 
+    months_used = len(year_months)
+    avg_by_category = {cat: cat_totals[cat] / months_used for cat in categories}
+
     return {
         "year_months": year_months,
         "categories": categories,
         "by_month": by_month,
+        "avg_by_category": avg_by_category,
+        "avg_months": months_used,
     }
 
 

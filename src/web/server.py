@@ -4716,6 +4716,10 @@ def _demo_cf_data() -> dict:
         "year_months": trend_months,
         "categories": demo_cats,
         "by_month": cat_by_month,
+        "avg_by_category": {
+            cat: sum(cat_by_month[m].get(cat, 0) for m in trend_months) / len(trend_months) for cat in demo_cats
+        },
+        "avg_months": len(trend_months),
     }
 
     # 固定費 vs 変動費デモデータ
@@ -4954,8 +4958,16 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
     cat_trend_months = cat_trend.get("year_months", [])
     cat_trend_categories = cat_trend.get("categories", [])
     cat_trend_by_month = cat_trend.get("by_month", {})
+    cat_trend_avg_by_category = cat_trend.get("avg_by_category", {})
+    cat_trend_avg_months = int(cat_trend.get("avg_months", len(cat_trend_months) or 0))
     cat_trend_json = json.dumps(
-        {"months": cat_trend_months, "categories": cat_trend_categories, "by_month": cat_trend_by_month},
+        {
+            "months": cat_trend_months,
+            "categories": cat_trend_categories,
+            "by_month": cat_trend_by_month,
+            "avg_by_category": cat_trend_avg_by_category,
+            "avg_months": cat_trend_avg_months,
+        },
         ensure_ascii=False,
     )
 
@@ -4969,12 +4981,17 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         for cat in cat_trend_categories:
             cur = last_data.get(cat, 0)
             prev = prev_data.get(cat, 0)
+            avg = cat_trend_avg_by_category.get(cat, 0)
             diff = cur - prev
             if diff == 0 and cur == 0:
                 continue
             diff_sign = "+" if diff > 0 else ""
             diff_color = "color:#e74c3c" if diff > 0 else ("color:#2881D7" if diff < 0 else "")
-            diff_rows += f'<tr><td>{_h(cat)}</td><td class="num">{cur:,.0f}円</td><td class="num">{prev:,.0f}円</td><td class="num" style="{diff_color}">{diff_sign}{diff:,.0f}円</td></tr>'
+            diff_rows += (
+                f'<tr><td>{_h(cat)}</td><td class="num">{cur:,.0f}円</td>'
+                f'<td class="num">{prev:,.0f}円</td><td class="num">{avg:,.0f}円</td>'
+                f'<td class="num" style="{diff_color}">{diff_sign}{diff:,.0f}円</td></tr>'
+            )
 
     cat_trend_html = ""
     if cat_trend_months:
@@ -4989,7 +5006,7 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         {
             f'''<h3 style="font-size:0.95rem;margin:16px 0 8px;color:#636e72">{cat_trend_months[-1]} vs {cat_trend_months[-2]} 差分</h3>
         <table>
-          <tr><th>カテゴリ</th><th class="num">当月</th><th class="num">前月</th><th class="num">差分</th></tr>
+          <tr><th>カテゴリ</th><th class="num">当月</th><th class="num">前月</th><th class="num">直近{cat_trend_avg_months}ヶ月平均</th><th class="num">差分</th></tr>
           {diff_rows}
         </table>'''
             if len(cat_trend_months) >= 2
