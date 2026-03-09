@@ -24,6 +24,7 @@ from src.analysis.compare import ComparisonResult, get_all_comparisons
 from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
 from src.data.stock_master import get_dividend, get_sector, is_us_stock
 from src.db.repository import (
+    build_education_events_for_child,
     create_child_profile,
     create_life_event,
     delete_child_profile,
@@ -2119,6 +2120,53 @@ def _annual_event_expenses_by_age(
     return by_age
 
 
+def _annual_event_details_by_age(
+    conn: sqlite3.Connection,
+    current_age: int,
+    end_age: int,
+) -> dict[int, list[dict]]:
+    """DBイベントを「年齢 -> 詳細イベント配列」へ変換する。"""
+    now_year = datetime.now().year
+    end_year = now_year + max(0, end_age - current_age)
+    inflation_rate = get_life_plan_inflation_rate(conn)
+    base_year = now_year
+
+    events = list_life_events(conn, enabled_only=True)
+    for child in list_children_profiles(conn, enabled_only=True):
+        events.extend(
+            build_education_events_for_child(
+                child=child,
+                start_year=now_year,
+                end_year=end_year,
+                inflation_rate=0.0,
+                base_year=base_year,
+            )
+        )
+
+    details_by_age: dict[int, list[dict]] = {}
+    for ev in events:
+        if not ev.get("enabled", True):
+            continue
+        first_year = int(ev.get("start_year", now_year))
+        repeat = ev.get("repeat_every_years")
+        repeat_years = int(repeat) if repeat not in (None, 0, "") else None
+        until = ev.get("end_year")
+        last_year = int(until) if until not in (None, "") else end_year
+        last_year = min(last_year, end_year)
+        amount_base = max(0.0, float(ev.get("amount", 0.0)))
+
+        years = [first_year] if repeat_years is None else list(range(first_year, last_year + 1, repeat_years))
+        for year in years:
+            if year < now_year or year > end_year:
+                continue
+            age = current_age + (year - now_year) + 1
+            if not (current_age < age <= end_age):
+                continue
+            amount = amount_base * ((1 + inflation_rate) ** max(0, year - base_year))
+            details_by_age.setdefault(age, []).append({"title": str(ev.get("title", "イベント")), "amount": amount})
+    return details_by_age
+
+
 def _get_simulator_data(db_path: str) -> dict:
     """DB設定からシミュレーターパラメータを読み込み、シミュレーションを実行する。"""
     conn = get_connection(db_path)
@@ -2164,6 +2212,11 @@ def _get_simulator_data(db_path: str) -> dict:
                     params["monthly_contribution"] = float(contrib)
             params = _sanitize_simulator_params(params)
         annual_event_expenses = _annual_event_expenses_by_age(
+            conn=conn,
+            current_age=int(params["current_age"]),
+            end_age=int(params["end_age"]),
+        )
+        annual_event_details_by_age = _annual_event_details_by_age(
             conn=conn,
             current_age=int(params["current_age"]),
             end_age=int(params["end_age"]),
@@ -2218,6 +2271,7 @@ def _get_simulator_data(db_path: str) -> dict:
         "children_profiles": children_profiles,
         "life_inflation_rate": life_inflation_rate,
         "annual_event_expenses_by_age": annual_event_expenses,
+        "annual_event_details_by_age": annual_event_details_by_age,
         "total_event_expense": sum(float(v) for v in annual_event_expenses.values()),
     }
 
@@ -2306,6 +2360,7 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     children_profiles = data.get("children_profiles", [])
     life_inflation_rate = float(data.get("life_inflation_rate", 0.01))
     annual_event_expenses_by_age = data.get("annual_event_expenses_by_age", {})
+    annual_event_details_by_age = data.get("annual_event_details_by_age", {})
     total_event_expense = float(data.get("total_event_expense", 0.0))
 
     # パラメータ表示用
@@ -2563,7 +2618,12 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     expense_max_age = None
     expense_max_amount = 0.0
     for age, amount in sorted((int(k), float(v)) for k, v in annual_event_expenses_by_age.items()):
-        expense_rows += f"<tr><td class='num'>{age}歳</td><td class='num'>{amount:,.0f}円</td></tr>"
+        details = annual_event_details_by_age.get(age, [])
+        detail_txt = " / ".join(f"{d.get('title', 'イベント')}: {float(d.get('amount', 0.0)):,.0f}円" for d in details)
+        title_attr = _h(detail_txt) if detail_txt else ""
+        expense_rows += (
+            f"<tr><td class='num'>{age}歳</td><td class='num' title=\"{title_attr}\">{amount:,.0f}円</td></tr>"
+        )
         expense_count += 1
         expense_total += amount
         if amount > expense_max_amount:
@@ -2662,7 +2722,7 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
 
     balances_json = json.dumps(result.yearly_balances, ensure_ascii=False)
     balances_no_events_json = json.dumps(result_no_events.yearly_balances, ensure_ascii=False)
-    projection_html = f"""
+    chart_html = """
     <div class="card full" data-card-id="sim-chart">
       <div class="card-header">
         <h2>資産推移グラフ</h2>
@@ -2673,8 +2733,11 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
         <canvas id="sim-fan-chart" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
       </div>
       <div class="pred-note">※ 実質値（インフレ調整済み）。濃い帯=P25〜P75、薄い帯=P10〜P90、線=P50（中央値）</div>
+      <div class="pred-note">※ 灰色破線はイベントなしのP50（基準線）</div>
       </div>
-    </div>
+    </div>"""
+
+    projection_table_html = f"""
     <div class="card full" data-card-id="sim-projection">
       <div class="card-header">
         <h2>年次データ</h2>
@@ -2705,6 +2768,11 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
   {_NAV_CSS}
   h1 {{ font-size: 1.5rem; }}
   .grid {{ display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }}
+  [data-card-id="sim-chart"] {{
+    position: sticky;
+    top: 12px;
+    z-index: 3;
+  }}
   .card {{
     background: #fff; border-radius: 12px; padding: 20px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.06);
@@ -2833,6 +2901,7 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
   .sim-notes strong {{ color: #2d3436; }}
 
   @media (max-width: 700px) {{
+    [data-card-id="sim-chart"] {{ position: static; top: auto; }}
     .card {{ width: 100%; }}
     .sim-param-grid {{ grid-template-columns: 1fr; }}
     .page-header {{ flex-direction: column; gap: 8px; align-items: flex-start; }}
@@ -2849,6 +2918,7 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     {_nav_html("/simulator")}
   </div>
   <div class="grid">
+    {chart_html}
     <div class="card full" id="sim-params" data-card-id="sim-params">
       <div class="card-header">
         <h2>パラメータ設定</h2>
@@ -2866,7 +2936,7 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     </div>
     {life_events_html}
     {summary_html}
-    {projection_html}
+    {projection_table_html}
   </div>
 </div>
 <script>
