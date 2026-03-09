@@ -124,11 +124,18 @@ class TestCfCategoryTrend:
         assert result["by_month"]["2025-10"]["住宅"] == 85000
         assert result["by_month"]["2025-12"]["趣味・娯楽"] == 50000
 
+    def test_category_average_values(self, conn):
+        result = get_cf_category_trend(conn, months=6)
+        assert result["avg_months"] == 3
+        assert result["avg_by_category"]["住宅"] == 85000
+
     def test_empty_db(self, tmp_path):
         c = init_db(str(tmp_path / "empty.db"))
         result = get_cf_category_trend(c, months=6)
         assert result["year_months"] == []
         assert result["categories"] == []
+        assert result["avg_months"] == 0
+        assert result["avg_by_category"] == {}
         c.close()
 
 
