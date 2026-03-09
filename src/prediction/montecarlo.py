@@ -341,6 +341,7 @@ def run_lifecycle_simulation(
     other_monthly_income: float = 0.0,
     tax_rate: float = 0.20315,
     safe_value: float = 0.0,
+    annual_event_expenses: dict[int, float] | None = None,
     simulations: int = DEFAULT_SIMULATIONS,
     rng_seed: int | None = DEFAULT_RNG_SEED,
 ) -> SimulatorResult:
@@ -351,6 +352,7 @@ def run_lifecycle_simulation(
 
     initial_investment: リスク資産額（GBMで成長）
     safe_value: 安全資産額（成長なし、取崩し時に先に消費）
+    annual_event_expenses: 年齢→年次イベント支出（円）。年末時点で差し引く。
     """
     import random
 
@@ -378,6 +380,7 @@ def run_lifecycle_simulation(
 
     sim_final: list[float] = []
     sim_tax_total: list[float] = []
+    annual_event_expenses = annual_event_expenses or {}
 
     for _ in range(simulations):
         risk = initial_investment  # リスク資産（GBMで成長）
@@ -445,6 +448,31 @@ def run_lifecycle_simulation(
 
             # 年末に記録（リスク + 安全の合計）
             if month % 12 == 11:
+                age = current_age + (month // 12) + 1
+                event_cost = float(annual_event_expenses.get(age, 0.0))
+                if event_cost > 0 and not depleted:
+                    # 年次イベント支出は、安全資産→リスク資産の順で充当
+                    if safe >= event_cost:
+                        safe -= event_cost
+                    else:
+                        remainder = event_cost - safe
+                        safe = 0.0
+                        # リスク資産売却が必要なら、通常の取崩しと同様に税金を計上
+                        if risk > 0 and cost_basis < risk:
+                            gain_ratio = (risk - cost_basis) / risk
+                            risk_withdrawal = min(risk, max(0.0, remainder))
+                            if risk_withdrawal > 0:
+                                tax = risk_withdrawal * gain_ratio * tax_rate
+                                tax_cumulative += tax
+                                risk -= tax
+                        if risk > 0:
+                            cost_basis -= remainder * (cost_basis / risk)
+                            cost_basis = max(cost_basis, 0.0)
+                        risk -= remainder
+                        if risk + safe <= 0:
+                            risk = 0.0
+                            safe = 0.0
+                            depleted = True
                 yearly_values.append(max(risk + safe, 0.0))
 
         total_value = max(risk + safe, 0.0)
