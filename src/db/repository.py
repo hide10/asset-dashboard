@@ -412,15 +412,17 @@ def build_education_events_for_child(
         base_year = date_cls.today().year
 
     birth_year = int(child["birth_year"])
+    birth_month = int(child.get("birth_month", 4))
     name = (child.get("name") or "").strip() or f"子ども{child.get('id', '')}"
     plan = dict(DEFAULT_EDUCATION_PLAN)
     plan.update(child.get("education_plan") or {})
 
     events: list[dict] = []
     for year in range(start_year, end_year + 1):
-        age = year - birth_year
+        # 1-3月生まれは学年進行が実質1年早い。
+        school_age = year - birth_year + (1 if 1 <= birth_month <= 3 else 0)
         for stage_key, stage_label, min_age, max_age, costs in EDUCATION_STAGE_RULES:
-            if not (min_age <= age <= max_age):
+            if not (min_age <= school_age <= max_age):
                 continue
             option = plan.get(stage_key, "public")
             base_cost = costs.get(option, costs.get("public", 0))
@@ -495,7 +497,7 @@ def get_annual_life_event_expenses(
                     child=child,
                     start_year=start_year,
                     end_year=end_year,
-                    inflation_rate=inflation_rate,
+                    inflation_rate=0.0,
                     base_year=base_year,
                 )
             )

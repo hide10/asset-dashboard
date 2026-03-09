@@ -457,6 +457,14 @@ def run_lifecycle_simulation(
                     else:
                         remainder = event_cost - safe
                         safe = 0.0
+                        # リスク資産売却が必要なら、通常の取崩しと同様に税金を計上
+                        if risk > 0 and cost_basis < risk:
+                            gain_ratio = (risk - cost_basis) / risk
+                            risk_withdrawal = min(risk, max(0.0, remainder))
+                            if risk_withdrawal > 0:
+                                tax = risk_withdrawal * gain_ratio * tax_rate
+                                tax_cumulative += tax
+                                risk -= tax
                         if risk > 0:
                             cost_basis -= remainder * (cost_basis / risk)
                             cost_basis = max(cost_basis, 0.0)

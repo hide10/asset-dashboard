@@ -1,6 +1,7 @@
 """repository.py のテスト — DB操作の正確性を検証。"""
 
 import json
+from datetime import date
 
 import pytest
 
@@ -1227,3 +1228,50 @@ class TestEducationEvents:
         conn.close()
         assert 2030 in annual
         assert annual[2030] >= 3_000_000
+
+    def test_birth_month_affects_school_stage_timing(self):
+        child_apr = {
+            "id": 1,
+            "name": "A",
+            "birth_year": 2020,
+            "birth_month": 4,
+            "education_plan": {"kindergarten": "public", "elementary": "private"},
+            "enabled": True,
+        }
+        child_feb = {
+            "id": 2,
+            "name": "B",
+            "birth_year": 2020,
+            "birth_month": 2,
+            "education_plan": {"kindergarten": "public", "elementary": "private"},
+            "enabled": True,
+        }
+        # 2025年は4月生まれなら幼稚園、2月生まれなら小学校に入る想定
+        events_apr = build_education_events_for_child(
+            child_apr, start_year=2025, end_year=2025, inflation_rate=0, base_year=2025
+        )
+        events_feb = build_education_events_for_child(
+            child_feb, start_year=2025, end_year=2025, inflation_rate=0, base_year=2025
+        )
+        assert events_apr[0]["note"] == "kindergarten"
+        assert events_feb[0]["note"] == "elementary"
+        assert events_apr[0]["amount"] != events_feb[0]["amount"]
+
+    def test_child_inflation_applied_once(self, tmp_path):
+        conn = init_db(str(tmp_path / "life_inflation.db"))
+        save_life_plan_inflation_rate(conn, 0.10)
+        now_year = date.today().year
+        # 現在年に小学校(私立)へ入るよう調整: 4月生まれで年齢6 -> birth_year = now_year - 6
+        create_child_profile(
+            conn=conn,
+            name="長女",
+            birth_year=now_year - 6,
+            birth_month=4,
+            education_plan={"elementary": "private"},
+        )
+        annual = get_annual_life_event_expenses(
+            conn, start_year=now_year + 1, end_year=now_year + 1, include_children=True
+        )
+        conn.close()
+        # 私立小学校 1,600,000円 に 10% が一度だけ乗る
+        assert annual[now_year + 1] == pytest.approx(1_600_000 * 1.1)

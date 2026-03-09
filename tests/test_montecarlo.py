@@ -228,3 +228,34 @@ class TestLifecycleSimulation:
             rng_seed=42,
         )
         assert with_events.net_final < baseline.net_final
+
+    def test_annual_event_expenses_can_increase_tax(self):
+        """イベント支出でリスク資産を売却する場合、税額が増える。"""
+        baseline = run_lifecycle_simulation(
+            current_age=60,
+            retirement_age=60,
+            end_age=70,
+            initial_investment=40_000_000,
+            monthly_contribution=0,
+            annual_return=0.05,
+            annual_volatility=0.08,
+            monthly_withdrawal=50_000,
+            safe_value=0,
+            simulations=400,
+            rng_seed=42,
+        )
+        with_events = run_lifecycle_simulation(
+            current_age=60,
+            retirement_age=60,
+            end_age=70,
+            initial_investment=40_000_000,
+            monthly_contribution=0,
+            annual_return=0.05,
+            annual_volatility=0.08,
+            monthly_withdrawal=50_000,
+            safe_value=0,
+            annual_event_expenses={65: 3_000_000},
+            simulations=400,
+            rng_seed=42,
+        )
+        assert with_events.total_tax > baseline.total_tax
