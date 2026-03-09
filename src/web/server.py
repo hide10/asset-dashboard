@@ -35,6 +35,7 @@ from src.db.repository import (
     get_cashflows,
     get_cf_actual_savings,
     get_cf_available_months,
+    get_cf_category_details_history,
     get_cf_category_summary,
     get_cf_category_trend,
     get_cf_dividend_history,
@@ -4575,6 +4576,9 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
 
         # カテゴリ別月次推移
         category_trend = get_cf_category_trend(conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode)
+        category_details = get_cf_category_details_history(
+            conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode
+        )
 
         # 固定費 vs 変動費
         fixed_expenses = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day, holiday_mode=holiday_mode)
@@ -4596,6 +4600,7 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
         "trend": trend,
         "available_months": available,
         "category_trend": category_trend,
+        "category_details": category_details,
         "fixed_expenses": fixed_expenses,
         "income_breakdown": income_breakdown,
         "income_trend": income_trend,
@@ -4875,6 +4880,56 @@ def _demo_cf_data() -> dict:
         },
         "avg_months": len(trend_months),
     }
+    category_details = {
+        "year_months": trend_months,
+        "categories": demo_cats,
+        "by_category": {
+            "趣味・娯楽": [
+                {
+                    "year_month": trend_months[-1],
+                    "date": f"{trend_months[-1]}-03",
+                    "description": "Steam",
+                    "amount": 6200,
+                    "minor_category": "ゲーム",
+                    "institution": "楽天カード",
+                },
+                {
+                    "year_month": trend_months[-1],
+                    "date": f"{trend_months[-1]}-14",
+                    "description": "書籍",
+                    "amount": 5800,
+                    "minor_category": "書籍",
+                    "institution": "Amazon",
+                },
+                {
+                    "year_month": trend_months[-2],
+                    "date": f"{trend_months[-2]}-09",
+                    "description": "映画",
+                    "amount": 1900,
+                    "minor_category": "映画",
+                    "institution": "楽天カード",
+                },
+            ],
+            "食費": [
+                {
+                    "year_month": trend_months[-1],
+                    "date": f"{trend_months[-1]}-05",
+                    "description": "イオン",
+                    "amount": 12400,
+                    "minor_category": "食料品",
+                    "institution": "楽天カード",
+                },
+                {
+                    "year_month": trend_months[-2],
+                    "date": f"{trend_months[-2]}-19",
+                    "description": "外食",
+                    "amount": 4800,
+                    "minor_category": "外食",
+                    "institution": "三井住友カード",
+                },
+            ],
+        },
+    }
 
     # 固定費 vs 変動費デモデータ
     fixed_expenses = {
@@ -4921,6 +4976,7 @@ def _demo_cf_data() -> dict:
         "trend": trend,
         "available_months": available,
         "category_trend": category_trend,
+        "category_details": category_details,
         "fixed_expenses": fixed_expenses,
         "income_breakdown": income_breakdown,
         "income_trend": income_trend,
@@ -5155,6 +5211,36 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         },
         ensure_ascii=False,
     )
+
+    # --- カテゴリ別支出の明細（直近Nヶ月） ---
+    cat_details = data.get("category_details", {})
+    cat_detail_months = cat_details.get("year_months", [])
+    cat_detail_categories = cat_details.get("categories", [])
+    cat_detail_by_category = cat_details.get("by_category", {})
+    cat_detail_json = json.dumps(
+        {"months": cat_detail_months, "categories": cat_detail_categories, "by_category": cat_detail_by_category},
+        ensure_ascii=False,
+    )
+    detail_options = "".join(f'<option value="{_h(c)}">{_h(c)}</option>' for c in cat_detail_categories)
+    cat_details_html = ""
+    if cat_detail_categories:
+        cat_details_html = f"""
+    <div class="card full" data-card-id="cf-cat-details">
+      <div class="card-header">
+        <h2>カテゴリ別支出の詳細（直近{len(cat_detail_months)}ヶ月）</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <label for="cat-detail-select" style="color:#636e72;font-size:0.9rem">カテゴリ</label>
+          <select id="cat-detail-select" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px">{detail_options}</select>
+        </div>
+        <table>
+          <tr><th>月</th><th>日付</th><th>内容</th><th>中項目</th><th>金融機関</th><th class="num">金額</th></tr>
+          <tbody id="cat-detail-rows"></tbody>
+        </table>
+      </div>
+    </div>"""
 
     # 差分テーブル
     diff_rows = ""
@@ -5474,6 +5560,8 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
       </div>
     </div>
 
+    {cat_details_html}
+
     <div class="card" data-card-id="cf-top">
       <div class="card-header">
         <h2>{top_title}</h2>
@@ -5623,6 +5711,37 @@ if (catTrendData.months.length > 0 && catTrendCanvas) {{
     ctx2.fillStyle = '#b2bec3';
     ctx2.fillText('…他' + (cCats.length - 6) + '件', lx, 15);
   }}
+}}
+
+// カテゴリ別支出の詳細（直近Nヶ月）
+const catDetailData = {cat_detail_json};
+const catDetailSelect = document.getElementById('cat-detail-select');
+const catDetailRows = document.getElementById('cat-detail-rows');
+
+function renderCategoryDetailRows(category) {{
+  if (!catDetailRows) return;
+  const rows = (catDetailData.by_category || {{}})[category] || [];
+  if (!rows.length) {{
+    catDetailRows.innerHTML = '<tr><td colspan="6" style="color:#999">明細データがありません</td></tr>';
+    return;
+  }}
+  catDetailRows.innerHTML = rows.map(r => {{
+    const dt = (r.date || '').slice(5);
+    const inst = r.institution || '';
+    return '<tr>' +
+      '<td>' + esc(r.year_month || '') + '</td>' +
+      '<td>' + esc(dt) + '</td>' +
+      '<td>' + esc(r.description || '') + '</td>' +
+      '<td>' + esc(r.minor_category || '') + '</td>' +
+      '<td style="color:#636e72;font-size:0.82rem">' + esc(inst) + '</td>' +
+      '<td class="num">' + Number(r.amount || 0).toLocaleString('ja-JP') + '円</td>' +
+      '</tr>';
+  }}).join('');
+}}
+
+if (catDetailSelect && catDetailRows) {{
+  renderCategoryDetailRows(catDetailSelect.value);
+  catDetailSelect.addEventListener('change', () => renderCategoryDetailRows(catDetailSelect.value));
 }}
 
 // 月ナビゲーション

@@ -972,6 +972,53 @@ def get_cf_category_trend(
     }
 
 
+def get_cf_category_details_history(
+    conn: sqlite3.Connection, months: int = 6, closing_day: int = 1, holiday_mode: str = "none"
+) -> dict:
+    """カテゴリ別に、直近Nヶ月の支出明細を返す。"""
+    fm = _fiscal_month_expr(closing_day, holiday_mode, conn)
+    cur_fm = _current_fiscal_month(closing_day, holiday_mode)
+    ym_rows = conn.execute(
+        f"""SELECT DISTINCT {fm} as fm FROM cf_transactions
+           WHERE is_transfer=0 AND is_target=1 AND amount<0
+           GROUP BY fm HAVING fm <= ?
+           ORDER BY fm DESC LIMIT ?""",
+        (cur_fm, months),
+    ).fetchall()
+    year_months = [r[0] for r in reversed(ym_rows)]
+    if not year_months:
+        return {"year_months": [], "categories": [], "by_category": {}}
+
+    rows = conn.execute(
+        f"""SELECT {fm} as fm, date, description, amount, major_category, minor_category, institution
+           FROM cf_transactions
+           WHERE is_transfer=0 AND is_target=1 AND amount<0
+             AND {fm} IN ({",".join("?" * len(year_months))})
+           ORDER BY fm DESC, amount ASC, date ASC""",
+        year_months,
+    ).fetchall()
+
+    by_category: dict[str, list[dict]] = {}
+    category_totals: dict[str, float] = {}
+    for r in rows:
+        major = r[4] or "未分類"
+        amt = abs(float(r[3]))
+        by_category.setdefault(major, []).append(
+            {
+                "year_month": r[0],
+                "date": r[1],
+                "description": r[2],
+                "amount": amt,
+                "minor_category": r[5] or "未分類",
+                "institution": r[6] or "",
+            }
+        )
+        category_totals[major] = category_totals.get(major, 0.0) + amt
+
+    categories = sorted(category_totals, key=lambda c: category_totals[c], reverse=True)
+    return {"year_months": year_months, "categories": categories, "by_category": by_category}
+
+
 def get_cf_fixed_expenses(
     conn: sqlite3.Connection, months: int = 3, closing_day: int = 1, holiday_mode: str = "none"
 ) -> dict:

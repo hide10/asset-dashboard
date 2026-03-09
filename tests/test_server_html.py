@@ -124,7 +124,16 @@ class TestCollapse:
         """全CFカードに data-card-id と collapse-btn がある。"""
         html = _build_cf_html(_demo_cf_data())
         card_ids = re.findall(r'data-card-id="([^"]+)"', html)
-        expected = {"cf-category", "cf-top", "cf-cat-trend", "cf-fixed", "cf-income", "cf-trend", "cf-download"}
+        expected = {
+            "cf-category",
+            "cf-cat-details",
+            "cf-top",
+            "cf-cat-trend",
+            "cf-fixed",
+            "cf-income",
+            "cf-trend",
+            "cf-download",
+        }
         assert expected.issubset(set(card_ids)), f"Missing: {expected - set(card_ids)}"
         # 各カードに collapse-btn がある
         for cid in expected:
@@ -207,6 +216,11 @@ class TestCfCards:
 
     def test_download_management(self):
         assert "過去月ダウンロード管理" in self.html
+
+    def test_category_details_card(self):
+        assert "カテゴリ別支出の詳細" in self.html
+        assert 'id="cat-detail-select"' in self.html
+        assert 'id="cat-detail-rows"' in self.html
 
     def test_top_expenses_filtered_label(self):
         assert "高額支出 TOP15（生活支出）" in self.html
@@ -378,6 +392,7 @@ class TestDemoData:
             "trend",
             "available_months",
             "category_trend",
+            "category_details",
             "fixed_expenses",
             "income_breakdown",
             "income_trend",
@@ -392,6 +407,13 @@ class TestDemoData:
         assert len(ct["by_month"]) == 6
         assert ct["avg_months"] == 6
         assert "住宅" in ct["avg_by_category"]
+
+    def test_cf_category_details_structure(self):
+        d = _demo_cf_data()
+        cd = d["category_details"]
+        assert len(cd["year_months"]) == 6
+        assert "趣味・娯楽" in cd["categories"]
+        assert len(cd["by_category"]["趣味・娯楽"]) > 0
 
     def test_cf_fixed_expenses_structure(self):
         d = _demo_cf_data()
