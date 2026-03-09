@@ -220,7 +220,12 @@ class TestCfCards:
     def test_category_details_card(self):
         assert "カテゴリ別支出の詳細" in self.html
         assert 'id="cat-detail-select"' in self.html
+        assert 'id="cat-detail-sort"' in self.html
+        assert "日付（新しい順）" in self.html
+        assert "日付（古い順）" in self.html
         assert 'id="cat-detail-rows"' in self.html
+        assert 'data-card-id="cf-cat-details" data-default-collapsed="true"' in self.html
+        assert 'class="cat-detail-table"' in self.html
 
     def test_top_expenses_filtered_label(self):
         assert "高額支出 TOP15（生活支出）" in self.html

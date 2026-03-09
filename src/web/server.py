@@ -309,18 +309,23 @@ _COLLAPSE_JS = """
   const saved = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
   document.querySelectorAll('[data-card-id]').forEach(card => {
     const id = card.dataset.cardId;
+    const defaultCollapsed = card.dataset.defaultCollapsed === 'true';
     const body = card.querySelector('.card-body');
     const btn = card.querySelector('.collapse-btn');
     if (!body || !btn) return;
-    if (saved[id]) {
+    const isCollapsed = Object.prototype.hasOwnProperty.call(saved, id) ? !!saved[id] : defaultCollapsed;
+    if (isCollapsed) {
       card.classList.add('collapsed');
       btn.textContent = '\\u25B6';
+    } else {
+      card.classList.remove('collapsed');
+      btn.textContent = '\\u25BC';
     }
     btn.addEventListener('click', () => {
-      const isCollapsed = card.classList.toggle('collapsed');
-      btn.textContent = isCollapsed ? '\\u25B6' : '\\u25BC';
+      const nextCollapsed = card.classList.toggle('collapsed');
+      btn.textContent = nextCollapsed ? '\\u25B6' : '\\u25BC';
       const s = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
-      if (isCollapsed) { s[id] = true; } else { delete s[id]; }
+      s[id] = nextCollapsed;
       localStorage.setItem('collapsed_cards', JSON.stringify(s));
     });
   });
@@ -5225,7 +5230,7 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
     cat_details_html = ""
     if cat_detail_categories:
         cat_details_html = f"""
-    <div class="card full" data-card-id="cf-cat-details">
+    <div class="card full" data-card-id="cf-cat-details" data-default-collapsed="true">
       <div class="card-header">
         <h2>カテゴリ別支出の詳細（直近{len(cat_detail_months)}ヶ月）</h2>
         <button class="collapse-btn">&#x25BC;</button>
@@ -5234,11 +5239,19 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
           <label for="cat-detail-select" style="color:#636e72;font-size:0.9rem">カテゴリ</label>
           <select id="cat-detail-select" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px">{detail_options}</select>
+          <label for="cat-detail-sort" style="color:#636e72;font-size:0.9rem">並び順</label>
+          <select id="cat-detail-sort" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px">
+            <option value="month_amount">月→金額（既定）</option>
+            <option value="date_desc">日付（新しい順）</option>
+            <option value="date_asc">日付（古い順）</option>
+          </select>
         </div>
-        <table>
-          <tr><th>月</th><th>日付</th><th>内容</th><th>中項目</th><th>金融機関</th><th class="num">金額</th></tr>
-          <tbody id="cat-detail-rows"></tbody>
-        </table>
+        <div class="cat-detail-table-wrap">
+          <table class="cat-detail-table">
+            <tr><th class="col-month">月</th><th class="col-date">日付</th><th class="col-desc">内容</th><th class="col-minor">中項目</th><th class="col-inst">金融機関</th><th class="num col-amount">金額</th></tr>
+            <tbody id="cat-detail-rows"></tbody>
+          </table>
+        </div>
       </div>
     </div>"""
 
@@ -5464,6 +5477,15 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
   .has-tip:hover {{ background: #f0f4ff; }}
   .pie-legend {{ font-size: 0.85rem; }}
   .pie-legend li {{ list-style: none; margin-bottom: 4px; }}
+  .cat-detail-table-wrap {{ max-height: 280px; overflow: auto; border: 1px solid #f1f2f6; border-radius: 8px; }}
+  .cat-detail-table {{ table-layout: fixed; width: 100%; min-width: 760px; }}
+  .cat-detail-table th, .cat-detail-table td {{ vertical-align: middle; }}
+  .cat-detail-table .col-month {{ width: 78px; white-space: nowrap; }}
+  .cat-detail-table .col-date {{ width: 68px; white-space: nowrap; }}
+  .cat-detail-table .col-minor {{ width: 84px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .cat-detail-table .col-inst {{ width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .cat-detail-table .col-amount {{ width: 98px; white-space: nowrap; }}
+  .cat-detail-table .col-desc {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
   .dl-btn {{
     padding: 3px 10px; border: 1px solid #2881D7; border-radius: 4px;
     background: #fff; color: #2881D7; font-size: 0.8rem; cursor: pointer;
@@ -5560,8 +5582,6 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
       </div>
     </div>
 
-    {cat_details_html}
-
     <div class="card" data-card-id="cf-top">
       <div class="card-header">
         <h2>{top_title}</h2>
@@ -5575,6 +5595,8 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         </table>
       </div>
     </div>
+
+    {cat_details_html}
 
     {cat_trend_html}
 
@@ -5716,11 +5738,24 @@ if (catTrendData.months.length > 0 && catTrendCanvas) {{
 // カテゴリ別支出の詳細（直近Nヶ月）
 const catDetailData = {cat_detail_json};
 const catDetailSelect = document.getElementById('cat-detail-select');
+const catDetailSort = document.getElementById('cat-detail-sort');
 const catDetailRows = document.getElementById('cat-detail-rows');
 
-function renderCategoryDetailRows(category) {{
+function renderCategoryDetailRows(category, sortMode) {{
   if (!catDetailRows) return;
-  const rows = (catDetailData.by_category || {{}})[category] || [];
+  const rows = [ ...((catDetailData.by_category || {{}})[category] || []) ];
+  if (sortMode === 'date_desc') {{
+    rows.sort((a, b) => (b.date || '').localeCompare(a.date || '') || Number(b.amount || 0) - Number(a.amount || 0));
+  }} else if (sortMode === 'date_asc') {{
+    rows.sort((a, b) => (a.date || '').localeCompare(b.date || '') || Number(b.amount || 0) - Number(a.amount || 0));
+  }} else {{
+    // default: fiscal month desc -> amount desc -> date desc
+    rows.sort((a, b) =>
+      (b.year_month || '').localeCompare(a.year_month || '') ||
+      Number(b.amount || 0) - Number(a.amount || 0) ||
+      (b.date || '').localeCompare(a.date || '')
+    );
+  }}
   if (!rows.length) {{
     catDetailRows.innerHTML = '<tr><td colspan="6" style="color:#999">明細データがありません</td></tr>';
     return;
@@ -5728,20 +5763,23 @@ function renderCategoryDetailRows(category) {{
   catDetailRows.innerHTML = rows.map(r => {{
     const dt = (r.date || '').slice(5);
     const inst = r.institution || '';
+    const desc = r.description || '';
+    const minor = r.minor_category || '';
     return '<tr>' +
-      '<td>' + esc(r.year_month || '') + '</td>' +
-      '<td>' + esc(dt) + '</td>' +
-      '<td>' + esc(r.description || '') + '</td>' +
-      '<td>' + esc(r.minor_category || '') + '</td>' +
-      '<td style="color:#636e72;font-size:0.82rem">' + esc(inst) + '</td>' +
-      '<td class="num">' + Number(r.amount || 0).toLocaleString('ja-JP') + '円</td>' +
+      '<td class="col-month">' + esc(r.year_month || '') + '</td>' +
+      '<td class="col-date">' + esc(dt) + '</td>' +
+      '<td class="col-desc" title="' + esc(desc) + '">' + esc(desc) + '</td>' +
+      '<td class="col-minor" title="' + esc(minor) + '">' + esc(minor) + '</td>' +
+      '<td class="col-inst" style="color:#636e72;font-size:0.82rem" title="' + esc(inst) + '">' + esc(inst) + '</td>' +
+      '<td class="num col-amount">' + Number(r.amount || 0).toLocaleString('ja-JP') + '円</td>' +
       '</tr>';
   }}).join('');
 }}
 
-if (catDetailSelect && catDetailRows) {{
-  renderCategoryDetailRows(catDetailSelect.value);
-  catDetailSelect.addEventListener('change', () => renderCategoryDetailRows(catDetailSelect.value));
+if (catDetailSelect && catDetailRows && catDetailSort) {{
+  renderCategoryDetailRows(catDetailSelect.value, catDetailSort.value);
+  catDetailSelect.addEventListener('change', () => renderCategoryDetailRows(catDetailSelect.value, catDetailSort.value));
+  catDetailSort.addEventListener('change', () => renderCategoryDetailRows(catDetailSelect.value, catDetailSort.value));
 }}
 
 // 月ナビゲーション
