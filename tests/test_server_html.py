@@ -744,6 +744,27 @@ class TestSimulator:
         for fid in ["annual_return", "annual_volatility", "inflation_rate", "expense_ratio"]:
             assert f'id="{fid}"' in self.html, f"Slider {fid} missing"
 
+    def test_all_simulator_fields_have_info_help(self):
+        """シミュレーターの全入力項目に i ヘルプがある。"""
+        labels = [
+            "現在の年齢",
+            "退職年齢",
+            "シミュレーション終了年齢",
+            "リスク資産額",
+            "安全資産額",
+            "月額積立",
+            "月額取崩し（生活費）",
+            "期待リターン（年率）",
+            "ボラティリティ（年率）",
+            "インフレ率",
+            "信託報酬",
+            "年金受給開始年齢",
+            "月額年金",
+            "年金以外の月額収入",
+        ]
+        for label in labels:
+            assert f'{label} <span class="sim-info-btn"' in self.html
+
     def test_recalc_button_exists(self):
         """「再計算」ボタンが存在する。"""
         assert "再計算" in self.html
