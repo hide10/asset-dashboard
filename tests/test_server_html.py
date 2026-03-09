@@ -180,6 +180,9 @@ class TestCfCards:
         """差分テーブルに前月比が含まれる。"""
         assert "差分" in self.html
         assert "直近6ヶ月平均" in self.html
+        assert "先月比(現時点)" in self.html
+        assert "先月比(着地予測)" in self.html
+        assert "期間進捗" in self.html
 
     def test_fixed_vs_variable(self):
         assert "固定費 vs 変動費" in self.html
@@ -204,6 +207,42 @@ class TestCfCards:
 
     def test_download_management(self):
         assert "過去月ダウンロード管理" in self.html
+
+    def test_top_expenses_filtered_label(self):
+        assert "高額支出 TOP15（生活支出）" in self.html
+        assert "積立・管理費等を除外して表示しています" in self.html
+
+    def test_top_expenses_filters_investment_like_item(self):
+        d = _demo_cf_data()
+        d["summary"]["top_expenses"].insert(
+            0,
+            {
+                "date": d["year_month"] + "-04",
+                "description": "サワカミ積立",
+                "amount": 120000,
+                "major_category": "保険",
+                "minor_category": "投資信託",
+                "institution": "サワカミ",
+            },
+        )
+        html = _build_cf_html(d)
+        assert "サワカミ積立" not in html
+
+    def test_top_expenses_filters_meijiyasuda_variant(self):
+        d = _demo_cf_data()
+        d["summary"]["top_expenses"].insert(
+            0,
+            {
+                "date": d["year_month"] + "-06",
+                "description": "メイジヤスダセイメイ 年金積立",
+                "amount": 98000,
+                "major_category": "保険",
+                "minor_category": "個人年金保険",
+                "institution": "メイジヤスダセイメイ",
+            },
+        )
+        html = _build_cf_html(d)
+        assert "メイジヤスダセイメイ 年金積立" not in html
 
 
 # --- 過去月取得フォーム (#15) ---
