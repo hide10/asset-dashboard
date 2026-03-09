@@ -2558,10 +2558,23 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
         child_rows = "<tr><td colspan='4' style='color:#999'>子ども未登録</td></tr>"
 
     expense_rows = ""
+    expense_count = 0
+    expense_total = 0.0
+    expense_max_age = None
+    expense_max_amount = 0.0
     for age, amount in sorted((int(k), float(v)) for k, v in annual_event_expenses_by_age.items()):
         expense_rows += f"<tr><td class='num'>{age}歳</td><td class='num'>{amount:,.0f}円</td></tr>"
+        expense_count += 1
+        expense_total += amount
+        if amount > expense_max_amount:
+            expense_max_amount = amount
+            expense_max_age = age
     if not expense_rows:
         expense_rows = "<tr><td colspan='2' style='color:#999'>該当期間のイベント支出なし</td></tr>"
+
+    expense_summary = f"年{expense_count}件 / 合計 {expense_total:,.0f}円" + (
+        f" / 最大 {expense_max_age}歳: {expense_max_amount:,.0f}円" if expense_max_age is not None else ""
+    )
 
     life_events_html = f"""
     <div class="card full" data-card-id="life-events">
@@ -2581,6 +2594,17 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
             </div>
             <div class="sim-field"><label>終了年（任意）</label><input id="le-end-year" type="number" class="stepper-input" min="2000" max="2200" value=""></div>
             <button class="btn" onclick="createLifeEvent()">イベント追加</button>
+            <hr style="border:none;border-top:1px solid #eef2f7;margin:14px 0">
+            <h3>住宅テンプレート</h3>
+            <div class="sim-field"><label>購入年</label><input id="house-year" type="number" class="stepper-input" min="2000" max="2200" value="{datetime.now().year + 1}"></div>
+            <div class="sim-field"><label>住宅価格（円）</label><input id="house-price" type="text" class="money-input" value="45,000,000"></div>
+            <div class="sim-field"><label>頭金（円）</label><input id="house-down" type="text" class="money-input" value="5,000,000"></div>
+            <div class="sim-input-row">
+              <div class="sim-field" style="flex:1"><label>ローン年数</label><input id="house-loan-years" type="number" class="stepper-input" min="1" max="50" value="35"></div>
+              <div class="sim-field" style="flex:1"><label>金利（年率 %）</label><input id="house-rate" type="number" class="stepper-input" min="0" max="10" step="0.01" value="1.2"></div>
+            </div>
+            <div class="sim-field"><label>維持費（年額円, 任意）</label><input id="house-maint" type="text" class="money-input" value="300,000"></div>
+            <button class="btn" onclick="createHousingTemplate()">住宅イベントを自動作成</button>
           </div>
           <div class="sim-param-section">
             <h3>子ども登録（教育費自動反映）</h3>
@@ -2609,7 +2633,13 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
             <h3 style="font-size:0.9rem;margin-bottom:8px">子ども一覧</h3>
             <table class="pred-table"><tr><th>名前</th><th class="num">生年月</th><th>教育費プラン</th><th>操作</th></tr>{child_rows}</table>
             <h3 style="font-size:0.9rem;margin:12px 0 8px">期間内イベント支出（年次）</h3>
-            <table class="pred-table"><tr><th class="num">年齢</th><th class="num">支出</th></tr>{expense_rows}</table>
+            <div style="font-size:0.82rem;color:#636e72;margin-bottom:6px">{expense_summary}</div>
+            <details>
+              <summary style="cursor:pointer;color:#2881D7;font-size:0.82rem">詳細を表示</summary>
+              <div style="margin-top:8px">
+                <table class="pred-table"><tr><th class="num">年齢</th><th class="num">支出</th></tr>{expense_rows}</table>
+              </div>
+            </details>
           </div>
         </div>
       </div>
@@ -3201,6 +3231,37 @@ async function createLifeEvent() {{
     const data = await resp.json();
     if (!data.ok) {{
       alert(data.error || '保存に失敗しました');
+      return;
+    }}
+    location.reload();
+  }} catch (e) {{
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }}
+}}
+
+async function createHousingTemplate() {{
+  const payload = {{
+    purchase_year: parseInt(document.getElementById('house-year')?.value || '0', 10),
+    price: parseMoney(document.getElementById('house-price')?.value || '0'),
+    down_payment: parseMoney(document.getElementById('house-down')?.value || '0'),
+    loan_years: parseInt(document.getElementById('house-loan-years')?.value || '0', 10),
+    annual_interest_rate: parseFloat(document.getElementById('house-rate')?.value || '0'),
+    annual_maintenance: parseMoney(document.getElementById('house-maint')?.value || '0'),
+  }};
+  if (!payload.purchase_year || payload.price <= 0 || payload.loan_years <= 0) {{
+    alert('購入年・住宅価格・ローン年数を入力してください');
+    return;
+  }}
+  try {{
+    const resp = await fetch('/api/life-events/housing-template', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(payload)
+    }});
+    const data = await resp.json();
+    if (!data.ok) {{
+      alert(data.error || '住宅テンプレート作成に失敗しました');
       return;
     }}
     location.reload();
@@ -6138,6 +6199,85 @@ class Handler(BaseHTTPRequestHandler):
             conn = get_connection(self.db_path)
             try:
                 delete_life_event(conn, event_id)
+            finally:
+                conn.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+
+        elif parsed.path == "/api/life-events/housing-template":
+            if self.demo:
+                self._json_error(400, "デモモードでは変更できません")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            try:
+                req = json.loads(body)
+                purchase_year = int(req.get("purchase_year", 0))
+                price = float(req.get("price", 0))
+                down_payment = float(req.get("down_payment", 0))
+                loan_years = int(req.get("loan_years", 0))
+                annual_interest_rate = float(req.get("annual_interest_rate", 0))
+                annual_maintenance = float(req.get("annual_maintenance", 0))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                self._json_error(400, "invalid payload")
+                return
+            if purchase_year < 1900 or price <= 0 or loan_years <= 0:
+                self._json_error(400, "入力値が不正です")
+                return
+
+            loan_amount = max(0.0, price - max(0.0, down_payment))
+            monthly_rate = max(0.0, annual_interest_rate) / 100 / 12
+            n_months = loan_years * 12
+            if loan_amount <= 0:
+                monthly_payment = 0.0
+            elif monthly_rate == 0:
+                monthly_payment = loan_amount / n_months
+            else:
+                p = (1 + monthly_rate) ** n_months
+                monthly_payment = loan_amount * monthly_rate * p / (p - 1)
+            annual_payment = monthly_payment * 12
+            end_year = purchase_year + loan_years - 1
+
+            conn = get_connection(self.db_path)
+            try:
+                if down_payment > 0:
+                    create_life_event(
+                        conn=conn,
+                        event_type="one_time",
+                        title="住宅購入 頭金",
+                        amount=down_payment,
+                        start_year=purchase_year,
+                        repeat_every_years=None,
+                        end_year=purchase_year,
+                        enabled=True,
+                        note="housing_template",
+                    )
+                if annual_payment > 0:
+                    create_life_event(
+                        conn=conn,
+                        event_type="recurring",
+                        title="住宅ローン返済（年額）",
+                        amount=annual_payment,
+                        start_year=purchase_year,
+                        repeat_every_years=1,
+                        end_year=end_year,
+                        enabled=True,
+                        note="housing_template",
+                    )
+                if annual_maintenance > 0:
+                    create_life_event(
+                        conn=conn,
+                        event_type="recurring",
+                        title="住宅維持費（年額）",
+                        amount=annual_maintenance,
+                        start_year=purchase_year,
+                        repeat_every_years=1,
+                        end_year=end_year,
+                        enabled=True,
+                        note="housing_template",
+                    )
             finally:
                 conn.close()
             self.send_response(200)
