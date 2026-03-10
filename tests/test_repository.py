@@ -22,6 +22,7 @@ from src.db.repository import (
     get_annual_life_event_expenses,
     get_cf_actual_savings,
     get_cf_available_months,
+    get_cf_category_details_history,
     get_cf_category_summary,
     get_cf_category_trend,
     get_cf_dividend_history,
@@ -136,6 +137,32 @@ class TestCfCategoryTrend:
         assert result["categories"] == []
         assert result["avg_months"] == 0
         assert result["avg_by_category"] == {}
+        c.close()
+
+
+class TestCfCategoryDetailsHistory:
+    def test_returns_category_details(self, conn):
+        result = get_cf_category_details_history(conn, months=6)
+        assert result["year_months"] == ["2025-10", "2025-11", "2025-12"]
+        assert "住宅" in result["categories"]
+        assert len(result["by_category"]["住宅"]) >= 1
+
+    def test_detail_row_shape(self, conn):
+        result = get_cf_category_details_history(conn, months=6)
+        row = result["by_category"]["食費"][0]
+        assert "year_month" in row
+        assert "date" in row
+        assert "description" in row
+        assert "amount" in row
+        assert "minor_category" in row
+        assert "institution" in row
+
+    def test_empty_db(self, tmp_path):
+        c = init_db(str(tmp_path / "empty.db"))
+        result = get_cf_category_details_history(c, months=6)
+        assert result["year_months"] == []
+        assert result["categories"] == []
+        assert result["by_category"] == {}
         c.close()
 
 

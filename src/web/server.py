@@ -35,6 +35,7 @@ from src.db.repository import (
     get_cashflows,
     get_cf_actual_savings,
     get_cf_available_months,
+    get_cf_category_details_history,
     get_cf_category_summary,
     get_cf_category_trend,
     get_cf_dividend_history,
@@ -308,18 +309,23 @@ _COLLAPSE_JS = """
   const saved = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
   document.querySelectorAll('[data-card-id]').forEach(card => {
     const id = card.dataset.cardId;
+    const defaultCollapsed = card.dataset.defaultCollapsed === 'true';
     const body = card.querySelector('.card-body');
     const btn = card.querySelector('.collapse-btn');
     if (!body || !btn) return;
-    if (saved[id]) {
+    const isCollapsed = Object.prototype.hasOwnProperty.call(saved, id) ? !!saved[id] : defaultCollapsed;
+    if (isCollapsed) {
       card.classList.add('collapsed');
       btn.textContent = '\\u25B6';
+    } else {
+      card.classList.remove('collapsed');
+      btn.textContent = '\\u25BC';
     }
     btn.addEventListener('click', () => {
-      const isCollapsed = card.classList.toggle('collapsed');
-      btn.textContent = isCollapsed ? '\\u25B6' : '\\u25BC';
+      const nextCollapsed = card.classList.toggle('collapsed');
+      btn.textContent = nextCollapsed ? '\\u25B6' : '\\u25BC';
       const s = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
-      if (isCollapsed) { s[id] = true; } else { delete s[id]; }
+      s[id] = nextCollapsed;
       localStorage.setItem('collapsed_cards', JSON.stringify(s));
     });
   });
@@ -4575,6 +4581,9 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
 
         # カテゴリ別月次推移
         category_trend = get_cf_category_trend(conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode)
+        category_details = get_cf_category_details_history(
+            conn, months=6, closing_day=closing_day, holiday_mode=holiday_mode
+        )
 
         # 固定費 vs 変動費
         fixed_expenses = get_cf_fixed_expenses(conn, months=3, closing_day=closing_day, holiday_mode=holiday_mode)
@@ -4596,6 +4605,7 @@ def _get_cf_data(db_path: str, year_month: str | None = None) -> dict:
         "trend": trend,
         "available_months": available,
         "category_trend": category_trend,
+        "category_details": category_details,
         "fixed_expenses": fixed_expenses,
         "income_breakdown": income_breakdown,
         "income_trend": income_trend,
@@ -4875,6 +4885,56 @@ def _demo_cf_data() -> dict:
         },
         "avg_months": len(trend_months),
     }
+    category_details = {
+        "year_months": trend_months,
+        "categories": demo_cats,
+        "by_category": {
+            "趣味・娯楽": [
+                {
+                    "year_month": trend_months[-1],
+                    "date": f"{trend_months[-1]}-03",
+                    "description": "Steam",
+                    "amount": 6200,
+                    "minor_category": "ゲーム",
+                    "institution": "楽天カード",
+                },
+                {
+                    "year_month": trend_months[-1],
+                    "date": f"{trend_months[-1]}-14",
+                    "description": "書籍",
+                    "amount": 5800,
+                    "minor_category": "書籍",
+                    "institution": "Amazon",
+                },
+                {
+                    "year_month": trend_months[-2],
+                    "date": f"{trend_months[-2]}-09",
+                    "description": "映画",
+                    "amount": 1900,
+                    "minor_category": "映画",
+                    "institution": "楽天カード",
+                },
+            ],
+            "食費": [
+                {
+                    "year_month": trend_months[-1],
+                    "date": f"{trend_months[-1]}-05",
+                    "description": "イオン",
+                    "amount": 12400,
+                    "minor_category": "食料品",
+                    "institution": "楽天カード",
+                },
+                {
+                    "year_month": trend_months[-2],
+                    "date": f"{trend_months[-2]}-19",
+                    "description": "外食",
+                    "amount": 4800,
+                    "minor_category": "外食",
+                    "institution": "三井住友カード",
+                },
+            ],
+        },
+    }
 
     # 固定費 vs 変動費デモデータ
     fixed_expenses = {
@@ -4921,6 +4981,7 @@ def _demo_cf_data() -> dict:
         "trend": trend,
         "available_months": available,
         "category_trend": category_trend,
+        "category_details": category_details,
         "fixed_expenses": fixed_expenses,
         "income_breakdown": income_breakdown,
         "income_trend": income_trend,
@@ -5156,6 +5217,44 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         ensure_ascii=False,
     )
 
+    # --- カテゴリ別支出の明細（直近Nヶ月） ---
+    cat_details = data.get("category_details", {})
+    cat_detail_months = cat_details.get("year_months", [])
+    cat_detail_categories = cat_details.get("categories", [])
+    cat_detail_by_category = cat_details.get("by_category", {})
+    cat_detail_json = json.dumps(
+        {"months": cat_detail_months, "categories": cat_detail_categories, "by_category": cat_detail_by_category},
+        ensure_ascii=False,
+    )
+    detail_options = "".join(f'<option value="{_h(c)}">{_h(c)}</option>' for c in cat_detail_categories)
+    cat_details_html = ""
+    if cat_detail_categories:
+        cat_details_html = f"""
+    <div class="card full" data-card-id="cf-cat-details" data-default-collapsed="true">
+      <div class="card-header">
+        <h2>カテゴリ別支出の詳細（直近{len(cat_detail_months)}ヶ月）</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <label for="cat-detail-select" style="color:#636e72;font-size:0.9rem">カテゴリ</label>
+          <select id="cat-detail-select" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px">{detail_options}</select>
+          <label for="cat-detail-sort" style="color:#636e72;font-size:0.9rem">並び順</label>
+          <select id="cat-detail-sort" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px">
+            <option value="month_amount">月→金額（既定）</option>
+            <option value="date_desc">日付（新しい順）</option>
+            <option value="date_asc">日付（古い順）</option>
+          </select>
+        </div>
+        <div class="cat-detail-table-wrap">
+          <table class="cat-detail-table">
+            <tr><th class="col-month">月</th><th class="col-date">日付</th><th class="col-desc">内容</th><th class="col-minor">中項目</th><th class="col-inst">金融機関</th><th class="num col-amount">金額</th></tr>
+            <tbody id="cat-detail-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>"""
+
     # 差分テーブル
     diff_rows = ""
     progress_info_html = ""
@@ -5378,6 +5477,15 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
   .has-tip:hover {{ background: #f0f4ff; }}
   .pie-legend {{ font-size: 0.85rem; }}
   .pie-legend li {{ list-style: none; margin-bottom: 4px; }}
+  .cat-detail-table-wrap {{ max-height: 280px; overflow: auto; border: 1px solid #f1f2f6; border-radius: 8px; }}
+  .cat-detail-table {{ table-layout: fixed; width: 100%; min-width: 760px; }}
+  .cat-detail-table th, .cat-detail-table td {{ vertical-align: middle; }}
+  .cat-detail-table .col-month {{ width: 78px; white-space: nowrap; }}
+  .cat-detail-table .col-date {{ width: 68px; white-space: nowrap; }}
+  .cat-detail-table .col-minor {{ width: 84px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .cat-detail-table .col-inst {{ width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .cat-detail-table .col-amount {{ width: 98px; white-space: nowrap; }}
+  .cat-detail-table .col-desc {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
   .dl-btn {{
     padding: 3px 10px; border: 1px solid #2881D7; border-radius: 4px;
     background: #fff; color: #2881D7; font-size: 0.8rem; cursor: pointer;
@@ -5487,6 +5595,8 @@ def _build_cf_html(data: dict, skip_update: bool = False, ai_comment: str | None
         </table>
       </div>
     </div>
+
+    {cat_details_html}
 
     {cat_trend_html}
 
@@ -5623,6 +5733,53 @@ if (catTrendData.months.length > 0 && catTrendCanvas) {{
     ctx2.fillStyle = '#b2bec3';
     ctx2.fillText('…他' + (cCats.length - 6) + '件', lx, 15);
   }}
+}}
+
+// カテゴリ別支出の詳細（直近Nヶ月）
+const catDetailData = {cat_detail_json};
+const catDetailSelect = document.getElementById('cat-detail-select');
+const catDetailSort = document.getElementById('cat-detail-sort');
+const catDetailRows = document.getElementById('cat-detail-rows');
+
+function renderCategoryDetailRows(category, sortMode) {{
+  if (!catDetailRows) return;
+  const rows = [ ...((catDetailData.by_category || {{}})[category] || []) ];
+  if (sortMode === 'date_desc') {{
+    rows.sort((a, b) => (b.date || '').localeCompare(a.date || '') || Number(b.amount || 0) - Number(a.amount || 0));
+  }} else if (sortMode === 'date_asc') {{
+    rows.sort((a, b) => (a.date || '').localeCompare(b.date || '') || Number(b.amount || 0) - Number(a.amount || 0));
+  }} else {{
+    // default: fiscal month desc -> amount desc -> date desc
+    rows.sort((a, b) =>
+      (b.year_month || '').localeCompare(a.year_month || '') ||
+      Number(b.amount || 0) - Number(a.amount || 0) ||
+      (b.date || '').localeCompare(a.date || '')
+    );
+  }}
+  if (!rows.length) {{
+    catDetailRows.innerHTML = '<tr><td colspan="6" style="color:#999">明細データがありません</td></tr>';
+    return;
+  }}
+  catDetailRows.innerHTML = rows.map(r => {{
+    const dt = (r.date || '').slice(5);
+    const inst = r.institution || '';
+    const desc = r.description || '';
+    const minor = r.minor_category || '';
+    return '<tr>' +
+      '<td class="col-month">' + esc(r.year_month || '') + '</td>' +
+      '<td class="col-date">' + esc(dt) + '</td>' +
+      '<td class="col-desc" title="' + esc(desc) + '">' + esc(desc) + '</td>' +
+      '<td class="col-minor" title="' + esc(minor) + '">' + esc(minor) + '</td>' +
+      '<td class="col-inst" style="color:#636e72;font-size:0.82rem" title="' + esc(inst) + '">' + esc(inst) + '</td>' +
+      '<td class="num col-amount">' + Number(r.amount || 0).toLocaleString('ja-JP') + '円</td>' +
+      '</tr>';
+  }}).join('');
+}}
+
+if (catDetailSelect && catDetailRows && catDetailSort) {{
+  renderCategoryDetailRows(catDetailSelect.value, catDetailSort.value);
+  catDetailSelect.addEventListener('change', () => renderCategoryDetailRows(catDetailSelect.value, catDetailSort.value));
+  catDetailSort.addEventListener('change', () => renderCategoryDetailRows(catDetailSelect.value, catDetailSort.value));
 }}
 
 // 月ナビゲーション
