@@ -4,12 +4,16 @@
     python -m src.daily                    # デフォルト（更新待ち60秒）
     python -m src.daily --wait 30          # 更新待ち30秒
     python -m src.daily --no-refresh       # 一括更新を行わない（従来動作）
+    python -m src.daily --build-static     # dist/ に静的HTMLを生成
+    python -m src.daily --deploy --deploy-project-name <name>  # Cloudflare Pagesへデプロイ
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import subprocess
+from pathlib import Path
 
 from src.db.repository import (
     get_snapshot,
@@ -42,6 +46,9 @@ async def run(
     wait_seconds: int = 60,
     enable_refresh: bool = True,
     headless: bool = False,
+    build_static: bool = False,
+    deploy: bool = False,
+    deploy_project_name: str | None = None,
 ) -> None:
     pw, browser, context = await create_context(storage_state, headless=headless, accept_downloads=True)
     try:
@@ -156,6 +163,28 @@ async def run(
             print(f"  家計簿CSV: {len(cf_transactions)}件をDB保存")
         conn.close()
 
+        # 7. 静的HTMLビルド / Cloudflare Pages デプロイ（任意）
+        if build_static or deploy:
+            print("\n静的HTMLを生成します（dist/）...")
+            from scripts.build_static import build as build_static_pages
+
+            out_dir = build_static_pages(output_dir=Path("dist"), mode="live", db_path="data/assets.db")
+            print(f"  静的HTML生成完了: {out_dir}")
+
+            if deploy:
+                cmd = ["wrangler", "pages", "deploy", str(out_dir)]
+                if deploy_project_name:
+                    cmd += ["--project-name", deploy_project_name]
+                print("Cloudflare Pages へデプロイします...")
+                print(" ", " ".join(cmd))
+                try:
+                    subprocess.run(cmd, check=True)
+                    print("  Cloudflare Pages デプロイ完了")
+                except FileNotFoundError:
+                    print("  wrangler コマンドが見つかりません。npm で wrangler をインストールしてください。")
+                except subprocess.CalledProcessError as e:
+                    print(f"  デプロイ失敗（exit={e.returncode}）")
+
     finally:
         await browser.close()
         await pw.stop()
@@ -166,8 +195,23 @@ def main() -> None:
     parser.add_argument("--storage-state", type=str, default=None)
     parser.add_argument("--wait", type=int, default=60, help="一括更新後の待機秒数（デフォルト: 60）")
     parser.add_argument("--no-refresh", action="store_true", help="データ未更新時の一括更新を行わない")
+    parser.add_argument("--build-static", action="store_true", help="処理後に dist/ へ静的HTMLを生成する")
+    parser.add_argument(
+        "--deploy", action="store_true", help="処理後に Cloudflare Pages へデプロイする（wrangler 必須）"
+    )
+    parser.add_argument("--deploy-project-name", type=str, default=None, help="Cloudflare Pages の project name")
     args = parser.parse_args()
-    asyncio.run(run(args.storage_state, args.wait, not args.no_refresh))
+    asyncio.run(
+        run(
+            args.storage_state,
+            args.wait,
+            not args.no_refresh,
+            False,
+            args.build_static,
+            args.deploy,
+            args.deploy_project_name,
+        )
+    )
 
 
 if __name__ == "__main__":

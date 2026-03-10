@@ -12,27 +12,19 @@ EXPECTED_FILES = {"index.html", "cf.html", "plan.html", "simulator.html", ".noje
 
 
 @pytest.fixture(scope="module")
-def docs_dir(tmp_path_factory):
-    """ビルドを1回だけ実行して docs/ を返す。"""
-    import scripts.build_static as mod
-
-    # 一時ディレクトリにビルド
-    tmp = tmp_path_factory.mktemp("docs")
-    original = mod.DOCS_DIR
-    mod.DOCS_DIR = tmp
-    try:
-        build()
-    finally:
-        mod.DOCS_DIR = original
+def output_dir(tmp_path_factory):
+    """ビルドを1回だけ実行して出力ディレクトリを返す。"""
+    tmp = tmp_path_factory.mktemp("dist")
+    build(output_dir=tmp, mode="demo")
     return tmp
 
 
 @pytest.fixture(scope="module")
-def html_files(docs_dir):
+def html_files(output_dir):
     """各 HTML ファイルの内容を dict で返す。"""
     result = {}
     for name in ["index.html", "cf.html", "plan.html", "simulator.html"]:
-        path = docs_dir / name
+        path = output_dir / name
         if path.exists():
             result[name] = path.read_text(encoding="utf-8")
     return result
@@ -41,9 +33,9 @@ def html_files(docs_dir):
 class TestBuildOutput:
     """ビルド結果のファイル構成テスト。"""
 
-    def test_all_files_generated(self, docs_dir):
+    def test_all_files_generated(self, output_dir):
         """4 HTML + .nojekyll の 5 ファイルが生成される。"""
-        names = {f.name for f in docs_dir.iterdir()}
+        names = {f.name for f in output_dir.iterdir()}
         assert names == EXPECTED_FILES
 
     def test_html_files_not_empty(self, html_files):
