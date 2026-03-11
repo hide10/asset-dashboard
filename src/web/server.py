@@ -3041,7 +3041,7 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
   .sim-chart-card .card-header {{
     margin-bottom: 10px;
   }}
-  .sim-summary-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }}
+  .sim-summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px; }}
   .sim-summary-item {{
     text-align: left; padding: 10px 12px; background: rgba(248,249,250,0.92); border-radius: 10px;
     border: 1px solid #eef2f7;
