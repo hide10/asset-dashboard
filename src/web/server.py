@@ -2642,7 +2642,7 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     impact_color = "#e74c3c" if net_impact < 0 else "#0F7F30"
 
     summary_html = f"""
-    <div class="card full" data-card-id="sim-summary">
+    <div class="card full sim-summary-card" data-card-id="sim-summary">
       <div class="card-header">
         <h2>財務サマリー</h2>
         <button class="collapse-btn">&#x25BC;</button>
@@ -2883,13 +2883,13 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     balances_json = json.dumps(result.yearly_balances, ensure_ascii=False)
     balances_no_events_json = json.dumps(result_no_events.yearly_balances, ensure_ascii=False)
     chart_html = """
-    <div class="card full" data-card-id="sim-chart">
+    <div class="card full sim-chart-card" data-card-id="sim-chart">
       <div class="card-header">
         <h2>資産推移グラフ</h2>
         <button class="collapse-btn">&#x25BC;</button>
       </div>
       <div class="card-body">
-      <div style="position:relative;width:100%;padding-bottom:45%;min-height:280px">
+      <div class="sim-chart-frame">
         <canvas id="sim-fan-chart" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
       </div>
       <div class="pred-note">※ 実質値（インフレ調整済み）。濃い帯=P25〜P75、薄い帯=P10〜P90、線=P50（中央値）</div>
@@ -2928,10 +2928,14 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
   {_NAV_CSS}
   h1 {{ font-size: 1.5rem; }}
   .grid {{ display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }}
-  [data-card-id="sim-chart"] {{
+  .sim-overview-stack {{
     position: sticky;
     top: 12px;
-    z-index: 3;
+    z-index: 4;
+    display: grid;
+    gap: 12px;
+    width: 100%;
+    flex: 0 0 100%;
   }}
   .card {{
     background: #fff; border-radius: 12px; padding: 20px;
@@ -3028,14 +3032,29 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     font-size: 0.8rem !important; padding: 8px 16px !important;
   }}
   .sim-reset-btn:hover {{ background: #f8f9fa !important; color: #2d3436 !important; }}
-  .sim-summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px; }}
-  .sim-summary-item {{ text-align: center; padding: 12px; background: #f8f9fa; border-radius: 8px; }}
-  .sim-summary-label {{ font-size: 0.8rem; color: #636e72; margin-bottom: 4px; }}
-  .sim-summary-value {{ font-size: 1.1rem; font-weight: 700; }}
-  .sim-prob-grid {{ display: flex; gap: 24px; justify-content: center; padding: 12px 0; border-top: 1px solid #f1f2f6; }}
+  .sim-summary-card {{
+    padding: 14px 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    border: 1px solid #e8f1fb;
+  }}
+  .sim-summary-card .card-header,
+  .sim-chart-card .card-header {{
+    margin-bottom: 10px;
+  }}
+  .sim-summary-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }}
+  .sim-summary-item {{
+    text-align: left; padding: 10px 12px; background: rgba(248,249,250,0.92); border-radius: 10px;
+    border: 1px solid #eef2f7;
+  }}
+  .sim-summary-label {{ font-size: 0.74rem; color: #636e72; margin-bottom: 4px; line-height: 1.4; }}
+  .sim-summary-value {{ font-size: 1rem; font-weight: 700; line-height: 1.25; }}
+  .sim-prob-grid {{
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+    padding-top: 12px; border-top: 1px solid #f1f2f6;
+  }}
   .sim-prob-item {{ text-align: center; }}
-  .sim-prob-label {{ font-size: 0.8rem; color: #636e72; margin-right: 8px; }}
-  .sim-prob-value {{ font-size: 1.2rem; font-weight: 700; }}
+  .sim-prob-label {{ display: block; font-size: 0.74rem; color: #636e72; margin-bottom: 2px; }}
+  .sim-prob-value {{ font-size: 1.05rem; font-weight: 700; }}
   .sim-loading {{ display: none; margin-left: 8px; }}
   .sim-notes {{
     margin-top: 16px; padding: 0; background: #f8f9fa; border-radius: 8px;
@@ -3059,15 +3078,27 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
   .sim-notes ul {{ font-size: 0.75rem; color: #636e72; padding-left: 18px; margin: 0; }}
   .sim-notes li {{ margin-bottom: 3px; line-height: 1.5; }}
   .sim-notes strong {{ color: #2d3436; }}
+  .sim-chart-card {{
+    padding: 16px;
+  }}
+  .sim-chart-frame {{
+    position: relative; width: 100%; min-height: 220px; max-height: 320px; height: clamp(220px, 30vw, 300px);
+  }}
 
   @media (max-width: 700px) {{
-    [data-card-id="sim-chart"] {{ position: static; top: auto; }}
+    .sim-overview-stack {{ position: static; top: auto; }}
     .card {{ width: 100%; }}
     .sim-param-grid {{ grid-template-columns: 1fr; }}
+    .sim-summary-grid {{ grid-template-columns: 1fr 1fr; }}
+    .sim-chart-frame {{ min-height: 200px; height: 220px; }}
     .page-header {{ flex-direction: column; gap: 8px; align-items: flex-start; }}
     .nav-toolbar a {{ padding: 6px 10px; font-size: 0.78rem; }}
     h1 {{ font-size: 1.2rem; }}
     table {{ font-size: 0.8rem; }}
+  }}
+  @media (max-width: 520px) {{
+    .sim-summary-grid {{ grid-template-columns: 1fr; }}
+    .sim-prob-grid {{ grid-template-columns: 1fr; }}
   }}
 </style>
 </head>
@@ -3078,7 +3109,10 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
     {_nav_html("/simulator")}
   </div>
   <div class="grid">
-    {chart_html}
+    <div class="sim-overview-stack full">
+      {chart_html}
+      {summary_html}
+    </div>
     <div class="card full" id="sim-params" data-card-id="sim-params">
       <div class="card-header">
         <h2>パラメータ設定</h2>
@@ -3095,7 +3129,6 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
       </div>
     </div>
     {life_events_html}
-    {summary_html}
     {projection_table_html}
   </div>
 </div>
