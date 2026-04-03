@@ -30,6 +30,7 @@ from src.db.repository import (
     get_cf_income_breakdown,
     get_cf_income_trend,
     get_cf_monthly_trend,
+    get_holding_history,
     get_life_plan_inflation_rate,
     list_children_profiles,
     list_life_events,
@@ -1112,6 +1113,118 @@ class TestGetFundTotalHistory:
         # 2025-10-15 の total_value に株式の100万は含まれない
         day15 = [r for r in result if r["date"] == "2025-10-15"][0]
         assert day15["total_value"] == 3_650_000  # ファンドA+B のみ
+
+
+class TestGetHoldingHistory:
+    def test_stock_history_by_code_and_name(self, tmp_path):
+        db_path = tmp_path / "holding_history.db"
+        conn = init_db(str(db_path))
+        for d in ["2025-10-13", "2025-10-14", "2025-10-15"]:
+            conn.execute("INSERT OR IGNORE INTO snapshots VALUES (?, 10000000, '{}', '')", (d,))
+        conn.executemany(
+            """INSERT INTO snapshot_holdings
+               (date, symbol_or_code, name, quantity, value, asset_class, position,
+                acquisition_price, current_price, unrealized_gain, unrealized_gain_pct)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    "2025-10-13",
+                    "8316",
+                    "三井住友フィナンシャルG",
+                    100,
+                    480_000,
+                    "株式（現物）",
+                    0,
+                    4300,
+                    4800,
+                    50_000,
+                    11.6,
+                ),
+                (
+                    "2025-10-14",
+                    "8316",
+                    "三井住友フィナンシャルG",
+                    100,
+                    500_000,
+                    "株式（現物）",
+                    0,
+                    4300,
+                    5000,
+                    70_000,
+                    16.3,
+                ),
+                (
+                    "2025-10-15",
+                    "8316",
+                    "三井住友フィナンシャルG",
+                    100,
+                    515_000,
+                    "株式（現物）",
+                    0,
+                    4300,
+                    5150,
+                    85_000,
+                    19.8,
+                ),
+                ("2025-10-15", "8058", "三菱商事", 100, 300_000, "株式（現物）", 1, 2500, 3000, 50_000, 20.0),
+            ],
+        )
+        conn.commit()
+
+        result = get_holding_history(conn, "株式（現物）", "三井住友フィナンシャルG", "8316", months=6)
+        conn.close()
+
+        assert [r["date"] for r in result] == ["2025-10-13", "2025-10-14", "2025-10-15"]
+        assert result[-1]["total_value"] == 515_000
+        assert result[-1]["total_cost"] == 430_000
+
+    def test_fund_history_by_name_without_code(self, tmp_path):
+        db_path = tmp_path / "fund_holding_history.db"
+        conn = init_db(str(db_path))
+        for d in ["2025-10-13", "2025-10-15"]:
+            conn.execute("INSERT OR IGNORE INTO snapshots VALUES (?, 10000000, '{}', '')", (d,))
+        conn.executemany(
+            """INSERT INTO snapshot_holdings
+               (date, symbol_or_code, name, quantity, value, asset_class, position,
+                acquisition_price, current_price, unrealized_gain, unrealized_gain_pct)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    "2025-10-13",
+                    "",
+                    "eMAXIS Slim 全世界株式(オルカン)",
+                    100000,
+                    1_000_000,
+                    "投資信託",
+                    0,
+                    None,
+                    None,
+                    120_000,
+                    13.6,
+                ),
+                (
+                    "2025-10-15",
+                    "",
+                    "eMAXIS Slim 全世界株式(オルカン)",
+                    100000,
+                    1_080_000,
+                    "投資信託",
+                    0,
+                    None,
+                    None,
+                    180_000,
+                    20.0,
+                ),
+            ],
+        )
+        conn.commit()
+
+        result = get_holding_history(conn, "投資信託", "eMAXIS Slim 全世界株式(オルカン)", "", months=6)
+        conn.close()
+
+        assert len(result) == 2
+        assert result[0]["total_cost"] == 880_000
+        assert result[1]["total_value"] == 1_080_000
 
 
 class TestLifePlanSettings:

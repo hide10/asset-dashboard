@@ -1307,3 +1307,49 @@ def get_fund_total_history(conn: sqlite3.Connection, months: int = 13) -> list[d
     ).fetchall()
 
     return [{"date": r[0], "total_value": r[1], "total_cost": r[2]} for r in rows if r[1] is not None]
+
+
+def get_holding_history(
+    conn: sqlite3.Connection,
+    asset_class: str,
+    name: str,
+    symbol_or_code: str = "",
+    months: int = 13,
+) -> list[dict]:
+    """指定銘柄の評価額・取得価額の時系列データを返す。"""
+    code = (symbol_or_code or "").strip()
+    latest_row = conn.execute(
+        """
+        SELECT MAX(date)
+        FROM snapshot_holdings
+        WHERE asset_class = ?
+          AND name = ?
+          AND symbol_or_code = ?
+        """,
+        (asset_class, name, code),
+    ).fetchone()
+    if not latest_row or not latest_row[0]:
+        return []
+
+    latest_dt = date_cls.fromisoformat(latest_row[0])
+    cutoff = (latest_dt - timedelta(days=months * 30)).isoformat()
+
+    rows = conn.execute(
+        """
+        SELECT date,
+               SUM(value),
+               CASE WHEN COUNT(*) = COUNT(unrealized_gain)
+                    THEN SUM(value - unrealized_gain)
+               END
+        FROM snapshot_holdings
+        WHERE asset_class = ?
+          AND name = ?
+          AND symbol_or_code = ?
+          AND date >= ?
+        GROUP BY date
+        ORDER BY date ASC
+        """,
+        (asset_class, name, code, cutoff),
+    ).fetchall()
+
+    return [{"date": r[0], "total_value": r[1], "total_cost": r[2]} for r in rows if r[1] is not None]

@@ -904,3 +904,30 @@ class TestFundTotalCard:
         data["fund_total_history"] = []
         html = _build_html(data, [data["date"]], skip_update=True, demo=True)
         assert 'data-card-id="dash-fund-total"' not in html
+
+
+class TestHoldingDetailCard:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.data = _demo_data()
+        self.html = _build_html(self.data, [self.data["date"]], skip_update=True, demo=True)
+
+    def test_card_exists(self):
+        assert 'data-card-id="dash-holding-detail"' in self.html
+        assert 'id="holding-detail-card"' in self.html
+
+    def test_holdings_are_clickable(self):
+        assert 'class="holding-link"' in self.html
+        assert "data-holding-key=" in self.html
+
+    def test_chart_and_controls_exist(self):
+        assert 'id="holding-detail-chart"' in self.html
+        assert "個別銘柄 評価額・取得価額推移" in self.html
+        assert 'class="holding-range-btn active"' in self.html
+
+    def test_demo_data_has_holding_histories(self):
+        histories = self.data.get("holding_histories", {})
+        assert histories
+        first = next(iter(histories.values()))
+        assert len(first["history"]) == 365
+        assert "total_value" in first["history"][0]
