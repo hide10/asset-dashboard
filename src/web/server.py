@@ -45,6 +45,7 @@ from src.db.repository import (
     get_cf_monthly_trend,
     get_daily_assets,
     get_fund_total_history,
+    get_holding_history,
     get_life_plan_inflation_rate,
     get_setting,
     list_children_profiles,
@@ -78,6 +79,16 @@ _update_state = {"running": False, "version": 0}
 def _h(s: str) -> str:
     """HTML エスケープのショートカット。"""
     return html_mod.escape(str(s))
+
+
+def _holding_history_key(asset_class: str, code: str, name: str) -> str:
+    """保有銘柄履歴のキーを返す。"""
+    parts = [
+        unicodedata.normalize("NFKC", asset_class or "").strip(),
+        unicodedata.normalize("NFKC", code or "").strip(),
+        unicodedata.normalize("NFKC", name or "").strip(),
+    ]
+    return "|".join(parts)
 
 
 def _is_top_expense_excluded(item: dict) -> bool:
@@ -387,6 +398,22 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         ]
 
         fund_total_history = get_fund_total_history(conn)
+        holding_histories = {}
+        for h in holdings:
+            history = get_holding_history(conn, h["asset_class"], h["name"], h["code"])
+            if not history:
+                continue
+            key = _holding_history_key(h["asset_class"], h["code"], h["name"])
+            latest = history[-1]
+            holding_histories[key] = {
+                "key": key,
+                "name": h["name"],
+                "code": h["code"],
+                "asset_class": h["asset_class"],
+                "history": history,
+                "latest_value": latest["total_value"],
+                "latest_cost": latest.get("total_cost"),
+            }
     finally:
         conn.close()
 
@@ -495,6 +522,7 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         "concentration": conc,
         "comparisons": comparisons,
         "fund_total_history": fund_total_history,
+        "holding_histories": holding_histories,
     }
 
 
@@ -561,6 +589,34 @@ def _fund_total_card_html(fund_total_history: list[dict]) -> str:
     </div>"""
 
 
+def _holding_detail_card_html(holding_histories: dict[str, dict]) -> str:
+    """個別銘柄の評価額・取得価額推移カードの HTML を返す。"""
+    if not holding_histories:
+        return ""
+
+    return """<div class="card full holding-detail-card" data-card-id="dash-holding-detail" id="holding-detail-card" style="display:none">
+      <div class="card-header">
+        <h2>個別銘柄 評価額・取得価額推移</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div class="holding-detail-head">
+          <div>
+            <div class="holding-detail-name" id="holding-detail-name">-</div>
+            <div class="holding-detail-meta" id="holding-detail-meta"></div>
+          </div>
+          <div class="holding-detail-summary" id="holding-detail-summary"></div>
+        </div>
+        <div class="holding-detail-range">
+          <button class="holding-range-btn active" data-days="90" type="button">3ヶ月</button>
+          <button class="holding-range-btn" data-days="180" type="button">6ヶ月</button>
+          <button class="holding-range-btn" data-days="365" type="button">1年</button>
+        </div>
+        <canvas id="holding-detail-chart" height="260"></canvas>
+      </div>
+    </div>"""
+
+
 def _build_html(
     data: dict,
     dates: list[str],
@@ -587,6 +643,7 @@ def _build_html(
     conc = data.get("concentration")
     comparisons = data.get("comparisons", [])
     fund_total_history = data.get("fund_total_history", [])
+    holding_histories = data.get("holding_histories", {})
 
     # 日付セレクタ
     date_options = ""
@@ -688,7 +745,15 @@ def _build_html(
                 diff_cells += f'<td class="num {css}">{sign}{d:,.0f}</td>'
             else:
                 diff_cells += '<td class="num diff-zero">-</td>'
-        hold_rows += f'<tr><td>{code}{_h(h["name"])}{qty}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
+        history_key = _holding_history_key(h["asset_class"], h["code"], h["name"])
+        if history_key in holding_histories:
+            name_html = (
+                f'<button type="button" class="holding-link" data-holding-key="{_h(history_key)}">'
+                f"{code}{_h(h['name'])}{qty}</button>"
+            )
+        else:
+            name_html = f"{code}{_h(h['name'])}{qty}"
+        hold_rows += f'<tr><td>{name_html}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
 
     # 業種別円グラフ用データ
     sector_colors = [
@@ -960,6 +1025,27 @@ def _build_html(
   .card-header h2 {{ margin-bottom: 0; }}
   .hold-table th {{ white-space: nowrap; }}
   .hold-table td:nth-child(n+3) {{ font-size: 0.82rem; }}
+  .holding-link {{
+    display: inline-flex; align-items: baseline; gap: 4px;
+    border: 0; background: transparent; padding: 0; margin: 0;
+    color: #1f5fbf; cursor: pointer; font: inherit; text-align: left;
+  }}
+  .holding-link:hover {{ color: #174a94; text-decoration: underline; }}
+  .holding-link.active {{ color: #0f7f30; font-weight: 700; }}
+  .holding-detail-card .card-body {{ overflow-x: auto; }}
+  .holding-detail-head {{
+    display: flex; justify-content: space-between; gap: 16px; margin-bottom: 12px; flex-wrap: wrap;
+  }}
+  .holding-detail-name {{ font-size: 1.15rem; font-weight: 700; color: #2d3436; }}
+  .holding-detail-meta {{ font-size: 0.85rem; color: #636e72; margin-top: 2px; }}
+  .holding-detail-summary {{ font-size: 0.95rem; color: #2d3436; }}
+  .holding-detail-summary .label {{ color: #888; margin-right: 4px; }}
+  .holding-detail-range {{ text-align: right; margin-bottom: 8px; }}
+  .holding-range-btn {{
+    padding: 2px 10px; margin: 0 2px; border: 1px solid #ddd; border-radius: 4px;
+    background: #fff; cursor: pointer;
+  }}
+  .holding-range-btn.active {{ background: #edf4ff; border-color: #a9c7f7; color: #1f5fbf; }}
   {_NAV_CSS}
   .ai-comment-card {{
     background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
@@ -1134,8 +1220,6 @@ def _build_html(
       </div>
     </div>
 
-    {_fund_total_card_html(fund_total_history)}
-
     <div class="card full" data-card-id="dash-holdings">
       <div class="card-header">
         <h2>保有銘柄 ({len(holdings)})</h2>
@@ -1148,6 +1232,10 @@ def _build_html(
       </table>
       </div>
     </div>
+
+    {_holding_detail_card_html(holding_histories)}
+
+    {_fund_total_card_html(fund_total_history)}
   </div>
 </div>
 <div class="pie-tooltip" id="pie-tooltip"></div>
@@ -1164,6 +1252,182 @@ drawPieChart('sector-pie', 'sector-legend', sectorData, 220);
 
 const yieldData = {yield_pie_data};
 drawPieChart('yield-pie', null, yieldData, 140);
+
+const holdingHistoryMap = {json.dumps(holding_histories, ensure_ascii=False)};
+const holdingDetailCard = document.getElementById('holding-detail-card');
+const holdingDetailName = document.getElementById('holding-detail-name');
+const holdingDetailMeta = document.getElementById('holding-detail-meta');
+const holdingDetailSummary = document.getElementById('holding-detail-summary');
+const holdingDetailCanvas = document.getElementById('holding-detail-chart');
+const holdingRangeBtns = document.querySelectorAll('.holding-range-btn');
+const holdingLinks = document.querySelectorAll('.holding-link');
+let selectedHoldingKey = holdingLinks[0]?.dataset.holdingKey || null;
+let holdingRange = 90;
+
+function formatHoldingSummary(record) {{
+  const totalValue = record.latest_value || 0;
+  const totalCost = record.latest_cost;
+  let html = '<span class="label">評価額</span>¥' + totalValue.toLocaleString('ja-JP');
+  if (totalCost != null && totalCost > 0) {{
+    const gain = totalValue - totalCost;
+    const gainPct = gain / totalCost * 100;
+    const sign = gain >= 0 ? '+' : '';
+    const css = gain >= 0 ? 'plus' : 'minus';
+    html += ' <span class="label">取得価額</span>¥' + totalCost.toLocaleString('ja-JP');
+    html += ' <span class="label">評価損益</span><span class="' + css + '">' + sign + '¥'
+      + gain.toLocaleString('ja-JP') + ' (' + gainPct.toFixed(2) + '%)</span>';
+  }}
+  return html;
+}}
+
+function drawHoldingDetailChart() {{
+  if (!selectedHoldingKey || !holdingHistoryMap[selectedHoldingKey] || !holdingDetailCanvas || !holdingDetailCard) return;
+  const record = holdingHistoryMap[selectedHoldingKey];
+  const allData = record.history || [];
+  if (!allData.length) return;
+
+  const now = new Date(allData[allData.length - 1].date);
+  const cutoff = new Date(now);
+  cutoff.setDate(cutoff.getDate() - holdingRange);
+  const filtered = allData.filter(d => new Date(d.date) >= cutoff);
+  if (!filtered.length) return;
+
+  holdingDetailCard.style.display = 'block';
+  holdingDetailName.textContent = record.name || '-';
+  const metaParts = [];
+  if (record.code) metaParts.push(record.code);
+  if (record.asset_class) metaParts.push(record.asset_class);
+  holdingDetailMeta.textContent = metaParts.join(' / ');
+  holdingDetailSummary.innerHTML = formatHoldingSummary(record);
+
+  const ctx = holdingDetailCanvas.getContext('2d');
+  const W = holdingDetailCanvas.parentElement.clientWidth - 40;
+  holdingDetailCanvas.width = W;
+  holdingDetailCanvas.height = 260;
+  ctx.clearRect(0, 0, W, 260);
+
+  const pad = {{ left: 80, right: 20, top: 20, bottom: 30 }};
+  const cW = W - pad.left - pad.right;
+  const cH = 260 - pad.top - pad.bottom;
+
+  const allVals = [];
+  filtered.forEach(d => {{
+    allVals.push(d.total_value || 0);
+    if (d.total_cost != null) allVals.push(d.total_cost);
+  }});
+  const minVal = Math.min(...allVals) * 0.95;
+  const maxVal = Math.max(...allVals) * 1.05;
+  const range = maxVal - minVal || 1;
+  const toY = v => pad.top + cH * (1 - (v - minVal) / range);
+  const toX = i => pad.left + (cW / (filtered.length - 1 || 1)) * i;
+
+  ctx.strokeStyle = '#f1f2f6';
+  ctx.fillStyle = '#b2bec3';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {{
+    const y = pad.top + cH * (1 - i / 4);
+    const val = minVal + range * i / 4;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillText((val / 10000).toFixed(0) + '\\u4e07', pad.left - 6, y + 4);
+  }}
+
+  const hasCost = filtered.some(d => d.total_cost != null);
+  if (hasCost) {{
+    ctx.strokeStyle = '#b2bec3';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+    filtered.forEach((d, i) => {{
+      if (d.total_cost == null) return;
+      const x = toX(i), y = toY(d.total_cost);
+      if (!started) {{ ctx.moveTo(x, y); started = true; }} else ctx.lineTo(x, y);
+    }});
+    ctx.stroke();
+  }}
+
+  ctx.strokeStyle = '#2881D7';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  filtered.forEach((d, i) => {{
+    const x = toX(i), y = toY(d.total_value);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }});
+  ctx.stroke();
+
+  const step = Math.max(1, Math.floor(filtered.length / 8));
+  ctx.fillStyle = '#636e72';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  filtered.forEach((d, i) => {{
+    if (i % step === 0 || i === filtered.length - 1) {{
+      ctx.fillText(d.date.substring(5), toX(i), pad.top + cH + 18);
+    }}
+  }});
+
+  let lx = pad.left;
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  [['#2881D7', '\\u8a55\\u4fa1\\u984d'], ['#b2bec3', '\\u53d6\\u5f97\\u4fa1\\u984d']].forEach(([color, label]) => {{
+    ctx.fillStyle = color;
+    ctx.fillRect(lx, 6, 14, 10);
+    ctx.fillStyle = '#2d3436';
+    ctx.fillText(label, lx + 17, 14);
+    lx += ctx.measureText(label).width + 32;
+  }});
+
+  holdingDetailCanvas.onmousemove = function(e) {{
+    const rect = holdingDetailCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const idx = Math.round((mx - pad.left) / (cW / (filtered.length - 1 || 1)));
+    const tip = document.getElementById('pie-tooltip');
+    if (!tip || idx < 0 || idx >= filtered.length) {{
+      if (tip) tip.classList.remove('show');
+      return;
+    }}
+    const d = filtered[idx];
+    let html = '<strong>' + esc(d.date) + '</strong>';
+    html += '<div style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.2);padding-top:4px">';
+    html += '<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#2881D7">\\u25cf \\u8a55\\u4fa1\\u984d</span><span>'
+      + (d.total_value / 10000).toLocaleString('ja-JP', {{maximumFractionDigits:0}}) + '\\u4e07</span></div>';
+    if (d.total_cost != null && d.total_cost > 0) {{
+      html += '<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#b2bec3">\\u25cf \\u53d6\\u5f97\\u4fa1\\u984d</span><span>'
+        + (d.total_cost / 10000).toLocaleString('ja-JP', {{maximumFractionDigits:0}}) + '\\u4e07</span></div>';
+    }}
+    html += '</div>';
+    tip.innerHTML = html;
+    tip.style.left = e.clientX + 14 + 'px';
+    tip.style.top = e.clientY + 14 + 'px';
+    tip.classList.add('show');
+  }};
+  holdingDetailCanvas.onmouseleave = function() {{
+    const tip = document.getElementById('pie-tooltip');
+    if (tip) tip.classList.remove('show');
+  }};
+}}
+
+holdingRangeBtns.forEach(btn => btn.addEventListener('click', function() {{
+  holdingRangeBtns.forEach(b => b.classList.remove('active'));
+  this.classList.add('active');
+  holdingRange = parseInt(this.dataset.days);
+  drawHoldingDetailChart();
+}}));
+
+holdingLinks.forEach(btn => btn.addEventListener('click', function() {{
+  holdingLinks.forEach(link => link.classList.remove('active'));
+  this.classList.add('active');
+  selectedHoldingKey = this.dataset.holdingKey;
+  drawHoldingDetailChart();
+  if (holdingDetailCard) {{
+    holdingDetailCard.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+  }}
+}}));
+
+if (selectedHoldingKey && holdingHistoryMap[selectedHoldingKey]) {{
+  const firstLink = document.querySelector('.holding-link[data-holding-key="' + CSS.escape(selectedHoldingKey) + '"]');
+  if (firstLink) firstLink.classList.add('active');
+  drawHoldingDetailChart();
+}}
 
 // 日付ナビゲーション
 const sel = document.getElementById('date-select');
@@ -1820,6 +2084,40 @@ def _demo_data() -> dict:
             }
         )
 
+    holding_histories: dict[str, dict] = {}
+    for idx, h in enumerate(holdings):
+        if not h.get("value"):
+            continue
+        latest_cost = h["value"] - h["unrealized_gain"] if h.get("unrealized_gain") is not None else None
+        hist = []
+        base_value = h["value"] * (0.82 + idx * 0.01)
+        base_cost = latest_cost * 0.9 if latest_cost else None
+        for i in range(365):
+            d = date.today() - timedelta(days=364 - i)
+            growth = 1 + 0.0006 * i + rng.uniform(-0.012, 0.012)
+            total_value_hist = round(base_value * growth)
+            if base_cost is not None:
+                total_cost_hist = round(min(base_cost + i * max(0, h["value"] * 0.00008), latest_cost))
+            else:
+                total_cost_hist = None
+            hist.append(
+                {
+                    "date": d.isoformat(),
+                    "total_value": total_value_hist,
+                    "total_cost": total_cost_hist,
+                }
+            )
+        key = _holding_history_key(h["asset_class"], h["code"], h["name"])
+        holding_histories[key] = {
+            "key": key,
+            "name": h["name"],
+            "code": h["code"],
+            "asset_class": h["asset_class"],
+            "history": hist,
+            "latest_value": h["value"],
+            "latest_cost": latest_cost,
+        }
+
     return {
         "date": today,
         "total_asset": total_asset,
@@ -1837,6 +2135,7 @@ def _demo_data() -> dict:
         "comparisons": demo_comparisons,
         "_sector_holdings": demo_sector_holdings,
         "fund_total_history": fund_total_history,
+        "holding_histories": holding_histories,
     }
 
 
