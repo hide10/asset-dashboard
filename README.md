@@ -26,6 +26,20 @@
 
 ## セットアップ
 
+### ワンコマンドインストール（推奨）
+
+```bash
+# Linux / macOS / WSL
+bash install.sh
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Python 3.11+ の確認 → uv インストール → 仮想環境作成 → 依存インストール → Playwright Chromium インストールを一括実行する。
+
+### 手動セットアップ
+
 ```bash
 # 仮想環境の作成と依存インストール
 uv venv .venv
