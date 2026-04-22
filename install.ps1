@@ -8,10 +8,10 @@ $VENV_DIR = ".venv"
 
 # --- ヘルパー関数 -----------------------------------------------------------
 
-function Write-Info  { Write-Host "[INFO]  $args" -ForegroundColor Cyan }
-function Write-Ok    { Write-Host "[OK]    $args" -ForegroundColor Green }
-function Write-Warn  { Write-Host "[WARN]  $args" -ForegroundColor Yellow }
-function Write-Err   { Write-Host "[ERROR] $args" -ForegroundColor Red; exit 1 }
+function Write-Info  { param([string]$Message) Write-Host "[INFO]  $Message" -ForegroundColor Cyan }
+function Write-Ok    { param([string]$Message) Write-Host "[OK]    $Message" -ForegroundColor Green }
+function Write-Warn  { param([string]$Message) Write-Host "[WARN]  $Message" -ForegroundColor Yellow }
+function Write-Err   { param([string]$Message) Write-Host "[ERROR] $Message" -ForegroundColor Red; exit 1 }
 
 # --- Python チェック ---------------------------------------------------------
 
@@ -73,7 +73,7 @@ if (Test-Path $VENV_DIR) {
     Write-Info "既存の仮想環境を検出 ($VENV_DIR)"
 } else {
     Write-Info "仮想環境を作成中..."
-    uv venv $VENV_DIR --python $pythonCmd
+    uv venv $VENV_DIR --python $pythonVer
 }
 Write-Ok "仮想環境: $VENV_DIR"
 
@@ -81,10 +81,7 @@ $venvPython = Join-Path $VENV_DIR "Scripts\python.exe"
 
 # --- 依存インストール -------------------------------------------------------
 
-Write-Info "依存パッケージをインストール中..."
-uv pip install -e . --python $venvPython
-
-Write-Info "開発用パッケージをインストール中..."
+Write-Info "依存パッケージをインストール中 (本体 + 開発ツール)..."
 uv pip install -e ".[dev]" --python $venvPython
 Write-Ok "依存インストール完了"
 

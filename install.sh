@@ -15,8 +15,13 @@ warn()  { printf '\033[1;33m[WARN]\033[0m  %s\n' "$*"; }
 error() { printf '\033[1;31m[ERROR]\033[0m %s\n' "$*"; exit 1; }
 
 # バージョン文字列を比較 (a >= b なら 0)
+# macOS の BSD sort は -V 未対応のため数値比較で実装
 ver_gte() {
-    printf '%s\n%s' "$1" "$2" | sort -V | head -n1 | grep -qx "$2"
+    local IFS=.
+    local -a a=($1) b=($2)
+    (( ${a[0]:-0} > ${b[0]:-0} )) && return 0
+    (( ${a[0]:-0} < ${b[0]:-0} )) && return 1
+    (( ${a[1]:-0} >= ${b[1]:-0} ))
 }
 
 # --- Python チェック ---------------------------------------------------------
@@ -27,7 +32,7 @@ find_python() {
             local ver
             ver=$("$cmd" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null) || continue
             if ver_gte "$ver" "$PYTHON_MIN"; then
-                PYTHON_CMD="$cmd"
+                PYTHON_CMD="$(command -v "$cmd")"
                 PYTHON_VER="$ver"
                 return 0
             fi
@@ -76,10 +81,7 @@ ok "仮想環境: $VENV_DIR"
 
 # --- 依存インストール -------------------------------------------------------
 
-info "依存パッケージをインストール中..."
-uv pip install -e . --python "$VENV_DIR/bin/python"
-
-info "開発用パッケージをインストール中..."
+info "依存パッケージをインストール中 (本体 + 開発ツール)..."
 uv pip install -e '.[dev]' --python "$VENV_DIR/bin/python"
 ok "依存インストール完了"
 
