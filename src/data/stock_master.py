@@ -30,8 +30,9 @@ STOCK_MASTER: dict[str, dict] = {
     "5401": {"name": "日本製鉄", "sector": "鉄鋼", "dividend": 160},
     "9432": {"name": "NTT", "sector": "情報・通信業", "dividend": 5.2},
     "8200": {"name": "リンガーハット", "sector": "小売業", "dividend": 15},
-    "1478": {"name": "iS高配当ETF", "sector": "ETF", "dividend": 500},
-    "4755": {"name": "楽天グループ", "sector": "サービス業", "dividend": 4.5},
+    "8593": {"name": "三菱HCキャピタル", "sector": "その他金融業", "dividend": 40},
+    "1478": {"name": "iS高配当ETF", "sector": "ETF", "dividend": 110.0},
+    "4755": {"name": "楽天グループ", "sector": "サービス業", "dividend": 0.0},
 }
 
 # 米国株マスター（ティッカーシンボル → 業種・配当）
@@ -181,7 +182,18 @@ def get_dividend(code: str) -> float:
     """
     divs = _load_dividends()
     if code in divs:
-        return divs[code]["dps"]
+        entry = divs[code]
+        dps = float(entry.get("dps") or 0)
+        if entry.get("source") == "stock_master_fallback":
+            dps = 0
+            if is_us_stock(code):
+                us_info = US_STOCK_MASTER.get(code)
+                dps = float(us_info.get("dividend") or 0) if us_info else 0
+            else:
+                info = STOCK_MASTER.get(code)
+                dps = float(info.get("dividend") or 0) if info else 0
+        if dps > 0 or entry.get("date") is not None:
+            return dps
     # 米国株
     if is_us_stock(code):
         us_info = US_STOCK_MASTER.get(code)
