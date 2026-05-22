@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +43,21 @@ class TestBuildOutput:
         """全 HTML ファイルが空でない。"""
         for name, content in html_files.items():
             assert len(content) > 1000, f"{name} is too small"
+
+    def test_rejects_repo_root_output(self):
+        """リポジトリルートを出力先に指定しても削除しない。"""
+        with pytest.raises(ValueError, match="危険な出力先"):
+            build(output_dir=Path.cwd(), mode="demo")
+
+    def test_rejects_non_empty_custom_output(self, tmp_path):
+        """空でない任意ディレクトリを出力先に指定しても削除しない。"""
+        sentinel = tmp_path / "keep.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="空ではありません"):
+            build(output_dir=tmp_path, mode="demo")
+
+        assert sentinel.read_text(encoding="utf-8") == "keep"
 
 
 class TestSimulatorPage:

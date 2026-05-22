@@ -30,6 +30,24 @@ from src.parser.normalize import AssetSnapshot, parse_raw
 from src.scraper.fetch import create_context, fetch_cf_csv, fetch_monthly, fetch_page, request_aggregation
 
 
+def _deploy_cloudflare_pages(out_dir: Path, deploy_project_name: str | None = None) -> None:
+    """Cloudflare Pages へ静的HTMLをデプロイする。失敗時は例外で呼び出し元に返す。"""
+    cmd = ["wrangler", "pages", "deploy", str(out_dir)]
+    if deploy_project_name:
+        cmd += ["--project-name", deploy_project_name]
+    print("Cloudflare Pages へデプロイします...")
+    print(" ", " ".join(cmd))
+    try:
+        subprocess.run(cmd, check=True)
+        print("  Cloudflare Pages デプロイ完了")
+    except FileNotFoundError as e:
+        print("  wrangler コマンドが見つかりません。npm で wrangler をインストールしてください。")
+        raise RuntimeError("wrangler コマンドが見つからないためデプロイできません") from e
+    except subprocess.CalledProcessError as e:
+        print(f"  デプロイ失敗（exit={e.returncode}）")
+        raise
+
+
 def _is_unchanged(current: AssetSnapshot, previous: dict) -> bool:
     """前回スナップショットとデータが変わっていないか判定する。
 
@@ -172,18 +190,7 @@ async def run(
             print(f"  静的HTML生成完了: {out_dir}")
 
             if deploy:
-                cmd = ["wrangler", "pages", "deploy", str(out_dir)]
-                if deploy_project_name:
-                    cmd += ["--project-name", deploy_project_name]
-                print("Cloudflare Pages へデプロイします...")
-                print(" ", " ".join(cmd))
-                try:
-                    subprocess.run(cmd, check=True)
-                    print("  Cloudflare Pages デプロイ完了")
-                except FileNotFoundError:
-                    print("  wrangler コマンドが見つかりません。npm で wrangler をインストールしてください。")
-                except subprocess.CalledProcessError as e:
-                    print(f"  デプロイ失敗（exit={e.returncode}）")
+                _deploy_cloudflare_pages(out_dir, deploy_project_name)
 
     finally:
         await browser.close()

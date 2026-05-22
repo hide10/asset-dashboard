@@ -34,6 +34,7 @@ from src.web.server import (
 )
 
 DOCS_DIR = Path(__file__).resolve().parents[1] / "dist"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_URL = "https://github.com/hide10/asset-dashboard"
 
 # GitHub Pages 用デモバナー
@@ -400,15 +401,42 @@ def _postprocess_plan(html: str) -> str:
     return html
 
 
+def _prepare_output_dir(output_dir: Path) -> Path:
+    """出力先を安全に初期化する。
+
+    デフォルトの dist/ は生成物として削除してよいが、任意指定された
+    空でない既存ディレクトリは誤削除を避けるため拒否する。
+    """
+    target = output_dir.resolve()
+    default_target = DOCS_DIR.resolve()
+    dangerous_targets = {
+        REPO_ROOT.resolve(),
+        REPO_ROOT.resolve().parent,
+        Path.home().resolve(),
+        Path("/").resolve(),
+        Path.cwd().resolve(),
+    }
+    if target in dangerous_targets:
+        raise ValueError(f"危険な出力先です: {target}")
+
+    if target.exists():
+        if not target.is_dir():
+            raise ValueError(f"出力先がディレクトリではありません: {target}")
+        if any(target.iterdir()):
+            if target != default_target:
+                raise ValueError(f"出力先が空ではありません。既存ファイルを保護するため削除しません: {target}")
+            shutil.rmtree(target)
+        else:
+            target.rmdir()
+
+    target.mkdir(parents=True)
+    return target
+
+
 def build(output_dir: Path | None = None, mode: str = "demo", db_path: str = "data/assets.db") -> Path:
     """静的 HTML をビルドして output_dir に出力する。"""
-    target = output_dir or DOCS_DIR
+    target = _prepare_output_dir(output_dir or DOCS_DIR)
     is_demo = mode == "demo"
-
-    # output_dir をクリーンアップして再作成
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
 
     # .nojekyll を作成
     (target / ".nojekyll").touch()
