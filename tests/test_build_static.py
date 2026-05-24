@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -12,27 +13,19 @@ EXPECTED_FILES = {"index.html", "cf.html", "plan.html", "simulator.html", ".noje
 
 
 @pytest.fixture(scope="module")
-def docs_dir(tmp_path_factory):
-    """ビルドを1回だけ実行して docs/ を返す。"""
-    import scripts.build_static as mod
-
-    # 一時ディレクトリにビルド
-    tmp = tmp_path_factory.mktemp("docs")
-    original = mod.DOCS_DIR
-    mod.DOCS_DIR = tmp
-    try:
-        build()
-    finally:
-        mod.DOCS_DIR = original
+def output_dir(tmp_path_factory):
+    """ビルドを1回だけ実行して出力ディレクトリを返す。"""
+    tmp = tmp_path_factory.mktemp("dist")
+    build(output_dir=tmp, mode="demo")
     return tmp
 
 
 @pytest.fixture(scope="module")
-def html_files(docs_dir):
+def html_files(output_dir):
     """各 HTML ファイルの内容を dict で返す。"""
     result = {}
     for name in ["index.html", "cf.html", "plan.html", "simulator.html"]:
-        path = docs_dir / name
+        path = output_dir / name
         if path.exists():
             result[name] = path.read_text(encoding="utf-8")
     return result
@@ -41,15 +34,72 @@ def html_files(docs_dir):
 class TestBuildOutput:
     """ビルド結果のファイル構成テスト。"""
 
-    def test_all_files_generated(self, docs_dir):
+    def test_all_files_generated(self, output_dir):
         """4 HTML + .nojekyll の 5 ファイルが生成される。"""
-        names = {f.name for f in docs_dir.iterdir()}
+        names = {f.name for f in output_dir.iterdir()}
         assert names == EXPECTED_FILES
 
     def test_html_files_not_empty(self, html_files):
         """全 HTML ファイルが空でない。"""
         for name, content in html_files.items():
             assert len(content) > 1000, f"{name} is too small"
+
+    def test_rejects_repo_root_output(self):
+        """リポジトリルートを出力先に指定しても削除しない。"""
+        with pytest.raises(ValueError, match="危険な出力先"):
+            build(output_dir=Path.cwd(), mode="demo")
+
+    def test_rejects_non_empty_custom_output(self, tmp_path):
+        """空でない任意ディレクトリを出力先に指定しても削除しない。"""
+        sentinel = tmp_path / "keep.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="空ではありません"):
+            build(output_dir=tmp_path, mode="demo")
+
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+class TestLiveModeEmptyData:
+    """live モードでデータ不足時は明示的にエラーになる。"""
+
+    def test_live_mode_raises_when_dashboard_empty(self, tmp_path):
+        """ダッシュボードデータ未取得時は RuntimeError。"""
+        empty_db = tmp_path / "empty.db"
+        # init_db でテーブルだけ作って中身は空にする
+        from src.db.schema import init_db
+
+        init_db(str(empty_db)).close()
+
+        with pytest.raises(RuntimeError, match="ダッシュボード用データがありません"):
+            build(output_dir=tmp_path / "out", mode="live", db_path=str(empty_db))
+
+    def test_live_mode_raises_when_cf_empty(self, tmp_path, monkeypatch):
+        """家計簿データ未取得時は RuntimeError。"""
+        import scripts.build_static as build_mod
+
+        # ダッシュボード/dates だけ偽の中身を返してパスさせ、CF で詰まることを確認
+        monkeypatch.setattr(build_mod, "_get_data", lambda db_path: {"date": "2026-01-01"})
+        monkeypatch.setattr(build_mod, "_get_dates", lambda db_path: ["2026-01-01"])
+        monkeypatch.setattr(build_mod, "_build_html", lambda *a, **k: "<html></html>")
+        monkeypatch.setattr(build_mod, "_get_cf_data", lambda db_path: {})
+
+        with pytest.raises(RuntimeError, match="家計簿用データがありません"):
+            build(output_dir=tmp_path / "out", mode="live", db_path="dummy.db")
+
+    def test_live_mode_raises_when_plan_empty(self, tmp_path, monkeypatch):
+        """ライフプランデータ未取得時は RuntimeError。"""
+        import scripts.build_static as build_mod
+
+        monkeypatch.setattr(build_mod, "_get_data", lambda db_path: {"date": "2026-01-01"})
+        monkeypatch.setattr(build_mod, "_get_dates", lambda db_path: ["2026-01-01"])
+        monkeypatch.setattr(build_mod, "_build_html", lambda *a, **k: "<html></html>")
+        monkeypatch.setattr(build_mod, "_get_cf_data", lambda db_path: {"year_month": "2026-01"})
+        monkeypatch.setattr(build_mod, "_build_cf_html", lambda *a, **k: "<html></html>")
+        monkeypatch.setattr(build_mod, "_get_plan_data", lambda db_path: {})
+
+        with pytest.raises(RuntimeError, match="ライフプラン用データがありません"):
+            build(output_dir=tmp_path / "out", mode="live", db_path="dummy.db")
 
 
 class TestSimulatorPage:

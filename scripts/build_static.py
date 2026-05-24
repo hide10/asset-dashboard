@@ -1,14 +1,17 @@
-"""GitHub Pages 用の静的 HTML を生成するビルドスクリプト。
+"""静的 HTML を生成するビルドスクリプト。
 
-既存の _demo_*_data() + _build_*_html() を呼び出して docs/ に出力する。
+既存の _build_*_html() を流用して dist/（または指定先）に出力する。
 シミュレーターページは fetch('/api/simulator') を JS Monte Carlo に置き換える。
 
 Usage:
-    python scripts/build_static.py
+    python -m scripts.build_static
+    python -m scripts.build_static --mode demo --output dist
+    python -m scripts.build_static --mode live --db-path data/assets.db --output dist
 """
 
 from __future__ import annotations
 
+import argparse
 import re
 import shutil
 from pathlib import Path
@@ -23,9 +26,15 @@ from src.web.server import (
     _demo_data,
     _demo_plan_data,
     _demo_simulator_data,
+    _get_cf_data,
+    _get_data,
+    _get_dates,
+    _get_plan_data,
+    _get_simulator_data,
 )
 
-DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
+DOCS_DIR = Path(__file__).resolve().parents[1] / "dist"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_URL = "https://github.com/hide10/asset-dashboard"
 
 # GitHub Pages 用デモバナー
@@ -252,10 +261,11 @@ def _inject_banner(html: str) -> str:
     return html.replace("<body>", "<body>\n" + _STATIC_BANNER, 1)
 
 
-def _postprocess_common(html: str) -> str:
+def _postprocess_common(html: str, include_banner: bool = True) -> str:
     """全ページ共通の後処理。"""
     html = _rewrite_nav_links(html)
-    html = _inject_banner(html)
+    if include_banner:
+        html = _inject_banner(html)
     return html
 
 
@@ -391,65 +401,121 @@ def _postprocess_plan(html: str) -> str:
     return html
 
 
-def build() -> Path:
-    """静的 HTML をビルドして docs/ に出力する。"""
-    # docs/ をクリーンアップして再作成
-    if DOCS_DIR.exists():
-        shutil.rmtree(DOCS_DIR)
-    DOCS_DIR.mkdir(parents=True)
+def _prepare_output_dir(output_dir: Path) -> Path:
+    """出力先を安全に初期化する。
+
+    デフォルトの dist/ は生成物として削除してよいが、任意指定された
+    空でない既存ディレクトリは誤削除を避けるため拒否する。
+    """
+    target = output_dir.resolve()
+    default_target = DOCS_DIR.resolve()
+    dangerous_targets = {
+        REPO_ROOT.resolve(),
+        REPO_ROOT.resolve().parent,
+        Path.home().resolve(),
+        Path("/").resolve(),
+        Path.cwd().resolve(),
+    }
+    if target in dangerous_targets:
+        raise ValueError(f"危険な出力先です: {target}")
+
+    if target.exists():
+        if not target.is_dir():
+            raise ValueError(f"出力先がディレクトリではありません: {target}")
+        if any(target.iterdir()):
+            if target != default_target:
+                raise ValueError(f"出力先が空ではありません。既存ファイルを保護するため削除しません: {target}")
+            shutil.rmtree(target)
+        else:
+            target.rmdir()
+
+    target.mkdir(parents=True)
+    return target
+
+
+def build(output_dir: Path | None = None, mode: str = "demo", db_path: str = "data/assets.db") -> Path:
+    """静的 HTML をビルドして output_dir に出力する。"""
+    target = _prepare_output_dir(output_dir or DOCS_DIR)
+    is_demo = mode == "demo"
 
     # .nojekyll を作成
-    (DOCS_DIR / ".nojekyll").touch()
+    (target / ".nojekyll").touch()
 
-    # --- ダッシュボード ---
-    dash_data = _demo_data()
-    dash_dates = [dash_data["date"]]
-    ai_comment = (
-        "総資産約2,150万円のポートフォリオは、株式・投資信託・預金・年金にバランスよく分散されています。"
-        "前日比+4.2万円、前月比+28.5万円と堅調に推移しており、特にリスク資産（株式+投信）の貢献が大きいです。"
-        "年間配当予測は約12.5万円（利回り約1.9%）で、高配当銘柄の追加や業種の偏り（電気機器が大きい）"
-        "の分散を検討すると、より安定したポートフォリオになるでしょう。"
-    )
-    dash_html = _build_html(dash_data, dash_dates, skip_update=True, ai_comment=ai_comment, demo=True)
-    dash_html = _postprocess_common(dash_html)
-    (DOCS_DIR / "index.html").write_text(dash_html, encoding="utf-8")
+    if is_demo:
+        # --- ダッシュボード（demo） ---
+        dash_data = _demo_data()
+        dash_dates = [dash_data["date"]]
+        ai_comment = (
+            "総資産約2,150万円のポートフォリオは、株式・投資信託・預金・年金にバランスよく分散されています。"
+            "前日比+4.2万円、前月比+28.5万円と堅調に推移しており、特にリスク資産（株式+投信）の貢献が大きいです。"
+            "年間配当予測は約12.5万円（利回り約1.9%）で、高配当銘柄の追加や業種の偏り（電気機器が大きい）"
+            "の分散を検討すると、より安定したポートフォリオになるでしょう。"
+        )
+        dash_html = _build_html(dash_data, dash_dates, skip_update=True, ai_comment=ai_comment, demo=True)
+    else:
+        # --- ダッシュボード（live） ---
+        dash_data = _get_data(db_path)
+        dash_dates = _get_dates(db_path)
+        if not dash_data:
+            raise RuntimeError("ダッシュボード用データがありません。先に src.daily を実行してください。")
+        dash_html = _build_html(dash_data, dash_dates, skip_update=True, ai_comment=None, demo=False)
+    dash_html = _postprocess_common(dash_html, include_banner=is_demo)
+    (target / "index.html").write_text(dash_html, encoding="utf-8")
 
     # --- 家計簿分析 ---
-    cf_data = _demo_cf_data()
-    cf_ai = (
-        "今月の支出は食費と日用品が予算を若干上回っていますが、全体では収支プラスを維持しています。"
-        "固定費率は約40%と標準的で、通信費や保険の見直し余地があります。"
-        "来月は食費の予算管理を意識すると、さらに貯蓄率を改善できるでしょう。"
-    )
-    cf_html = _build_cf_html(cf_data, skip_update=True, ai_comment=cf_ai)
-    cf_html = _postprocess_common(cf_html)
-    (DOCS_DIR / "cf.html").write_text(cf_html, encoding="utf-8")
+    if is_demo:
+        cf_data = _demo_cf_data()
+        cf_ai = (
+            "今月の支出は食費と日用品が予算を若干上回っていますが、全体では収支プラスを維持しています。"
+            "固定費率は約40%と標準的で、通信費や保険の見直し余地があります。"
+            "来月は食費の予算管理を意識すると、さらに貯蓄率を改善できるでしょう。"
+        )
+        cf_html = _build_cf_html(cf_data, skip_update=True, ai_comment=cf_ai)
+    else:
+        cf_data = _get_cf_data(db_path)
+        if not cf_data:
+            raise RuntimeError("家計簿用データがありません。先に家計簿CSVを取得してください。")
+        cf_html = _build_cf_html(cf_data, skip_update=True, ai_comment=None)
+    cf_html = _postprocess_common(cf_html, include_banner=is_demo)
+    (target / "cf.html").write_text(cf_html, encoding="utf-8")
 
     # --- ライフプラン ---
-    plan_data = _demo_plan_data()
-    plan_ai = (
-        "直近6ヶ月で資産は約1,970万円から2,150万円へ着実に増加しており、月平均+30万円の成長ペースです。"
-        "月次収支は概ね黒字を維持していますが、12月のように支出が膨らむ月もあるため、"
-        "臨時出費への備えも意識しましょう。モンテカルロ・シミュレーションでは、月5万円の積立を継続した場合、"
-        "5年後の中央値は約3,120万円と見込まれ、長期的な資産形成は順調と言えます。"
-    )
-    plan_html = _build_plan_html(plan_data, skip_update=True, ai_comment=plan_ai)
-    plan_html = _postprocess_common(plan_html)
+    if is_demo:
+        plan_data = _demo_plan_data()
+        plan_ai = (
+            "直近6ヶ月で資産は約1,970万円から2,150万円へ着実に増加しており、月平均+30万円の成長ペースです。"
+            "月次収支は概ね黒字を維持していますが、12月のように支出が膨らむ月もあるため、"
+            "臨時出費への備えも意識しましょう。モンテカルロ・シミュレーションでは、月5万円の積立を継続した場合、"
+            "5年後の中央値は約3,120万円と見込まれ、長期的な資産形成は順調と言えます。"
+        )
+        plan_html = _build_plan_html(plan_data, skip_update=True, ai_comment=plan_ai)
+    else:
+        plan_data = _get_plan_data(db_path)
+        if not plan_data:
+            raise RuntimeError("ライフプラン用データがありません。先に src.daily を実行してください。")
+        plan_html = _build_plan_html(plan_data, skip_update=True, ai_comment=None)
+    plan_html = _postprocess_common(plan_html, include_banner=is_demo)
     plan_html = _postprocess_plan(plan_html)
-    (DOCS_DIR / "plan.html").write_text(plan_html, encoding="utf-8")
+    (target / "plan.html").write_text(plan_html, encoding="utf-8")
 
     # --- シミュレーター ---
-    sim_data = _demo_simulator_data()
+    sim_data = _demo_simulator_data() if is_demo else _get_simulator_data(db_path)
     sim_html = _build_simulator_html(sim_data, skip_update=True)
-    sim_html = _postprocess_common(sim_html)
+    sim_html = _postprocess_common(sim_html, include_banner=is_demo)
     sim_html = _postprocess_simulator(sim_html)
-    (DOCS_DIR / "simulator.html").write_text(sim_html, encoding="utf-8")
+    (target / "simulator.html").write_text(sim_html, encoding="utf-8")
 
-    return DOCS_DIR
+    return target
 
 
 if __name__ == "__main__":
-    output = build()
+    parser = argparse.ArgumentParser(description="静的HTMLビルド")
+    parser.add_argument("--output", type=Path, default=DOCS_DIR, help="出力先ディレクトリ（デフォルト: dist/）")
+    parser.add_argument("--mode", choices=["demo", "live"], default="demo", help="demo か live を選択")
+    parser.add_argument("--db-path", type=str, default="data/assets.db", help="live モードで読むDBパス")
+    args = parser.parse_args()
+
+    output = build(output_dir=args.output, mode=args.mode, db_path=args.db_path)
     files = sorted(output.iterdir())
     print(f"Built {len(files)} files in {output}/:")
     for f in files:
