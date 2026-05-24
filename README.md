@@ -162,6 +162,32 @@ python -m src.cli.report
 python -m src.web.server --demo
 ```
 
+### 10. 静的HTMLビルドと Cloudflare Pages デプロイ
+
+`dist/` に静的HTMLを生成し、Cloudflare Pages（または GitHub Pages）に公開できる。
+
+```bash
+# デモデータで静的HTML生成（GitHub Pages 用デモバナー付き）
+python -m scripts.build_static --mode demo --output dist
+
+# 実データで静的HTML生成（バナーなし、本人閲覧用）
+python -m scripts.build_static --mode live --db-path data/assets.db --output dist
+
+# 日次取得→ビルド→Cloudflare Pages デプロイを一括実行
+python -m src.daily --build-static --deploy --deploy-project-name <PROJECT_NAME>
+```
+
+**Cloudflare Pages デプロイの前提**:
+
+- `wrangler` CLI が PATH 上にあること（`npm install -g wrangler` または `npx wrangler`）
+- 以下のいずれかで Cloudflare の認証を済ませておく:
+  - `wrangler login` で対話的にログイン（推奨）
+  - 環境変数 `CLOUDFLARE_API_TOKEN`（および必要なら `CLOUDFLARE_ACCOUNT_ID`）を設定（CI 用）
+- `--deploy-project-name` で Cloudflare Pages の project name を指定（省略時は wrangler のデフォルト挙動）
+- 認証失敗・wrangler 未インストール時はビルド成果物（`dist/`）は残るが、デプロイのみが失敗する
+
+> ⚠️ `--mode live` は `dist/` に実データを書き出すため、生成物を**そのまま公開リポジトリにコミットしない**こと。Cloudflare Pages 経由でのみ配信する想定。
+
 ## プロジェクト構成
 
 ```

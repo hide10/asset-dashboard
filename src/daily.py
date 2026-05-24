@@ -213,10 +213,10 @@ def main() -> None:
             args.storage_state,
             args.wait,
             not args.no_refresh,
-            False,
-            args.build_static,
-            args.deploy,
-            args.deploy_project_name,
+            headless=False,
+            build_static=args.build_static,
+            deploy=args.deploy,
+            deploy_project_name=args.deploy_project_name,
         )
     )
 

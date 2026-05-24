@@ -60,6 +60,48 @@ class TestBuildOutput:
         assert sentinel.read_text(encoding="utf-8") == "keep"
 
 
+class TestLiveModeEmptyData:
+    """live モードでデータ不足時は明示的にエラーになる。"""
+
+    def test_live_mode_raises_when_dashboard_empty(self, tmp_path):
+        """ダッシュボードデータ未取得時は RuntimeError。"""
+        empty_db = tmp_path / "empty.db"
+        # init_db でテーブルだけ作って中身は空にする
+        from src.db.schema import init_db
+
+        init_db(str(empty_db)).close()
+
+        with pytest.raises(RuntimeError, match="ダッシュボード用データがありません"):
+            build(output_dir=tmp_path / "out", mode="live", db_path=str(empty_db))
+
+    def test_live_mode_raises_when_cf_empty(self, tmp_path, monkeypatch):
+        """家計簿データ未取得時は RuntimeError。"""
+        import scripts.build_static as build_mod
+
+        # ダッシュボード/dates だけ偽の中身を返してパスさせ、CF で詰まることを確認
+        monkeypatch.setattr(build_mod, "_get_data", lambda db_path: {"date": "2026-01-01"})
+        monkeypatch.setattr(build_mod, "_get_dates", lambda db_path: ["2026-01-01"])
+        monkeypatch.setattr(build_mod, "_build_html", lambda *a, **k: "<html></html>")
+        monkeypatch.setattr(build_mod, "_get_cf_data", lambda db_path: {})
+
+        with pytest.raises(RuntimeError, match="家計簿用データがありません"):
+            build(output_dir=tmp_path / "out", mode="live", db_path="dummy.db")
+
+    def test_live_mode_raises_when_plan_empty(self, tmp_path, monkeypatch):
+        """ライフプランデータ未取得時は RuntimeError。"""
+        import scripts.build_static as build_mod
+
+        monkeypatch.setattr(build_mod, "_get_data", lambda db_path: {"date": "2026-01-01"})
+        monkeypatch.setattr(build_mod, "_get_dates", lambda db_path: ["2026-01-01"])
+        monkeypatch.setattr(build_mod, "_build_html", lambda *a, **k: "<html></html>")
+        monkeypatch.setattr(build_mod, "_get_cf_data", lambda db_path: {"year_month": "2026-01"})
+        monkeypatch.setattr(build_mod, "_build_cf_html", lambda *a, **k: "<html></html>")
+        monkeypatch.setattr(build_mod, "_get_plan_data", lambda db_path: {})
+
+        with pytest.raises(RuntimeError, match="ライフプラン用データがありません"):
+            build(output_dir=tmp_path / "out", mode="live", db_path="dummy.db")
+
+
 class TestSimulatorPage:
     """シミュレーターページの検証。"""
 

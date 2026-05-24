@@ -473,6 +473,8 @@ def build(output_dir: Path | None = None, mode: str = "demo", db_path: str = "da
         cf_html = _build_cf_html(cf_data, skip_update=True, ai_comment=cf_ai)
     else:
         cf_data = _get_cf_data(db_path)
+        if not cf_data:
+            raise RuntimeError("家計簿用データがありません。先に家計簿CSVを取得してください。")
         cf_html = _build_cf_html(cf_data, skip_update=True, ai_comment=None)
     cf_html = _postprocess_common(cf_html, include_banner=is_demo)
     (target / "cf.html").write_text(cf_html, encoding="utf-8")
@@ -489,6 +491,8 @@ def build(output_dir: Path | None = None, mode: str = "demo", db_path: str = "da
         plan_html = _build_plan_html(plan_data, skip_update=True, ai_comment=plan_ai)
     else:
         plan_data = _get_plan_data(db_path)
+        if not plan_data:
+            raise RuntimeError("ライフプラン用データがありません。先に src.daily を実行してください。")
         plan_html = _build_plan_html(plan_data, skip_update=True, ai_comment=None)
     plan_html = _postprocess_common(plan_html, include_banner=is_demo)
     plan_html = _postprocess_plan(plan_html)
