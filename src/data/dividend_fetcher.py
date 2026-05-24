@@ -15,7 +15,14 @@ from datetime import date
 from pathlib import Path
 
 _YAHOO_URL = "https://finance.yahoo.co.jp/quote/{code}.T"
-_DPS_RE = re.compile(r'"dps":"(\d+(?:\.\d+)?)","dpsDate":"([^"]+)"')
+# 旧形式: "dps":"145","dpsDate":"2027/03"
+_DPS_RE_LEGACY = re.compile(r'"dps":"(\d+(?:\.\d+)?)","dpsDate":"([^"]+)"')
+# 新形式: \"dps\":{\"name\":\"1株配当\",...,\"value\":\"84.00\",\"updateDate\":\"2027/03\",...}
+# JSON が HTML 内に文字列としてエスケープ埋め込みされている
+_DPS_RE_NEW = re.compile(
+    r'\\"dps\\":\{[^{}]*?\\"value\\":\\"(\d+(?:\.\d+)?)\\"'
+    r'(?:[^{}]*?\\"updateDate\\":\\"([^"\\]+)\\")?'
+)
 _JSON_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "dividends.json"
 
 
@@ -29,7 +36,10 @@ def fetch_dividend(code: str) -> tuple[float | None, str | None]:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         html = resp.read().decode("utf-8")
-    m = _DPS_RE.search(html)
+    # 新形式を優先、なければ旧形式にフォールバック
+    m = _DPS_RE_NEW.search(html)
+    if m is None:
+        m = _DPS_RE_LEGACY.search(html)
     if m is None:
         return None, None
     return float(m.group(1)), m.group(2)
@@ -57,8 +67,10 @@ def update_all_dividends(codes: list[str] | None = None) -> dict:
                 data[code] = {"dps": dps, "date": dps_date, "fetched": today}
                 print(f"{dps}円 ({dps_date})")
             else:
-                data[code] = {"dps": 0, "date": None, "fetched": today}
-                print("0円（ETF等: dps未検出）")
+                # ETF や無配確定銘柄など dps を抽出できなかったケースは null で保存し、
+                # UI 側で「取得エラー」として扱う（ハードコード値にはフォールバックしない）
+                data[code] = {"dps": None, "date": None, "fetched": today}
+                print("取得不可（dps 未検出）")
         except Exception as e:
             print(f"エラー: {e}")
         if i < len(codes) - 1:

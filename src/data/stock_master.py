@@ -1,7 +1,8 @@
-"""銘柄マスタ: 業種分類・配当情報。
+"""銘柄マスタ: 業種分類。
 
-配当は data/dividends.json（自動取得）を優先し、
-なければハードコード値にフォールバックする。
+配当は data/dividends.json（自動取得）のみを参照する。
+取得できない銘柄は None を返し、UI 側で「取得エラー」表示する。
+（ハードコードフォールバックは古くなる/誤情報になりやすいため廃止）
 
 業種は data/sectors.json（自動取得）→ STOCK_MASTER の順でフォールバックする。
 """
@@ -18,47 +19,48 @@ _SECTORS_JSON = Path(__file__).resolve().parent.parent.parent / "data" / "sector
 _dividend_cache: dict | None = None
 _sector_cache: dict | None = None
 
+# 業種分類のみ保持。配当はハードコードせず dividends.json（自動取得）のみを参照。
 STOCK_MASTER: dict[str, dict] = {
-    "8053": {"name": "住友商事", "sector": "卸売業", "dividend": 125},
-    "8766": {"name": "東京海上HD", "sector": "保険業", "dividend": 159},
-    "4502": {"name": "武田薬品", "sector": "医薬品", "dividend": 196},
-    "8591": {"name": "オリックス", "sector": "その他金融業", "dividend": 98.6},
-    "9433": {"name": "KDDI", "sector": "情報・通信業", "dividend": 145},
-    "6918": {"name": "アバールデータ", "sector": "電気機器", "dividend": 80},
-    "1928": {"name": "積水ハウス", "sector": "建設業", "dividend": 129},
-    "7762": {"name": "シチズン時計", "sector": "精密機器", "dividend": 46},
-    "5401": {"name": "日本製鉄", "sector": "鉄鋼", "dividend": 160},
-    "9432": {"name": "NTT", "sector": "情報・通信業", "dividend": 5.2},
-    "8200": {"name": "リンガーハット", "sector": "小売業", "dividend": 15},
-    "1478": {"name": "iS高配当ETF", "sector": "ETF", "dividend": 500},
-    "4755": {"name": "楽天グループ", "sector": "サービス業", "dividend": 4.5},
+    "8053": {"name": "住友商事", "sector": "卸売業"},
+    "8766": {"name": "東京海上HD", "sector": "保険業"},
+    "4502": {"name": "武田薬品", "sector": "医薬品"},
+    "8591": {"name": "オリックス", "sector": "その他金融業"},
+    "9433": {"name": "KDDI", "sector": "情報・通信業"},
+    "6918": {"name": "アバールデータ", "sector": "電気機器"},
+    "1928": {"name": "積水ハウス", "sector": "建設業"},
+    "7762": {"name": "シチズン時計", "sector": "精密機器"},
+    "5401": {"name": "日本製鉄", "sector": "鉄鋼"},
+    "9432": {"name": "NTT", "sector": "情報・通信業"},
+    "8200": {"name": "リンガーハット", "sector": "小売業"},
+    "1478": {"name": "iS高配当ETF", "sector": "ETF"},
+    "4755": {"name": "楽天グループ", "sector": "サービス業"},
 }
 
-# 米国株マスター（ティッカーシンボル → 業種・配当）
+# 米国株マスター（ティッカーシンボル → 業種）
 US_STOCK_MASTER: dict[str, dict] = {
-    "AAPL": {"name": "Apple", "sector": "テクノロジー", "dividend": 1.00},
-    "MSFT": {"name": "Microsoft", "sector": "テクノロジー", "dividend": 3.32},
-    "GOOGL": {"name": "Alphabet", "sector": "テクノロジー", "dividend": 0.80},
-    "GOOG": {"name": "Alphabet C", "sector": "テクノロジー", "dividend": 0.80},
-    "AMZN": {"name": "Amazon", "sector": "消費財", "dividend": 0.0},
-    "NVDA": {"name": "NVIDIA", "sector": "テクノロジー", "dividend": 0.04},
-    "META": {"name": "Meta Platforms", "sector": "テクノロジー", "dividend": 2.00},
-    "TSLA": {"name": "Tesla", "sector": "自動車", "dividend": 0.0},
-    "JPM": {"name": "JPMorgan Chase", "sector": "金融", "dividend": 5.00},
-    "V": {"name": "Visa", "sector": "金融", "dividend": 2.36},
-    "JNJ": {"name": "Johnson & Johnson", "sector": "ヘルスケア", "dividend": 4.96},
-    "PG": {"name": "Procter & Gamble", "sector": "消費財", "dividend": 4.03},
-    "KO": {"name": "Coca-Cola", "sector": "消費財", "dividend": 1.94},
-    "PEP": {"name": "PepsiCo", "sector": "消費財", "dividend": 5.42},
-    "HD": {"name": "Home Depot", "sector": "小売", "dividend": 9.00},
-    "VZ": {"name": "Verizon", "sector": "通信", "dividend": 2.71},
-    "T": {"name": "AT&T", "sector": "通信", "dividend": 1.11},
-    "XOM": {"name": "Exxon Mobil", "sector": "エネルギー", "dividend": 3.96},
-    "VTI": {"name": "Vanguard Total Stock ETF", "sector": "米国ETF", "dividend": 3.44},
-    "VOO": {"name": "Vanguard S&P 500 ETF", "sector": "米国ETF", "dividend": 6.76},
-    "VYM": {"name": "Vanguard High Div ETF", "sector": "米国ETF", "dividend": 3.21},
-    "SPYD": {"name": "SPDR S&P 500 High Div ETF", "sector": "米国ETF", "dividend": 1.98},
-    "QQQ": {"name": "Invesco QQQ Trust", "sector": "米国ETF", "dividend": 2.86},
+    "AAPL": {"name": "Apple", "sector": "テクノロジー"},
+    "MSFT": {"name": "Microsoft", "sector": "テクノロジー"},
+    "GOOGL": {"name": "Alphabet", "sector": "テクノロジー"},
+    "GOOG": {"name": "Alphabet C", "sector": "テクノロジー"},
+    "AMZN": {"name": "Amazon", "sector": "消費財"},
+    "NVDA": {"name": "NVIDIA", "sector": "テクノロジー"},
+    "META": {"name": "Meta Platforms", "sector": "テクノロジー"},
+    "TSLA": {"name": "Tesla", "sector": "自動車"},
+    "JPM": {"name": "JPMorgan Chase", "sector": "金融"},
+    "V": {"name": "Visa", "sector": "金融"},
+    "JNJ": {"name": "Johnson & Johnson", "sector": "ヘルスケア"},
+    "PG": {"name": "Procter & Gamble", "sector": "消費財"},
+    "KO": {"name": "Coca-Cola", "sector": "消費財"},
+    "PEP": {"name": "PepsiCo", "sector": "消費財"},
+    "HD": {"name": "Home Depot", "sector": "小売"},
+    "VZ": {"name": "Verizon", "sector": "通信"},
+    "T": {"name": "AT&T", "sector": "通信"},
+    "XOM": {"name": "Exxon Mobil", "sector": "エネルギー"},
+    "VTI": {"name": "Vanguard Total Stock ETF", "sector": "米国ETF"},
+    "VOO": {"name": "Vanguard S&P 500 ETF", "sector": "米国ETF"},
+    "VYM": {"name": "Vanguard High Div ETF", "sector": "米国ETF"},
+    "SPYD": {"name": "SPDR S&P 500 High Div ETF", "sector": "米国ETF"},
+    "QQQ": {"name": "Invesco QQQ Trust", "sector": "米国ETF"},
 }
 
 _YAHOO_URL = "https://finance.yahoo.co.jp/quote/{code}.T"
@@ -173,22 +175,24 @@ def _load_dividends() -> dict:
     return _dividend_cache
 
 
-def get_dividend(code: str) -> float:
+def get_dividend(code: str) -> float | None:
     """銘柄コードから年間予想配当を返す。
 
     日本株: 円/株、米国株: USD/株。
-    dividends.json を優先し、なければハードコード値にフォールバック。
+    dividends.json に登録された数値のみを返し、未取得・取得失敗・null の場合は
+    None を返す（UI 側で「取得エラー」表示するため）。
     """
     divs = _load_dividends()
-    if code in divs:
-        return divs[code]["dps"]
-    # 米国株
-    if is_us_stock(code):
-        us_info = US_STOCK_MASTER.get(code)
-        return us_info["dividend"] if us_info else 0.0
-    # 日本株
-    info = STOCK_MASTER.get(code)
-    return info["dividend"] if info else 0.0
+    cached = divs.get(code)
+    if cached is None:
+        return None
+    dps = cached.get("dps")
+    if dps is None:
+        return None
+    try:
+        return float(dps)
+    except (TypeError, ValueError):
+        return None
 
 
 def get_all_codes() -> list[str]:
