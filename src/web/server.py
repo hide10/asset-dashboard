@@ -427,17 +427,32 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
     sector_totals = dict(sorted(sector_totals.items(), key=lambda x: x[1], reverse=True))
 
     # 配当予測（株式のみ）
+    # get_dividend は取得できない銘柄に対して None を返す。集計には含めず、
+    # 一覧の「配当/株」「年間配当」「利回り」列に「取得エラー」を表示する。
     usd_jpy = 150.0  # 米国株配当の円換算レート
     dividends: list[dict] = []
     total_dividend = 0.0
+    dividend_error_count = 0
     for h in holdings:
         if h["asset_class"] == "株式（現物）" and h["code"] and h["quantity"]:
             dps = get_dividend(h["code"])
+            if dps is None:
+                dividend_error_count += 1
+                dividends.append(
+                    {
+                        "code": h["code"],
+                        "name": h["name"],
+                        "quantity": h["quantity"],
+                        "dps": None,
+                        "annual": None,
+                        "current_yield": None,
+                        "acq_yield": None,
+                        "error": True,
+                    }
+                )
+                continue
             # 米国株の配当は USD → JPY に変換
-            if is_us_stock(h["code"]):
-                dps_jpy = dps * usd_jpy
-            else:
-                dps_jpy = dps
+            dps_jpy = dps * usd_jpy if is_us_stock(h["code"]) else dps
             annual = dps_jpy * h["quantity"]
             total_dividend += annual
             if dps > 0:
@@ -454,13 +469,17 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
                         "annual": annual,
                         "current_yield": current_yield,
                         "acq_yield": acq_yield,
+                        "error": False,
                     }
                 )
-    dividends.sort(key=lambda x: x["annual"], reverse=True)
+    # 取得エラー銘柄は末尾に並べる
+    dividends.sort(key=lambda x: (x.get("error", False), -(x["annual"] or 0)))
 
     # 配当利回り別内訳（低配当0-2% / 中配当2-4% / 高配当4%超）
     yield_breakdown: dict[str, float] = {"低配当 (0-2%)": 0, "中配当 (2-4%)": 0, "高配当 (4%超)": 0}
     for d in dividends:
+        if d.get("error"):
+            continue
         cy = d.get("current_yield")
         if cy is None:
             continue
@@ -473,18 +492,18 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         else:
             yield_breakdown["高配当 (4%超)"] += stock_value
 
-    # 業種別配当内訳
+    # 業種別配当内訳（取得エラー銘柄は配当合算から除外）
     sector_dividends: dict[str, dict] = {}
     for h in holdings:
         if h["asset_class"] == "株式（現物）" and h["code"] and h["quantity"]:
             sector = get_sector(h["code"])
             dps = get_dividend(h["code"])
-            dps_jpy = dps * usd_jpy if is_us_stock(h["code"]) else dps
-            annual = dps_jpy * h["quantity"]
             if sector not in sector_dividends:
                 sector_dividends[sector] = {"value": 0, "dividend": 0}
             sector_dividends[sector]["value"] += h["value"]
-            sector_dividends[sector]["dividend"] += annual
+            if dps is not None:
+                dps_jpy = dps * usd_jpy if is_us_stock(h["code"]) else dps
+                sector_dividends[sector]["dividend"] += dps_jpy * h["quantity"]
     # 加重利回りを計算
     for sec_data in sector_dividends.values():
         sec_data["yield"] = (sec_data["dividend"] / sec_data["value"] * 100) if sec_data["value"] > 0 else 0
@@ -515,6 +534,7 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         "sector_totals": sector_totals,
         "dividends": dividends,
         "total_dividend": total_dividend,
+        "dividend_error_count": dividend_error_count,
         "yield_breakdown": yield_breakdown,
         "sector_dividends": sector_dividends,
         "volatility": vol,
@@ -531,7 +551,9 @@ def _avg_yield_html(dividends: list[dict]) -> str:
     total_value = 0.0
     total_div = 0.0
     for d in dividends:
-        if d.get("current_yield") is not None and d["annual"] > 0:
+        if d.get("error"):
+            continue
+        if d.get("current_yield") is not None and d["annual"] and d["annual"] > 0:
             # 銘柄の評価額 = dps / (current_yield/100) * quantity
             # 簡易的に annual / (current_yield/100) で株式部分の評価額を逆算
             stock_value = d["annual"] / (d["current_yield"] / 100)
@@ -636,6 +658,7 @@ def _build_html(
     sector_totals = data.get("sector_totals", {})
     dividends = data.get("dividends", [])
     total_dividend = data.get("total_dividend", 0)
+    dividend_error_count = data.get("dividend_error_count", 0)
     yield_breakdown = data.get("yield_breakdown", {})
     sector_dividends = data.get("sector_dividends", {})
     vol = data.get("volatility")
@@ -813,6 +836,12 @@ def _build_html(
     # 配当予測 rows
     div_rows = ""
     for d in dividends:
+        if d.get("error"):
+            err = '<span class="div-error">取得エラー</span>'
+            div_rows += f'<tr class="div-err-row"><td><span class="code">{_h(d["code"])}</span> {_h(d["name"])}</td>'
+            div_rows += f'<td class="num">{d["quantity"]:,.0f}</td>'
+            div_rows += f'<td class="num" colspan="4">{err}</td></tr>'
+            continue
         cur_y = f"{d['current_yield']:.2f}%" if d.get("current_yield") is not None else "-"
         acq_y = f"{d['acq_yield']:.2f}%" if d.get("acq_yield") is not None else "-"
         div_rows += f'<tr><td><span class="code">{_h(d["code"])}</span> {_h(d["name"])}</td>'
@@ -992,6 +1021,9 @@ def _build_html(
   .dividend-total {{ font-size: 1.8rem; font-weight: 700; color: #0F7F30; margin-bottom: 2px; }}
   .dividend-total span {{ font-size: 0.9rem; color: #636e72; font-weight: 400; }}
   .dividend-monthly {{ font-size: 0.9rem; color: #636e72; margin-bottom: 8px; }}
+  .dividend-warning {{ background: #fff3e0; border-left: 3px solid #FCAD4C; padding: 8px 12px; font-size: 0.85rem; color: #8d6e2c; border-radius: 4px; margin-bottom: 8px; }}
+  .div-error {{ color: #999; font-style: italic; font-size: 0.85rem; }}
+  .div-err-row td {{ background: #fafafa; }}
   .compare-cards {{ display: flex; gap: 12px; margin-bottom: 20px; }}
   .compare-card {{ flex: 1; background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; }}
   .compare-card h3 {{ font-size: 0.85rem; color: #636e72; margin-bottom: 6px; font-weight: 600; }}
@@ -1203,6 +1235,11 @@ def _build_html(
       </div>
       <div class="dividend-total">{total_dividend:,.0f}<span> 円/年</span></div>
       <div class="dividend-monthly">月平均 {total_dividend / 12:,.0f}円{_avg_yield_html(dividends)}</div>
+      {
+        f'<div class="dividend-warning">⚠ {dividend_error_count} 銘柄の配当を取得できませんでした（一覧の「取得エラー」行を参照）。集計には含まれていません。</div>'
+        if dividend_error_count > 0
+        else ""
+    }
       {
         f'''<div style="margin:16px 0;display:flex;align-items:center;gap:16px">
         <canvas id="yield-pie" width="140" height="140"></canvas>
@@ -2127,6 +2164,7 @@ def _demo_data() -> dict:
         "sector_totals": demo_sectors,
         "dividends": demo_dividends,
         "total_dividend": sum(d["annual"] for d in demo_dividends),
+        "dividend_error_count": 0,
         "yield_breakdown": demo_yield_breakdown,
         "sector_dividends": demo_sector_dividends,
         "volatility": 0.142,

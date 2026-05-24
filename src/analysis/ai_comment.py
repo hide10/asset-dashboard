@@ -117,8 +117,9 @@ def _build_dashboard_prompt(db_path: str, date: str) -> str:
             sector_totals[sector] = sector_totals.get(sector, 0) + value
             if quantity:
                 dps = get_dividend(code)
-                dps_jpy = dps * usd_jpy if is_us_stock(code) else dps
-                total_dividend += dps_jpy * quantity
+                if dps is not None:
+                    dps_jpy = dps * usd_jpy if is_us_stock(code) else dps
+                    total_dividend += dps_jpy * quantity
 
     sector_sorted = sorted(sector_totals.items(), key=lambda x: x[1], reverse=True)[:5]
     sector_lines = [f"  {sec}: {amt:,.0f}円" for sec, amt in sector_sorted]

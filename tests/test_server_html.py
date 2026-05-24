@@ -383,6 +383,48 @@ class TestBudget:
         assert "/api/cf/budget" in self.html
 
 
+# --- 配当取得エラー表示 ---
+
+
+class TestDividendError:
+    """get_dividend が None を返した銘柄を「取得エラー」表示する。"""
+
+    def _base_data(self) -> dict:
+        d = _demo_data()
+        # 取得エラー銘柄を1件追加（dps=None, annual=None, error=True）
+        d["dividends"] = list(d["dividends"]) + [
+            {
+                "code": "9999",
+                "name": "取得不可テスト株",
+                "quantity": 100,
+                "dps": None,
+                "annual": None,
+                "current_yield": None,
+                "acq_yield": None,
+                "error": True,
+            }
+        ]
+        d["dividend_error_count"] = 1
+        return d
+
+    def test_error_row_rendered(self):
+        html = _build_html(self._base_data(), [self._base_data()["date"]])
+        assert "取得エラー" in html
+        assert "取得不可テスト株" in html
+
+    def test_warning_banner_rendered(self):
+        html = _build_html(self._base_data(), [self._base_data()["date"]])
+        assert '<div class="dividend-warning">' in html
+        assert "1 銘柄の配当を取得できませんでした" in html
+
+    def test_no_warning_when_zero_errors(self):
+        d = _demo_data()
+        d["dividend_error_count"] = 0
+        html = _build_html(d, [d["date"]])
+        # CSS 定義は残るが、警告バナー本体（<div>）は出ない
+        assert '<div class="dividend-warning">' not in html
+
+
 # --- デモデータ構造 ---
 
 
