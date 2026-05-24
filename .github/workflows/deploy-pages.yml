@@ -14,10 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # peaceiris/actions-gh-pages はまだ Node 20 build。
+      # 2026-09-16 の Node 20 削除後も動くよう Node 24 を強制する。
+      # 公式 actions が Node 24 対応した v5/v6 を使えば本来不要だが、
+      # third-party が追随するまでの暫定。
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
