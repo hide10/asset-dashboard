@@ -80,7 +80,8 @@ raw データは `raw/YYYY-MM-DD_HHMMSS/` に保存され、解析結果が `dat
 ### 3. 配当データ更新
 
 Yahoo Finance Japan から各銘柄の年間予想配当（1株配当）を自動取得し `data/dividends.json` に保存する。
-ETF など配当情報が取得できない銘柄は 0 円として記録される。
+ETF や Yahoo に dps が未掲載の銘柄は `dps: null` で記録され、ダッシュボードでは「取得エラー」と表示される（集計には含まれない）。
+セカンダリ取得経路（minkabu 等）の追加は [Issue #77](https://github.com/hide10/asset-dashboard/issues/77) で追跡中。
 
 ```bash
 python -m src.data.dividend_fetcher           # 全銘柄を取得
