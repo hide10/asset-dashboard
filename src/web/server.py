@@ -4752,8 +4752,8 @@ const pollId = setInterval(async () => {{
 </html>"""
 
 
-def _build_settings_html(db_path: str, saved: str | None = None) -> str:
-    """設定ページのHTMLを生成する。"""
+def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bool = False) -> str:
+    """設定ページのHTMLを生成する。skip_update はスケジューラが起動していないモード。"""
     import os
 
     conn = get_connection(db_path)
@@ -4775,7 +4775,9 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         with contextlib.suppress(ValueError):
             last_run_disp = datetime.fromisoformat(scheduler_last_run).strftime("%Y-%m-%d %H:%M")
             scheduler_status = f"最終実行: {last_run_disp}" + (f" — {result_label}" if result_label else "")
-    if scheduler_enabled:
+    if skip_update:
+        scheduler_status += " ／ 自動取得: 停止中（--demo / --skip-update で起動中）"
+    elif scheduler_enabled:
         next_run = _next_scheduled_run(datetime.now(), scheduler_time)
         scheduler_status += f" ／ 次回予定: {next_run.strftime('%Y-%m-%d %H:%M')}"
     else:
@@ -4792,11 +4794,16 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         source = ""
         display_key = ""
 
-    saved_msg = (
-        '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です — 数十秒後にダッシュボードを開くと表示されます。</div>'
-        if saved
-        else ""
-    )
+    # 保存メッセージは setting_type ごとに分岐（"1" は旧URL互換で gemini 扱い）
+    if saved in ("gemini", "1"):
+        saved_msg = (
+            '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です'
+            " — 数十秒後にダッシュボードを開くと表示されます。</div>"
+        )
+    elif saved:
+        saved_msg = '<div class="saved-msg">設定を保存しました。</div>'
+    else:
+        saved_msg = ""
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -6639,7 +6646,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif parsed.path == "/settings":
             saved = params.get("saved", [None])[0]
-            html = _build_settings_html(self.db_path, saved=saved)
+            html = _build_settings_html(self.db_path, saved=saved, skip_update=self.skip_update)
             self._send_html(html)
 
         elif parsed.path == "/api/export/snapshots":
@@ -7008,6 +7015,9 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length).decode()
             post_params = parse_qs(body)
             setting_type = post_params.get("setting_type", ["gemini"])[0]
+            # リダイレクト URL に反映するためホワイトリストで正規化
+            if setting_type not in ("closing_day", "scheduler"):
+                setting_type = "gemini"
 
             if setting_type == "closing_day":
                 # 締め日設定
@@ -7058,7 +7068,7 @@ class Handler(BaseHTTPRequestHandler):
                     t = threading.Thread(target=_generate_ai_comments, args=(self.db_path,), daemon=True)
                     t.start()
             self.send_response(303)
-            self.send_header("Location", "/settings?saved=1")
+            self.send_header("Location", f"/settings?saved={setting_type}")
             self.end_headers()
 
         elif parsed.path == "/api/life-events":
@@ -7807,6 +7817,14 @@ def _bg_worker(db_path: str) -> None:
     if not _update_lock.acquire(blocking=False):
         logger.info("[auto] 更新は既に実行中 — スキップ")
         return
+    try:
+        _run_update_locked(db_path)
+    finally:
+        _update_lock.release()
+
+
+def _run_update_locked(db_path: str) -> None:
+    """データ取得・配当更新・AI分析の本体。_update_lock を取得済みの前提で呼ぶこと。"""
     _update_state["running"] = True
     try:
         import asyncio
@@ -7847,11 +7865,17 @@ def _bg_worker(db_path: str) -> None:
             logger.error("[auto] バックグラウンド更新失敗: %s", e)
     finally:
         _update_state["running"] = False
-        _update_lock.release()
 
 
 def _scheduler_tick(db_path: str, now: datetime) -> None:
-    """設定を読み、実行時刻に達していればデータ取得を1回実行する。"""
+    """設定を読み、実行時刻に達していればデータ取得を1回実行する。
+
+    取得はスケジューラスレッド上で同期実行する（完了まで次の tick は遅れるが、
+    試行時刻を先に保存するため二重実行は起きない）。
+    実行時刻を当日中に後ろへ変更した場合、新しい時刻で同日もう1回実行される
+    （人間がテストのため「数分後」に設定する操作を想定した意図的な仕様。
+    直近1時間以内に取得済みなら _should_update が抑止する）。
+    """
     conn = init_db(db_path)
     try:
         enabled = get_setting(conn, "scheduler_enabled", "1") != "0"
@@ -7875,33 +7899,37 @@ def _scheduler_tick(db_path: str, now: datetime) -> None:
     if not _should_run_scheduled(now, scheduled_time, last_run_at):
         return
 
-    if _update_state["running"]:
-        # 起動時更新の実行中は試行時刻を保存せず、次の tick に判定を持ち越す。
-        # ここで保存すると、起動時更新が失敗した場合に当日の再取得機会を失う。
+    # 起動時更新と排他するため、ロックを取得してから試行時刻の保存・実行を行う
+    # （running フラグの確認と実行の間に他スレッドが割り込むのを防ぐ）。
+    # 取得できないときは試行時刻を保存せず、次の tick に判定を持ち越す —
+    # ここで保存すると、起動時更新が失敗した場合に当日の再取得機会を失う。
+    if not _update_lock.acquire(blocking=False):
         logger.info("[scheduler] 更新が既に実行中のため次回の判定に持ち越し")
         return
-
-    # 実行前に試行時刻を保存する — 失敗時に毎分リトライし続けるのを防ぐ（再試行は翌日）
-    conn = init_db(db_path)
     try:
-        save_setting(conn, "scheduler_last_run_at", now.isoformat())
-    finally:
-        conn.close()
-
-    if not _should_update(db_path, max_age_hours=1):
-        result = "skipped"
-        logger.info("[scheduler] データが新しいためスキップ")
-    else:
-        logger.info("[scheduler] 定時データ取得を開始します...")
-        _bg_worker(db_path)
+        # 実行前に試行時刻を保存する — 失敗時に毎分リトライし続けるのを防ぐ（再試行は翌日）
         conn = init_db(db_path)
         try:
-            fetched = get_setting(conn, "last_fetch_at")
+            save_setting(conn, "scheduler_last_run_at", now.isoformat())
         finally:
             conn.close()
-        success = bool(fetched) and fetched != last_fetch_raw
-        result = "success" if success else "failure"
-        logger.info("[scheduler] 定時データ取得: %s", result)
+
+        if not _should_update(db_path, max_age_hours=1):
+            result = "skipped"
+            logger.info("[scheduler] データが新しいためスキップ")
+        else:
+            logger.info("[scheduler] 定時データ取得を開始します...")
+            _run_update_locked(db_path)
+            conn = init_db(db_path)
+            try:
+                fetched = get_setting(conn, "last_fetch_at")
+            finally:
+                conn.close()
+            success = bool(fetched) and fetched != last_fetch_raw
+            result = "success" if success else "failure"
+            logger.info("[scheduler] 定時データ取得: %s", result)
+    finally:
+        _update_lock.release()
 
     conn = init_db(db_path)
     try:

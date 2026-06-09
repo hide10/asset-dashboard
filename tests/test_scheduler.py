@@ -106,7 +106,7 @@ class TestSchedulerTick:
     NOW = datetime(2026, 6, 10, 7, 5)
 
     def _stub_worker(self, monkeypatch, db_path: str, success: bool = True):
-        """_bg_worker を呼び出し記録付きのスタブに差し替える。"""
+        """_run_update_locked を呼び出し記録付きのスタブに差し替える。"""
         calls = []
 
         def fake_worker(path):
@@ -114,7 +114,7 @@ class TestSchedulerTick:
             if success:
                 _set(db_path, "last_fetch_at", self.NOW.isoformat())
 
-        monkeypatch.setattr(server, "_bg_worker", fake_worker)
+        monkeypatch.setattr(server, "_run_update_locked", fake_worker)
         return calls
 
     def test_disabled_does_nothing(self, monkeypatch, db_path):
@@ -164,16 +164,18 @@ class TestSchedulerTick:
         assert _get(db_path, "scheduler_last_result") == "skipped"
 
     def test_carry_over_while_startup_update_running(self, monkeypatch, db_path):
-        # 起動時更新の実行中は試行時刻を保存せず持ち越す
+        # 起動時更新がロックを保持中は試行時刻を保存せず持ち越す
         # → 起動時更新が失敗しても当日の再取得機会を失わない
         _set(db_path, "last_fetch_at", (self.NOW - timedelta(days=1)).isoformat())
         calls = self._stub_worker(monkeypatch, db_path, success=True)
-        monkeypatch.setitem(server._update_state, "running", True)
-        _scheduler_tick(db_path, now=self.NOW)
+        server._update_lock.acquire()
+        try:
+            _scheduler_tick(db_path, now=self.NOW)
+        finally:
+            server._update_lock.release()
         assert calls == []
         assert _get(db_path, "scheduler_last_run_at") is None  # 持ち越し
         # 起動時更新が終了（失敗で last_fetch_at は古いまま）→ 次の tick で実行される
-        monkeypatch.setitem(server._update_state, "running", False)
         _scheduler_tick(db_path, now=datetime(2026, 6, 10, 7, 6))
         assert calls == [db_path]
 

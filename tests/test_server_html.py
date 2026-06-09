@@ -749,6 +749,30 @@ class TestSchedulerSetting:
         html = _build_settings_html(str(db_path), saved=False)
         assert "自動取得: オフ" in html
 
+    def test_settings_shows_stopped_when_skip_update(self, tmp_path):
+        # --demo / --skip-update 起動時はスケジューラが動いていないので次回予定を出さない
+        db_path = tmp_path / "scheduler_skip_test.db"
+        conn = init_db(str(db_path))
+        conn.close()
+        html = _build_settings_html(str(db_path), saved=False, skip_update=True)
+        assert "自動取得: 停止中" in html
+        assert "次回予定" not in html
+
+    def test_saved_msg_scheduler_has_no_ai_text(self, tmp_path):
+        db_path = tmp_path / "saved_msg_test.db"
+        conn = init_db(str(db_path))
+        conn.close()
+        html = _build_settings_html(str(db_path), saved="scheduler")
+        assert "設定を保存しました。" in html
+        assert "AIコメントをバックグラウンドで生成中" not in html
+
+    def test_saved_msg_gemini_has_ai_text(self, tmp_path):
+        db_path = tmp_path / "saved_msg_gemini_test.db"
+        conn = init_db(str(db_path))
+        conn.close()
+        html = _build_settings_html(str(db_path), saved="gemini")
+        assert "AIコメントをバックグラウンドで生成中" in html
+
 
 class TestDashboardFetchStatus:
     """ダッシュボードに最終取得日時と次回予定が表示される。"""
