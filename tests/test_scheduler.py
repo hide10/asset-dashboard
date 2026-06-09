@@ -154,11 +154,28 @@ class TestSchedulerTick:
 
     def test_skipped_when_data_fresh(self, monkeypatch, db_path):
         # 起動時更新が直前（10分前）に成功済み → 試行は記録されるが取得はスキップ
+        # _should_update は実時刻を参照するためスタブで「データが新しい」状態を固定する
         _set(db_path, "last_fetch_at", (self.NOW - timedelta(minutes=10)).isoformat())
         calls = self._stub_worker(monkeypatch, db_path)
+        monkeypatch.setattr(server, "_should_update", lambda *a, **kw: False)
         _scheduler_tick(db_path, now=self.NOW)
         assert calls == []
+        assert _get(db_path, "scheduler_last_run_at") == self.NOW.isoformat()
         assert _get(db_path, "scheduler_last_result") == "skipped"
+
+    def test_carry_over_while_startup_update_running(self, monkeypatch, db_path):
+        # 起動時更新の実行中は試行時刻を保存せず持ち越す
+        # → 起動時更新が失敗しても当日の再取得機会を失わない
+        _set(db_path, "last_fetch_at", (self.NOW - timedelta(days=1)).isoformat())
+        calls = self._stub_worker(monkeypatch, db_path, success=True)
+        monkeypatch.setitem(server._update_state, "running", True)
+        _scheduler_tick(db_path, now=self.NOW)
+        assert calls == []
+        assert _get(db_path, "scheduler_last_run_at") is None  # 持ち越し
+        # 起動時更新が終了（失敗で last_fetch_at は古いまま）→ 次の tick で実行される
+        monkeypatch.setitem(server._update_state, "running", False)
+        _scheduler_tick(db_path, now=datetime(2026, 6, 10, 7, 6))
+        assert calls == [db_path]
 
     def test_custom_time_setting(self, monkeypatch, db_path):
         _set(db_path, "scheduler_time", "21:30")

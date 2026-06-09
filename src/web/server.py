@@ -7875,6 +7875,12 @@ def _scheduler_tick(db_path: str, now: datetime) -> None:
     if not _should_run_scheduled(now, scheduled_time, last_run_at):
         return
 
+    if _update_state["running"]:
+        # 起動時更新の実行中は試行時刻を保存せず、次の tick に判定を持ち越す。
+        # ここで保存すると、起動時更新が失敗した場合に当日の再取得機会を失う。
+        logger.info("[scheduler] 更新が既に実行中のため次回の判定に持ち越し")
+        return
+
     # 実行前に試行時刻を保存する — 失敗時に毎分リトライし続けるのを防ぐ（再試行は翌日）
     conn = init_db(db_path)
     try:
@@ -7882,10 +7888,7 @@ def _scheduler_tick(db_path: str, now: datetime) -> None:
     finally:
         conn.close()
 
-    if _update_state["running"]:
-        result = "skipped"
-        logger.info("[scheduler] 更新が既に実行中のためスキップ")
-    elif not _should_update(db_path, max_age_hours=1):
+    if not _should_update(db_path, max_age_hours=1):
         result = "skipped"
         logger.info("[scheduler] データが新しいためスキップ")
     else:
