@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+from src.db.repository import save_setting
 from src.db.schema import init_db
 from src.web.server import (
     Handler,
@@ -701,6 +702,52 @@ class TestClosingDaySetting:
         assert "設定日前の平日" in html
         assert "設定日後の平日" in html
         assert 'name="holiday_mode"' in html
+
+
+# --- スケジューラ設定 (#58) ---
+
+
+class TestSchedulerSetting:
+    """自動データ取得の設定カードが設定ページに表示される。"""
+
+    def test_settings_has_scheduler_section(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
+        assert "自動データ取得" in html
+        assert 'value="scheduler"' in html  # setting_type hidden
+
+    def test_settings_has_time_input_with_default(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
+        assert 'type="time"' in html
+        assert 'name="scheduler_time"' in html
+        assert 'value="07:00"' in html
+
+    def test_settings_has_enabled_checkbox(self, tmp_path):
+        html = _build_settings_html_for_test(tmp_path)
+        assert 'name="scheduler_enabled"' in html
+        assert "自動取得を有効にする" in html
+
+    def test_settings_shows_next_run(self, tmp_path):
+        # デフォルト有効 → 次回予定が表示される
+        html = _build_settings_html_for_test(tmp_path)
+        assert "次回予定" in html
+
+    def test_settings_shows_last_result(self, tmp_path):
+        db_path = tmp_path / "scheduler_settings_test.db"
+        conn = init_db(str(db_path))
+        save_setting(conn, "scheduler_last_run_at", "2026-06-10T07:00:00")
+        save_setting(conn, "scheduler_last_result", "success")
+        conn.close()
+        html = _build_settings_html(str(db_path), saved=False)
+        assert "最終実行: 2026-06-10 07:00" in html
+        assert "成功" in html
+
+    def test_settings_shows_off_when_disabled(self, tmp_path):
+        db_path = tmp_path / "scheduler_off_test.db"
+        conn = init_db(str(db_path))
+        save_setting(conn, "scheduler_enabled", "0")
+        conn.close()
+        html = _build_settings_html(str(db_path), saved=False)
+        assert "自動取得: オフ" in html
 
 
 # --- Favicon (#37) ---

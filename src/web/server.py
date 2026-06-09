@@ -4747,8 +4747,25 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         db_key = get_setting(conn, "gemini_api_key", "")
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
         holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
+        scheduler_enabled = get_setting(conn, "scheduler_enabled", "1") != "0"
+        scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME) or _SCHEDULER_DEFAULT_TIME
+        scheduler_last_run = get_setting(conn, "scheduler_last_run_at")
+        scheduler_last_result = get_setting(conn, "scheduler_last_result")
     finally:
         conn.close()
+
+    # スケジューラのステータス表示
+    result_label = {"success": "成功", "failure": "失敗", "skipped": "スキップ"}.get(scheduler_last_result or "", "")
+    scheduler_status = "まだ実行されていません"
+    if scheduler_last_run:
+        with contextlib.suppress(ValueError):
+            last_run_disp = datetime.fromisoformat(scheduler_last_run).strftime("%Y-%m-%d %H:%M")
+            scheduler_status = f"最終実行: {last_run_disp}" + (f" — {result_label}" if result_label else "")
+    if scheduler_enabled:
+        next_run = _next_scheduled_run(datetime.now(), scheduler_time)
+        scheduler_status += f" ／ 次回予定: {next_run.strftime('%Y-%m-%d %H:%M')}"
+    else:
+        scheduler_status += " ／ 自動取得: オフ"
     env_key = os.environ.get("GEMINI_API_KEY", "")
     # 表示用マスク
     if env_key:
@@ -4851,6 +4868,27 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
           </label>
         </div>
         <div class="hint">締め日が土日祝日に当たる場合の調整方法を選択します。</div>
+      </div>
+      <button type="submit" class="btn">保存</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>自動データ取得</h2>
+    <div class="status">{scheduler_status}</div>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      サーバー起動中、毎日指定した時刻にデータを自動取得します。停止していた場合は起動後に追いつき実行されます。
+    </p>
+    <form method="POST" action="/settings">
+      <input type="hidden" name="setting_type" value="scheduler">
+      <div class="field">
+        <label style="font-weight:normal;font-size:0.9rem;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" name="scheduler_enabled" value="1" style="width:auto"{" checked" if scheduler_enabled else ""}> 自動取得を有効にする
+        </label>
+      </div>
+      <div class="field">
+        <label>実行時刻</label>
+        <input type="time" name="scheduler_time" value="{scheduler_time}" style="width:auto">
+        <div class="hint">デフォルトは毎日 7:00 です。設定はサーバー再起動なしで反映されます。</div>
       </div>
       <button type="submit" class="btn">保存</button>
     </form>
@@ -6950,6 +6988,21 @@ class Handler(BaseHTTPRequestHandler):
                     save_setting(conn, "closing_day", str(closing_day_val))
                     save_setting(conn, "closing_day_holiday", holiday_mode_val)
                     logger.info("締め日更新: %d日 (祝日: %s)", closing_day_val, holiday_mode_val)
+                finally:
+                    conn.close()
+            elif setting_type == "scheduler":
+                # 自動データ取得設定
+                enabled_val = "1" if post_params.get("scheduler_enabled") else "0"
+                time_str = post_params.get("scheduler_time", [_SCHEDULER_DEFAULT_TIME])[0].strip()
+                try:
+                    datetime.strptime(time_str, "%H:%M")
+                except ValueError:
+                    time_str = _SCHEDULER_DEFAULT_TIME
+                conn = get_connection(self.db_path)
+                try:
+                    save_setting(conn, "scheduler_enabled", enabled_val)
+                    save_setting(conn, "scheduler_time", time_str)
+                    logger.info("スケジューラ設定更新: enabled=%s, time=%s", enabled_val, time_str)
                 finally:
                     conn.close()
             else:
