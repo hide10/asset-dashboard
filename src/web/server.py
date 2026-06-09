@@ -14,6 +14,7 @@ import logging
 import math
 import sqlite3
 import threading
+import time
 import unicodedata
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -74,6 +75,10 @@ logger = logging.getLogger(__name__)
 DB_DEFAULT = Path(__file__).resolve().parents[2] / "data" / "assets.db"
 
 _update_state = {"running": False, "version": 0}
+_update_lock = threading.Lock()
+
+_SCHEDULER_CHECK_INTERVAL = 60  # 秒
+_SCHEDULER_DEFAULT_TIME = "07:00"
 
 
 def _h(s: str) -> str:
@@ -7706,7 +7711,13 @@ def _generate_ai_comments(db_path: str) -> None:
 
 
 def _bg_worker(db_path: str) -> None:
-    """バックグラウンドでデータ取得・配当更新・AI分析を実行する。"""
+    """バックグラウンドでデータ取得・配当更新・AI分析を実行する。
+
+    起動時更新スレッドとスケジューラスレッドの同時発火を _update_lock で1本に抑える。
+    """
+    if not _update_lock.acquire(blocking=False):
+        logger.info("[auto] 更新は既に実行中 — スキップ")
+        return
     _update_state["running"] = True
     try:
         import asyncio
@@ -7747,6 +7758,81 @@ def _bg_worker(db_path: str) -> None:
             logger.error("[auto] バックグラウンド更新失敗: %s", e)
     finally:
         _update_state["running"] = False
+        _update_lock.release()
+
+
+def _scheduler_tick(db_path: str, now: datetime) -> None:
+    """設定を読み、実行時刻に達していればデータ取得を1回実行する。"""
+    conn = init_db(db_path)
+    try:
+        enabled = get_setting(conn, "scheduler_enabled", "1") != "0"
+        scheduled_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME)
+        last_run_raw = get_setting(conn, "scheduler_last_run_at")
+        last_fetch_raw = get_setting(conn, "last_fetch_at")
+    finally:
+        conn.close()
+
+    if not enabled:
+        return
+
+    # 前回のスケジュール試行と起動時更新の成功時刻のうち、新しい方を「前回実行」とみなす
+    candidates = []
+    for raw in (last_run_raw, last_fetch_raw):
+        if raw:
+            with contextlib.suppress(ValueError):
+                candidates.append(datetime.fromisoformat(raw))
+    last_run_at = max(candidates) if candidates else None
+
+    if not _should_run_scheduled(now, scheduled_time, last_run_at):
+        return
+
+    # 実行前に試行時刻を保存する — 失敗時に毎分リトライし続けるのを防ぐ（再試行は翌日）
+    conn = init_db(db_path)
+    try:
+        save_setting(conn, "scheduler_last_run_at", now.isoformat())
+    finally:
+        conn.close()
+
+    if _update_state["running"]:
+        result = "skipped"
+        logger.info("[scheduler] 更新が既に実行中のためスキップ")
+    elif not _should_update(db_path, max_age_hours=1):
+        result = "skipped"
+        logger.info("[scheduler] データが新しいためスキップ")
+    else:
+        logger.info("[scheduler] 定時データ取得を開始します...")
+        _bg_worker(db_path)
+        conn = init_db(db_path)
+        try:
+            fetched = get_setting(conn, "last_fetch_at")
+        finally:
+            conn.close()
+        success = bool(fetched) and fetched != last_fetch_raw
+        result = "success" if success else "failure"
+        logger.info("[scheduler] 定時データ取得: %s", result)
+
+    conn = init_db(db_path)
+    try:
+        save_setting(conn, "scheduler_last_result", result)
+    finally:
+        conn.close()
+
+
+def _scheduler_loop(db_path: str) -> None:
+    """毎分設定を読み直し、実行時刻判定が True ならデータ取得を実行する常駐ループ。"""
+    while True:
+        time.sleep(_SCHEDULER_CHECK_INTERVAL)
+        try:
+            _scheduler_tick(db_path, now=datetime.now())
+        except Exception as e:
+            logger.error("[scheduler] tick エラー: %s", e)
+
+
+def _start_scheduler(db_path: str) -> None:
+    """スケジューラスレッドを起動する。"""
+    t = threading.Thread(target=_scheduler_loop, args=(db_path,), daemon=True)
+    t.start()
+    logger.info("[scheduler] スケジューラを開始しました（毎分チェック）")
 
 
 def _start_bg_update(db_path: str) -> None:
@@ -7804,6 +7890,7 @@ def main() -> None:
     skip_update = args.demo or args.skip_update
     if not skip_update:
         _start_bg_update(args.db)
+        _start_scheduler(args.db)
 
     Handler.db_path = args.db
     Handler.demo = args.demo
