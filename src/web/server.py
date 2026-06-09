@@ -651,9 +651,22 @@ def _build_html(
     ai_comment: str | None = None,
     demo: bool = False,
     session_expired: str | None = None,
+    last_fetch_at: str | None = None,
+    next_run_at: str | None = None,
 ) -> str:
     if not data:
         return "<html><body><h1>データがありません</h1></body></html>"
+
+    fetch_parts = []
+    if last_fetch_at:
+        fetch_parts.append(f"最終取得: {last_fetch_at}")
+    if next_run_at:
+        fetch_parts.append(f"次回自動取得: {next_run_at}")
+    fetch_status_html = (
+        f'<div style="font-size:0.78rem;color:#b2bec3;margin-bottom:12px">{" ／ ".join(fetch_parts)}</div>'
+        if fetch_parts
+        else ""
+    )
 
     date = data["date"]
     total = data["total_asset"]
@@ -1133,6 +1146,7 @@ def _build_html(
     <button class="nav-btn" id="next-btn" title="次の日">&rarr;</button>
     <label>({len(dates)}日分のデータ)</label>
   </div>
+  {fetch_status_html}
   <div class="total">現在の総資産: <strong>{total:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({
         date
     }時点)</span></div>
@@ -6544,22 +6558,44 @@ class Handler(BaseHTTPRequestHandler):
                             conn.close()
                     except Exception:
                         pass
-            # セッション切れチェック
+            # セッション切れチェック + 取得日時ステータス
             session_expired = None
+            last_fetch_at = None
+            next_run_at = None
             if self.demo:
                 # デモモード: ?session_expired=1 で強制表示（見た目確認用）
                 if params.get("session_expired", [""])[0]:
                     session_expired = "demo"
+                last_fetch_at = f"{data['date']} 07:00"
+                next_run_at = "明日 07:00"
             else:
                 try:
                     conn = get_connection(self.db_path)
                     try:
                         session_expired = get_setting(conn, "session_expired")
+                        last_fetch_raw = get_setting(conn, "last_fetch_at")
+                        scheduler_enabled = get_setting(conn, "scheduler_enabled", "1") != "0"
+                        scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME)
                     finally:
                         conn.close()
+                    if last_fetch_raw:
+                        with contextlib.suppress(ValueError):
+                            last_fetch_at = datetime.fromisoformat(last_fetch_raw).strftime("%Y-%m-%d %H:%M")
+                    if self.skip_update or not scheduler_enabled:
+                        next_run_at = "オフ"
+                    else:
+                        next_run_at = _next_scheduled_run(datetime.now(), scheduler_time).strftime("%m-%d %H:%M")
                 except Exception:
                     pass
-            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment, session_expired=session_expired)
+            html = _build_html(
+                data,
+                dates,
+                self.skip_update,
+                ai_comment=ai_comment,
+                session_expired=session_expired,
+                last_fetch_at=last_fetch_at,
+                next_run_at=next_run_at,
+            )
             self._send_html(html)
 
         elif parsed.path == "/cf":

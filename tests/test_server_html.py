@@ -750,6 +750,28 @@ class TestSchedulerSetting:
         assert "自動取得: オフ" in html
 
 
+class TestDashboardFetchStatus:
+    """ダッシュボードに最終取得日時と次回予定が表示される。"""
+
+    def test_shows_last_fetch_and_next_run(self):
+        data = _demo_data()
+        html = _build_html(data, [data["date"]], last_fetch_at="2026-06-10 07:01", next_run_at="06-11 07:00")
+        assert "最終取得: 2026-06-10 07:01" in html
+        assert "次回自動取得: 06-11 07:00" in html
+
+    def test_hidden_when_not_provided(self):
+        data = _demo_data()
+        html = _build_html(data, [data["date"]])
+        assert "最終取得" not in html
+        assert "次回自動取得" not in html
+
+    def test_last_fetch_only(self):
+        data = _demo_data()
+        html = _build_html(data, [data["date"]], last_fetch_at="2026-06-10 07:01")
+        assert "最終取得: 2026-06-10 07:01" in html
+        assert "次回自動取得" not in html
+
+
 # --- Favicon (#37) ---
 
 
