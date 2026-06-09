@@ -15,7 +15,7 @@ import math
 import sqlite3
 import threading
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -7649,6 +7649,40 @@ def _should_update(db_path: str, max_age_hours: int = 6) -> bool:
 
     elapsed = datetime.now() - datetime.fromisoformat(last)
     return elapsed.total_seconds() >= max_age_hours * 3600
+
+
+def _parse_scheduler_time(value: str | None) -> tuple[int, int]:
+    """ "HH:MM" 形式の文字列を (hour, minute) に変換する。不正値は (7, 0) にフォールバック。"""
+    if value:
+        with contextlib.suppress(ValueError):
+            t = datetime.strptime(value, "%H:%M")
+            return t.hour, t.minute
+    return 7, 0
+
+
+def _should_run_scheduled(now: datetime, scheduled_time: str | None, last_run_at: datetime | None) -> bool:
+    """当日の予定時刻を過ぎていて、前回実行がその時刻より前なら True。
+
+    経過時間（24時間以上）の比較ではなく「前回実行 < 当日の予定時刻」のスロット比較に
+    することで、チェック間隔の粒度による実行時刻のずれ（drift）を防ぐ。
+    サーバーが予定時刻に停止していた場合も、起動後の最初の判定で True になる（追いつき実行）。
+    """
+    hour, minute = _parse_scheduler_time(scheduled_time)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now < target:
+        return False
+    if last_run_at is None:
+        return True
+    return last_run_at < target
+
+
+def _next_scheduled_run(now: datetime, scheduled_time: str | None) -> datetime:
+    """次回の実行予定時刻。当日の予定時刻が未来ならそれ、過ぎていれば翌日。"""
+    hour, minute = _parse_scheduler_time(scheduled_time)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now < target:
+        return target
+    return target + timedelta(days=1)
 
 
 def _needs_dividend_update() -> bool:
