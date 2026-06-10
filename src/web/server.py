@@ -14,8 +14,9 @@ import logging
 import math
 import sqlite3
 import threading
+import time
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -74,6 +75,10 @@ logger = logging.getLogger(__name__)
 DB_DEFAULT = Path(__file__).resolve().parents[2] / "data" / "assets.db"
 
 _update_state = {"running": False, "version": 0}
+_update_lock = threading.Lock()
+
+_SCHEDULER_CHECK_INTERVAL = 60  # 秒
+_SCHEDULER_DEFAULT_TIME = "07:00"
 
 
 def _h(s: str) -> str:
@@ -646,9 +651,22 @@ def _build_html(
     ai_comment: str | None = None,
     demo: bool = False,
     session_expired: str | None = None,
+    last_fetch_at: str | None = None,
+    next_run_at: str | None = None,
 ) -> str:
     if not data:
         return "<html><body><h1>データがありません</h1></body></html>"
+
+    fetch_parts = []
+    if last_fetch_at:
+        fetch_parts.append(f"最終取得: {last_fetch_at}")
+    if next_run_at:
+        fetch_parts.append(f"次回自動取得: {next_run_at}")
+    fetch_status_html = (
+        f'<div style="font-size:0.78rem;color:#b2bec3;margin-bottom:12px">{" ／ ".join(fetch_parts)}</div>'
+        if fetch_parts
+        else ""
+    )
 
     date = data["date"]
     total = data["total_asset"]
@@ -1128,6 +1146,7 @@ def _build_html(
     <button class="nav-btn" id="next-btn" title="次の日">&rarr;</button>
     <label>({len(dates)}日分のデータ)</label>
   </div>
+  {fetch_status_html}
   <div class="total">現在の総資産: <strong>{total:,.0f}</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">({
         date
     }時点)</span></div>
@@ -4733,8 +4752,8 @@ const pollId = setInterval(async () => {{
 </html>"""
 
 
-def _build_settings_html(db_path: str, saved: str | None = None) -> str:
-    """設定ページのHTMLを生成する。"""
+def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bool = False) -> str:
+    """設定ページのHTMLを生成する。skip_update はスケジューラが起動していないモード。"""
     import os
 
     conn = get_connection(db_path)
@@ -4742,8 +4761,27 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         db_key = get_setting(conn, "gemini_api_key", "")
         closing_day = int(get_setting(conn, "closing_day", "1") or "1")
         holiday_mode = get_setting(conn, "closing_day_holiday", "none") or "none"
+        scheduler_enabled = get_setting(conn, "scheduler_enabled", "1") != "0"
+        scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME) or _SCHEDULER_DEFAULT_TIME
+        scheduler_last_run = get_setting(conn, "scheduler_last_run_at")
+        scheduler_last_result = get_setting(conn, "scheduler_last_result")
     finally:
         conn.close()
+
+    # スケジューラのステータス表示
+    result_label = {"success": "成功", "failure": "失敗", "skipped": "スキップ"}.get(scheduler_last_result or "", "")
+    scheduler_status = "まだ実行されていません"
+    if scheduler_last_run:
+        with contextlib.suppress(ValueError):
+            last_run_disp = datetime.fromisoformat(scheduler_last_run).strftime("%Y-%m-%d %H:%M")
+            scheduler_status = f"最終実行: {last_run_disp}" + (f" — {result_label}" if result_label else "")
+    if skip_update:
+        scheduler_status += " ／ 自動取得: 停止中（--demo / --skip-update で起動中）"
+    elif scheduler_enabled:
+        next_run = _next_scheduled_run(datetime.now(), scheduler_time)
+        scheduler_status += f" ／ 次回予定: {next_run.strftime('%Y-%m-%d %H:%M')}"
+    else:
+        scheduler_status += " ／ 自動取得: オフ"
     env_key = os.environ.get("GEMINI_API_KEY", "")
     # 表示用マスク
     if env_key:
@@ -4756,11 +4794,16 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
         source = ""
         display_key = ""
 
-    saved_msg = (
-        '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です — 数十秒後にダッシュボードを開くと表示されます。</div>'
-        if saved
-        else ""
-    )
+    # 保存メッセージは setting_type ごとに分岐（"1" は旧URL互換で gemini 扱い）
+    if saved in ("gemini", "1"):
+        saved_msg = (
+            '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です'
+            " — 数十秒後にダッシュボードを開くと表示されます。</div>"
+        )
+    elif saved:
+        saved_msg = '<div class="saved-msg">設定を保存しました。</div>'
+    else:
+        saved_msg = ""
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -4846,6 +4889,27 @@ def _build_settings_html(db_path: str, saved: str | None = None) -> str:
           </label>
         </div>
         <div class="hint">締め日が土日祝日に当たる場合の調整方法を選択します。</div>
+      </div>
+      <button type="submit" class="btn">保存</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>自動データ取得</h2>
+    <div class="status">{scheduler_status}</div>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      サーバー起動中、毎日指定した時刻にデータを自動取得します。停止していた場合は起動後に追いつき実行されます。
+    </p>
+    <form method="POST" action="/settings">
+      <input type="hidden" name="setting_type" value="scheduler">
+      <div class="field">
+        <label style="font-weight:normal;font-size:0.9rem;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" name="scheduler_enabled" value="1" style="width:auto"{" checked" if scheduler_enabled else ""}> 自動取得を有効にする
+        </label>
+      </div>
+      <div class="field">
+        <label>実行時刻</label>
+        <input type="time" name="scheduler_time" value="{scheduler_time}" style="width:auto">
+        <div class="hint">デフォルトは毎日 7:00 です。設定はサーバー再起動なしで反映されます。</div>
       </div>
       <button type="submit" class="btn">保存</button>
     </form>
@@ -6501,22 +6565,44 @@ class Handler(BaseHTTPRequestHandler):
                             conn.close()
                     except Exception:
                         pass
-            # セッション切れチェック
+            # セッション切れチェック + 取得日時ステータス
             session_expired = None
+            last_fetch_at = None
+            next_run_at = None
             if self.demo:
                 # デモモード: ?session_expired=1 で強制表示（見た目確認用）
                 if params.get("session_expired", [""])[0]:
                     session_expired = "demo"
+                last_fetch_at = f"{data['date']} 07:00"
+                next_run_at = "明日 07:00"
             else:
                 try:
                     conn = get_connection(self.db_path)
                     try:
                         session_expired = get_setting(conn, "session_expired")
+                        last_fetch_raw = get_setting(conn, "last_fetch_at")
+                        scheduler_enabled = get_setting(conn, "scheduler_enabled", "1") != "0"
+                        scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME)
                     finally:
                         conn.close()
+                    if last_fetch_raw:
+                        with contextlib.suppress(ValueError):
+                            last_fetch_at = datetime.fromisoformat(last_fetch_raw).strftime("%Y-%m-%d %H:%M")
+                    if self.skip_update or not scheduler_enabled:
+                        next_run_at = "オフ"
+                    else:
+                        next_run_at = _next_scheduled_run(datetime.now(), scheduler_time).strftime("%m-%d %H:%M")
                 except Exception:
                     pass
-            html = _build_html(data, dates, self.skip_update, ai_comment=ai_comment, session_expired=session_expired)
+            html = _build_html(
+                data,
+                dates,
+                self.skip_update,
+                ai_comment=ai_comment,
+                session_expired=session_expired,
+                last_fetch_at=last_fetch_at,
+                next_run_at=next_run_at,
+            )
             self._send_html(html)
 
         elif parsed.path == "/cf":
@@ -6560,7 +6646,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif parsed.path == "/settings":
             saved = params.get("saved", [None])[0]
-            html = _build_settings_html(self.db_path, saved=saved)
+            html = _build_settings_html(self.db_path, saved=saved, skip_update=self.skip_update)
             self._send_html(html)
 
         elif parsed.path == "/api/export/snapshots":
@@ -6929,6 +7015,9 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length).decode()
             post_params = parse_qs(body)
             setting_type = post_params.get("setting_type", ["gemini"])[0]
+            # リダイレクト URL に反映するためホワイトリストで正規化
+            if setting_type not in ("closing_day", "scheduler"):
+                setting_type = "gemini"
 
             if setting_type == "closing_day":
                 # 締め日設定
@@ -6945,6 +7034,21 @@ class Handler(BaseHTTPRequestHandler):
                     save_setting(conn, "closing_day", str(closing_day_val))
                     save_setting(conn, "closing_day_holiday", holiday_mode_val)
                     logger.info("締め日更新: %d日 (祝日: %s)", closing_day_val, holiday_mode_val)
+                finally:
+                    conn.close()
+            elif setting_type == "scheduler":
+                # 自動データ取得設定
+                enabled_val = "1" if post_params.get("scheduler_enabled") else "0"
+                time_str = post_params.get("scheduler_time", [_SCHEDULER_DEFAULT_TIME])[0].strip()
+                try:
+                    datetime.strptime(time_str, "%H:%M")
+                except ValueError:
+                    time_str = _SCHEDULER_DEFAULT_TIME
+                conn = get_connection(self.db_path)
+                try:
+                    save_setting(conn, "scheduler_enabled", enabled_val)
+                    save_setting(conn, "scheduler_time", time_str)
+                    logger.info("スケジューラ設定更新: enabled=%s, time=%s", enabled_val, time_str)
                 finally:
                     conn.close()
             else:
@@ -6964,7 +7068,7 @@ class Handler(BaseHTTPRequestHandler):
                     t = threading.Thread(target=_generate_ai_comments, args=(self.db_path,), daemon=True)
                     t.start()
             self.send_response(303)
-            self.send_header("Location", "/settings?saved=1")
+            self.send_header("Location", f"/settings?saved={setting_type}")
             self.end_headers()
 
         elif parsed.path == "/api/life-events":
@@ -7651,6 +7755,40 @@ def _should_update(db_path: str, max_age_hours: int = 6) -> bool:
     return elapsed.total_seconds() >= max_age_hours * 3600
 
 
+def _parse_scheduler_time(value: str | None) -> tuple[int, int]:
+    """ "HH:MM" 形式の文字列を (hour, minute) に変換する。不正値は (7, 0) にフォールバック。"""
+    if value:
+        with contextlib.suppress(ValueError):
+            t = datetime.strptime(value, "%H:%M")
+            return t.hour, t.minute
+    return 7, 0
+
+
+def _should_run_scheduled(now: datetime, scheduled_time: str | None, last_run_at: datetime | None) -> bool:
+    """当日の予定時刻を過ぎていて、前回実行がその時刻より前なら True。
+
+    経過時間（24時間以上）の比較ではなく「前回実行 < 当日の予定時刻」のスロット比較に
+    することで、チェック間隔の粒度による実行時刻のずれ（drift）を防ぐ。
+    サーバーが予定時刻に停止していた場合も、起動後の最初の判定で True になる（追いつき実行）。
+    """
+    hour, minute = _parse_scheduler_time(scheduled_time)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now < target:
+        return False
+    if last_run_at is None:
+        return True
+    return last_run_at < target
+
+
+def _next_scheduled_run(now: datetime, scheduled_time: str | None) -> datetime:
+    """次回の実行予定時刻。当日の予定時刻が未来ならそれ、過ぎていれば翌日。"""
+    hour, minute = _parse_scheduler_time(scheduled_time)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now < target:
+        return target
+    return target + timedelta(days=1)
+
+
 def _needs_dividend_update() -> bool:
     """dividends.json が存在しない or 当日取得でなければ True。"""
     from datetime import date as _date
@@ -7672,7 +7810,21 @@ def _generate_ai_comments(db_path: str) -> None:
 
 
 def _bg_worker(db_path: str) -> None:
-    """バックグラウンドでデータ取得・配当更新・AI分析を実行する。"""
+    """バックグラウンドでデータ取得・配当更新・AI分析を実行する。
+
+    起動時更新スレッドとスケジューラスレッドの同時発火を _update_lock で1本に抑える。
+    """
+    if not _update_lock.acquire(blocking=False):
+        logger.info("[auto] 更新は既に実行中 — スキップ")
+        return
+    try:
+        _run_update_locked(db_path)
+    finally:
+        _update_lock.release()
+
+
+def _run_update_locked(db_path: str) -> None:
+    """データ取得・配当更新・AI分析の本体。_update_lock を取得済みの前提で呼ぶこと。"""
     _update_state["running"] = True
     try:
         import asyncio
@@ -7713,6 +7865,94 @@ def _bg_worker(db_path: str) -> None:
             logger.error("[auto] バックグラウンド更新失敗: %s", e)
     finally:
         _update_state["running"] = False
+
+
+def _scheduler_tick(db_path: str, now: datetime) -> None:
+    """設定を読み、実行時刻に達していればデータ取得を1回実行する。
+
+    取得はスケジューラスレッド上で同期実行する（完了まで次の tick は遅れるが、
+    試行時刻を先に保存するため二重実行は起きない）。
+    実行時刻を当日中に後ろへ変更した場合、新しい時刻で同日もう1回実行される
+    （人間がテストのため「数分後」に設定する操作を想定した意図的な仕様。
+    直近1時間以内に取得済みなら _should_update が抑止する）。
+    """
+    conn = init_db(db_path)
+    try:
+        enabled = get_setting(conn, "scheduler_enabled", "1") != "0"
+        scheduled_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME)
+        last_run_raw = get_setting(conn, "scheduler_last_run_at")
+        last_fetch_raw = get_setting(conn, "last_fetch_at")
+    finally:
+        conn.close()
+
+    if not enabled:
+        return
+
+    # 前回のスケジュール試行と起動時更新の成功時刻のうち、新しい方を「前回実行」とみなす
+    candidates = []
+    for raw in (last_run_raw, last_fetch_raw):
+        if raw:
+            with contextlib.suppress(ValueError):
+                candidates.append(datetime.fromisoformat(raw))
+    last_run_at = max(candidates) if candidates else None
+
+    if not _should_run_scheduled(now, scheduled_time, last_run_at):
+        return
+
+    # 起動時更新と排他するため、ロックを取得してから試行時刻の保存・実行を行う
+    # （running フラグの確認と実行の間に他スレッドが割り込むのを防ぐ）。
+    # 取得できないときは試行時刻を保存せず、次の tick に判定を持ち越す —
+    # ここで保存すると、起動時更新が失敗した場合に当日の再取得機会を失う。
+    if not _update_lock.acquire(blocking=False):
+        logger.info("[scheduler] 更新が既に実行中のため次回の判定に持ち越し")
+        return
+    try:
+        # 実行前に試行時刻を保存する — 失敗時に毎分リトライし続けるのを防ぐ（再試行は翌日）
+        conn = init_db(db_path)
+        try:
+            save_setting(conn, "scheduler_last_run_at", now.isoformat())
+        finally:
+            conn.close()
+
+        if not _should_update(db_path, max_age_hours=1):
+            result = "skipped"
+            logger.info("[scheduler] データが新しいためスキップ")
+        else:
+            logger.info("[scheduler] 定時データ取得を開始します...")
+            _run_update_locked(db_path)
+            conn = init_db(db_path)
+            try:
+                fetched = get_setting(conn, "last_fetch_at")
+            finally:
+                conn.close()
+            success = bool(fetched) and fetched != last_fetch_raw
+            result = "success" if success else "failure"
+            logger.info("[scheduler] 定時データ取得: %s", result)
+    finally:
+        _update_lock.release()
+
+    conn = init_db(db_path)
+    try:
+        save_setting(conn, "scheduler_last_result", result)
+    finally:
+        conn.close()
+
+
+def _scheduler_loop(db_path: str) -> None:
+    """毎分設定を読み直し、実行時刻判定が True ならデータ取得を実行する常駐ループ。"""
+    while True:
+        time.sleep(_SCHEDULER_CHECK_INTERVAL)
+        try:
+            _scheduler_tick(db_path, now=datetime.now())
+        except Exception as e:
+            logger.error("[scheduler] tick エラー: %s", e)
+
+
+def _start_scheduler(db_path: str) -> None:
+    """スケジューラスレッドを起動する。"""
+    t = threading.Thread(target=_scheduler_loop, args=(db_path,), daemon=True)
+    t.start()
+    logger.info("[scheduler] スケジューラを開始しました（毎分チェック）")
 
 
 def _start_bg_update(db_path: str) -> None:
@@ -7770,6 +8010,7 @@ def main() -> None:
     skip_update = args.demo or args.skip_update
     if not skip_update:
         _start_bg_update(args.db)
+        _start_scheduler(args.db)
 
     Handler.db_path = args.db
     Handler.demo = args.demo
