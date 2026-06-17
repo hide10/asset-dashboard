@@ -1,5 +1,10 @@
 # MoneyForward ME 資産トラッカー — ワンコマンドインストール (Windows PowerShell)
-# Usage: powershell -ExecutionPolicy Bypass -File install.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [-AutoStart]
+#   -AutoStart : ログオン時にダッシュボードを自動起動するタスクを登録
+
+param(
+    [switch]$AutoStart
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -91,6 +96,13 @@ Write-Info "Playwright Chromium をインストール中..."
 & $venvPython -m playwright install chromium
 Write-Ok "Playwright Chromium インストール完了"
 
+# --- 自動起動の登録 ---------------------------------------------------------
+
+if ($AutoStart) {
+    Write-Info "ログオン時自動起動タスクを登録中..."
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "scripts\register-task.ps1")
+}
+
 # --- 完了 -------------------------------------------------------------------
 
 Write-Host ""
@@ -112,3 +124,8 @@ Write-Host ""
 Write-Host "  デモモードで試す場合:"
 Write-Host "     python -m src.web.server --demo"
 Write-Host ""
+if (-not $AutoStart) {
+    Write-Host "  ログオン時に自動起動させる場合:"
+    Write-Host "     powershell -ExecutionPolicy Bypass -File install.ps1 -AutoStart"
+    Write-Host ""
+}
