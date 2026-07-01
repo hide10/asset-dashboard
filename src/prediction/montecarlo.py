@@ -339,6 +339,8 @@ def run_lifecycle_simulation(
     pension_start_age: int = 65,
     monthly_pension: float = 0.0,
     other_monthly_income: float = 0.0,
+    reemployment_end_age: int | None = None,
+    reemployment_monthly_income: float = 0.0,
     tax_rate: float = 0.20315,
     safe_value: float = 0.0,
     annual_event_expenses: dict[int, float] | None = None,
@@ -347,12 +349,18 @@ def run_lifecycle_simulation(
 ) -> SimulatorResult:
     """ライフサイクル全体のモンテカルロシミュレーションを実行する。
 
-    蓄積期間（current_age → retirement_age）と取崩し期間（retirement_age → end_age）を
-    月次ステップでシミュレーションし、パーセンタイル・枯渇確率等を返す。
+    現役（current_age → retirement_age）・再雇用（retirement_age → reemployment_end_age）・
+    完全退職（reemployment_end_age → end_age）の3段階を月次ステップでシミュレーションし、
+    パーセンタイル・枯渇確率等を返す。
 
     initial_investment: リスク資産額（GBMで成長）
     safe_value: 安全資産額（成長なし、取崩し時に先に消費）
     annual_event_expenses: 年齢→年次イベント支出（円）。年末時点で差し引く。
+    reemployment_end_age: 定年後の再雇用・嘱託を終える年齢。None または
+        retirement_age 以下なら再雇用フェーズなし（従来の2段階モデルと同じ挙動）。
+    reemployment_monthly_income: 再雇用期間中に毎月受け取る収入（円）。
+        retirement_age 以上 reemployment_end_age 未満の年齢で加算し、以後は自動で0になる。
+        年金受給期間と重なる場合は年金と併給する。
     """
     import random
 
@@ -410,8 +418,11 @@ def run_lifecycle_simulation(
                 year_in_sim = month // 12
                 age = current_age + year_in_sim
 
-                # 収入（年金 + その他）→ 安全資産へ
+                # 収入（再雇用 + 年金 + その他）→ 安全資産へ
                 income = other_monthly_income
+                if reemployment_end_age is not None and age < reemployment_end_age:
+                    # 再雇用フェーズ: retirement_age 以上 reemployment_end_age 未満
+                    income += reemployment_monthly_income
                 if age >= pension_start_age:
                     income += monthly_pension
                 safe += income

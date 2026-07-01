@@ -642,6 +642,27 @@ class TestAiChatExport:
         assert "期待リターン" in md
         assert "年金月額" in md
 
+    def test_simulator_prompt_has_reemployment_info(self):
+        """シミュレーター用プロンプトに再雇用フェーズの情報が含まれる（#72）。"""
+        data = _demo_simulator_data()
+        md = _build_ai_prompt_simulator(data)
+        assert "再雇用・嘱託の終了年齢" in md
+        assert "再雇用期間の月収" in md
+        # デフォルト（退職年齢と同値）では「再雇用フェーズなし」
+        assert "再雇用フェーズなし" in md
+
+    def test_simulator_prompt_reemployment_phase_line(self):
+        """再雇用期間ありの場合、3段階フェーズの説明がプロンプトに入る（#72）。"""
+        data = _demo_simulator_data()
+        data["params"]["retirement_age"] = 60
+        data["params"]["reemployment_end_age"] = 65
+        data["params"]["reemployment_monthly_income"] = 180_000
+        md = _build_ai_prompt_simulator(data)
+        assert "再雇用・嘱託（60〜65歳、月収180,000円）" in md
+        assert "完全退職（65歳〜" in md
+        assert "| 再雇用・嘱託の終了年齢 | 65歳 |" in md
+        assert "| 再雇用期間の月収 | 180,000円 |" in md
+
     def test_simulator_prompt_has_age_rows(self):
         """シミュレーター用プロンプトに年齢別残高の行がある。"""
         data = _demo_simulator_data()
@@ -923,9 +944,18 @@ class TestSimulator:
             "年金受給開始年齢",
             "月額年金",
             "年金以外の月額収入",
+            "再雇用終了年齢",
+            "再雇用の月額収入",
         ]
         for label in labels:
             assert f'{label} <span class="sim-info-btn"' in self.html
+
+    def test_reemployment_inputs_exist(self):
+        """再雇用終了年齢・再雇用月収の入力欄が存在する（#72）。"""
+        assert 'id="reemployment_end_age"' in self.html
+        assert 'id="reemployment_monthly_income"' in self.html
+        # 再計算 JS が再雇用パラメータを送信する
+        assert "'reemployment_end_age','reemployment_monthly_income'" in self.html
 
     def test_recalc_button_exists(self):
         """「再計算」ボタンが存在する。"""

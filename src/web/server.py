@@ -2439,6 +2439,9 @@ _SIMULATOR_DEFAULTS = {
     "pension_start_age": 65,
     "monthly_pension": 150_000,
     "other_monthly_income": 0,
+    # 再雇用・嘱託フェーズ（retirement_age と同値なら再雇用なし）
+    "reemployment_end_age": 65,
+    "reemployment_monthly_income": 0,
 }
 
 
@@ -2467,7 +2470,7 @@ def _sanitize_simulator_params(params: dict) -> dict:
     defaults = _SIMULATOR_DEFAULTS
     clean: dict = {}
     # 各キーを型変換＋範囲チェック（失敗時はデフォルト値にフォールバック）
-    int_keys = {"current_age", "retirement_age", "end_age", "pension_start_age"}
+    int_keys = {"current_age", "retirement_age", "end_age", "pension_start_age", "reemployment_end_age"}
     for k, default_v in defaults.items():
         try:
             v = int(params[k]) if k in int_keys else float(params[k])
@@ -2483,6 +2486,9 @@ def _sanitize_simulator_params(params: dict) -> dict:
     # pension_start_age 範囲
     if not (60 <= clean["pension_start_age"] <= 75):
         clean["pension_start_age"] = defaults["pension_start_age"]
+    # 再雇用終了年齢: 退職年齢〜終了年齢の範囲外なら退職年齢（再雇用なし）に戻す
+    if not (clean["retirement_age"] <= clean["reemployment_end_age"] <= clean["end_age"]):
+        clean["reemployment_end_age"] = clean["retirement_age"]
     # 金額非負 + 上限
     _MAX_LUMP = 200_000_000
     _MAX_MONTHLY = 1_000_000
@@ -2493,6 +2499,7 @@ def _sanitize_simulator_params(params: dict) -> dict:
         ("monthly_withdrawal", _MAX_MONTHLY),
         ("monthly_pension", 500_000),
         ("other_monthly_income", 500_000),
+        ("reemployment_monthly_income", _MAX_MONTHLY),
     ]:
         if clean[k] < 0 or clean[k] > upper:
             clean[k] = defaults[k]
@@ -2647,6 +2654,8 @@ def _get_simulator_data(db_path: str) -> dict:
         pension_start_age=int(params["pension_start_age"]),
         monthly_pension=float(params["monthly_pension"]),
         other_monthly_income=float(params["other_monthly_income"]),
+        reemployment_end_age=int(params["reemployment_end_age"]),
+        reemployment_monthly_income=float(params["reemployment_monthly_income"]),
         annual_event_expenses=annual_event_expenses,
         rng_seed=42,
     )
@@ -2665,6 +2674,8 @@ def _get_simulator_data(db_path: str) -> dict:
         pension_start_age=int(params["pension_start_age"]),
         monthly_pension=float(params["monthly_pension"]),
         other_monthly_income=float(params["other_monthly_income"]),
+        reemployment_end_age=int(params["reemployment_end_age"]),
+        reemployment_monthly_income=float(params["reemployment_monthly_income"]),
         annual_event_expenses={},
         rng_seed=42,
     )
@@ -2686,6 +2697,11 @@ def _build_ai_prompt_simulator(data: dict) -> str:
     params = data["params"]
     result: SimulatorResult = data["result"]
 
+    retirement_age = int(params["retirement_age"])
+    reemployment_end_age = int(params.get("reemployment_end_age", retirement_age))
+    reemployment_income = float(params.get("reemployment_monthly_income", 0))
+    has_reemployment = reemployment_end_age > retirement_age
+
     lines = [
         "# ライフサイクル・シミュレーション結果",
         "",
@@ -2695,6 +2711,8 @@ def _build_ai_prompt_simulator(data: dict) -> str:
         "|---|---:|",
         f"| 現在の年齢 | {int(params['current_age'])}歳 |",
         f"| 退職年齢 | {int(params['retirement_age'])}歳 |",
+        f"| 再雇用・嘱託の終了年齢 | {reemployment_end_age}歳 |",
+        f"| 再雇用期間の月収 | {reemployment_income:,.0f}円 |",
         f"| シミュレーション終了年齢 | {int(params['end_age'])}歳 |",
         f"| リスク資産（運用元本） | {params['initial_investment']:,.0f}円 |",
         f"| 安全資産（預金等） | {params['safe_value']:,.0f}円 |",
@@ -2708,6 +2726,21 @@ def _build_ai_prompt_simulator(data: dict) -> str:
         f"| 年金月額 | {params['monthly_pension']:,.0f}円 |",
         f"| その他月収入 | {params['other_monthly_income']:,.0f}円 |",
         "",
+    ]
+
+    if has_reemployment:
+        lines += [
+            f"※ フェーズ: 現役（〜{retirement_age}歳）→ 再雇用・嘱託（{retirement_age}〜{reemployment_end_age}歳、"
+            f"月収{reemployment_income:,.0f}円）→ 完全退職（{reemployment_end_age}歳〜、年金＋その他収入のみ）",
+            "",
+        ]
+    else:
+        lines += [
+            "※ 再雇用フェーズなし（退職年齢以降は年金＋その他収入のみ）",
+            "",
+        ]
+
+    lines += [
         "## シミュレーション結果（モンテカルロ法 2,000回）",
         "",
         f"- 資産枯渇確率: **{result.depletion_probability * 100:.1f}%**",
@@ -2730,6 +2763,7 @@ def _build_ai_prompt_simulator(data: dict) -> str:
         key_ages.add(balances[0]["age"])  # 開始年齢
         key_ages.add(balances[-1]["age"])  # 終了年齢
     key_ages.add(int(params["retirement_age"]))
+    key_ages.add(reemployment_end_age)
     key_ages.add(int(params["pension_start_age"]))
     # 5歳刻みも追加
     for b in balances:
@@ -2800,6 +2834,28 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
             "歳",
             "stepper",
             "この年齢以降は積立を止め、取崩しフェーズに入ります",
+        ),
+        (
+            "reemployment_end_age",
+            "再雇用終了年齢",
+            params["reemployment_end_age"],
+            30,
+            85,
+            1,
+            "歳",
+            "stepper",
+            "定年後に再雇用・嘱託で働き終える年齢。退職年齢と同じなら再雇用なし（例: 60歳定年・65歳まで嘱託）",
+        ),
+        (
+            "reemployment_monthly_income",
+            "再雇用の月額収入",
+            params["reemployment_monthly_income"],
+            0,
+            1_000_000,
+            10_000,
+            "円",
+            "number",
+            "退職年齢から再雇用終了年齢まで毎月受け取る収入。退職前月収の6割程度が目安",
         ),
         (
             "end_age",
@@ -3223,10 +3279,17 @@ def _build_simulator_html(data: dict, skip_update: bool = False) -> str:
 
     # --- 年次パーセンタイル表 ---
     projection_rows = ""
+    _ra = int(params["retirement_age"])
+    _rea = int(params["reemployment_end_age"])
     for yb in result.yearly_balances:
         age = yb["age"]
-        # 退職年齢をハイライト
-        row_style = ' style="background:#eff8ff"' if age == int(params["retirement_age"]) else ""
+        # 退職年齢をハイライト、再雇用期間は淡い橙でハイライト
+        if age == _ra:
+            row_style = ' style="background:#eff8ff"'
+        elif _ra < age <= _rea:
+            row_style = ' style="background:#fff7ea"'
+        else:
+            row_style = ""
         projection_rows += f"""<tr{row_style}>
           <td class="num">{age}歳</td>
           <td class="num">{yb["p10"]:,.0f}</td>
@@ -3561,7 +3624,8 @@ async function recalcSimulator() {{
   const params = {{}};
   const fields = ['current_age','retirement_age','end_age','initial_investment','safe_value','monthly_contribution',
     'annual_return','annual_volatility','monthly_withdrawal','inflation_rate','expense_ratio',
-    'pension_start_age','monthly_pension','other_monthly_income'];
+    'pension_start_age','monthly_pension','other_monthly_income',
+    'reemployment_end_age','reemployment_monthly_income'];
   fields.forEach(f => {{
     const el = document.getElementById(f);
     params[f] = el.classList.contains('money-input') ? parseMoney(el.value) : parseFloat(el.value);
@@ -3578,10 +3642,10 @@ async function recalcSimulator() {{
       if (data.error) alert(data.error);
     }} else {{
       updateSummary(data);
-      updateProjection(data.yearly_balances, params.retirement_age);
+      updateProjection(data.yearly_balances, params.retirement_age, params.reemployment_end_age);
       _initBalances = data.yearly_balances;
       _initBalancesNoEvents = data.yearly_balances_no_events || [];
-      drawFanChart(data.yearly_balances, params.retirement_age, _initBalancesNoEvents);
+      drawFanChart(data.yearly_balances, params.retirement_age, _initBalancesNoEvents, params.reemployment_end_age);
     }}
   }} catch(e) {{
     console.error('Simulator error:', e);
@@ -3625,15 +3689,18 @@ function updateSummary(data) {{
   }}
 }}
 
-function updateProjection(balances, retirementAge) {{
+function updateProjection(balances, retirementAge, reemploymentEndAge) {{
   const table = document.querySelector('[data-card-id="sim-projection"] .pred-table');
   if (!table) return;
   const header = table.querySelector('tr');
   table.innerHTML = '';
   table.appendChild(header);
+  const ra = Math.round(retirementAge);
+  const rea = Math.round(reemploymentEndAge || retirementAge);
   balances.forEach(yb => {{
     const tr = document.createElement('tr');
-    if (yb.age === Math.round(retirementAge)) tr.style.background = '#eff8ff';
+    if (yb.age === ra) tr.style.background = '#eff8ff';
+    else if (yb.age > ra && yb.age <= rea) tr.style.background = '#fff7ea';
     tr.innerHTML = '<td class="num">' + yb.age + '歳</td>'
       + '<td class="num">' + fmt(yb.p10) + '</td>'
       + '<td class="num">' + fmt(yb.p25) + '</td>'
@@ -3645,7 +3712,7 @@ function updateProjection(balances, retirementAge) {{
 }}
 
 // --- ファンチャート描画 ---
-function drawFanChart(balances, retirementAge, baselineBalances = null) {{
+function drawFanChart(balances, retirementAge, baselineBalances = null, reemploymentEndAge = null) {{
   const canvas = document.getElementById('sim-fan-chart');
   if (!canvas || !balances || balances.length === 0) return;
   const dpr = window.devicePixelRatio || 1;
@@ -3734,6 +3801,23 @@ function drawFanChart(balances, retirementAge, baselineBalances = null) {{
     ctx.fillText('退職', rx, padT - 4);
   }}
 
+  // 再雇用終了年齢の縦線（退職年齢より後に設定されている場合のみ）
+  if (reemploymentEndAge && Math.round(reemploymentEndAge) > Math.round(retirementAge)) {{
+    const reIdx = balances.findIndex(b => b.age === Math.round(reemploymentEndAge));
+    if (reIdx >= 0) {{
+      const rex = xPos(reIdx);
+      ctx.strokeStyle = 'rgba(243,156,18,0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(rex, padT); ctx.lineTo(rex, padT + cH); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#f39c12';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('再雇用終了', rex, padT - 4);
+    }}
+  }}
+
   // 0 線（枯渇ライン）
   const zeroY = yPos(0);
   ctx.strokeStyle = 'rgba(0,0,0,0.15)';
@@ -3797,9 +3881,10 @@ function drawFanChart(balances, retirementAge, baselineBalances = null) {{
 // --- 初期チャート描画 ---
 let _initBalances = {balances_json};
 let _initBalancesNoEvents = {balances_no_events_json};
-drawFanChart(_initBalances, {int(params["retirement_age"])}, _initBalancesNoEvents);
+drawFanChart(_initBalances, {int(params["retirement_age"])}, _initBalancesNoEvents, {int(params["reemployment_end_age"])});
 window.addEventListener('resize', () => {{
-  if (_initBalances) drawFanChart(_initBalances, parseInt(document.getElementById('retirement_age').value) || 65, _initBalancesNoEvents);
+  if (_initBalances) drawFanChart(_initBalances, parseInt(document.getElementById('retirement_age').value) || 65, _initBalancesNoEvents,
+    parseInt(document.getElementById('reemployment_end_age').value) || null);
 }});
 
 // --- 実データから再取得 ---
@@ -7474,12 +7559,14 @@ class Handler(BaseHTTPRequestHandler):
                 psa = int(req.get("pension_start_age", 65))
                 mp = float(req.get("monthly_pension", 150_000))
                 omi = float(req.get("other_monthly_income", 0))
+                rea = int(req.get("reemployment_end_age", ra))
+                rmi = float(req.get("reemployment_monthly_income", 0))
             except (ValueError, TypeError):
                 self._json_error(400, "パラメータの値が不正です")
                 return
 
             # 有限値チェック（inf/nan 防止）
-            all_floats = [inv, sv, mc, ar, av, mw, ir, er, mp, omi]
+            all_floats = [inv, sv, mc, ar, av, mw, ir, er, mp, omi, rmi]
             if not all(math.isfinite(v) for v in all_floats):
                 self._json_error(400, "パラメータの値が不正です")
                 return
@@ -7491,16 +7578,19 @@ class Handler(BaseHTTPRequestHandler):
             if not (60 <= psa <= 75):
                 self._json_error(400, "年金受給開始年齢は60〜75歳の範囲にしてください")
                 return
+            if not (ra <= rea <= ea):
+                self._json_error(400, "退職年齢 ≤ 再雇用終了年齢 ≤ 終了年齢 にしてください")
+                return
             # 数値範囲チェック（UIのmin/maxと同じ制約）
             _MAX_LUMP = 200_000_000  # 一括金額上限（初期投資・安全資産）
             _MAX_MONTHLY = 1_000_000  # 月額上限（積立・取崩し）
-            if inv < 0 or sv < 0 or mc < 0 or mw < 0 or mp < 0 or omi < 0:
+            if inv < 0 or sv < 0 or mc < 0 or mw < 0 or mp < 0 or omi < 0 or rmi < 0:
                 self._json_error(400, "金額は0以上にしてください")
                 return
             if inv > _MAX_LUMP or sv > _MAX_LUMP:
                 self._json_error(400, "金額が上限を超えています")
                 return
-            if mc > _MAX_MONTHLY or mw > _MAX_MONTHLY:
+            if mc > _MAX_MONTHLY or mw > _MAX_MONTHLY or rmi > _MAX_MONTHLY:
                 self._json_error(400, "月額は100万円以下にしてください")
                 return
             if mp > 500_000 or omi > 500_000:
@@ -7543,6 +7633,8 @@ class Handler(BaseHTTPRequestHandler):
                     pension_start_age=psa,
                     monthly_pension=mp,
                     other_monthly_income=omi,
+                    reemployment_end_age=rea,
+                    reemployment_monthly_income=rmi,
                     annual_event_expenses=annual_event_expenses,
                     rng_seed=42,
                 )
@@ -7561,6 +7653,8 @@ class Handler(BaseHTTPRequestHandler):
                     pension_start_age=psa,
                     monthly_pension=mp,
                     other_monthly_income=omi,
+                    reemployment_end_age=rea,
+                    reemployment_monthly_income=rmi,
                     annual_event_expenses={},
                     rng_seed=42,
                 )
