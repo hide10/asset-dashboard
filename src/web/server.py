@@ -3787,6 +3787,7 @@ function drawFanChart(balances, retirementAge, baselineBalances = null, reemploy
   }}
 
   // 退職年齢の縦線
+  let retLabelX = null, retLabelHalfW = 0;
   const retIdx = balances.findIndex(b => b.age === Math.round(retirementAge));
   if (retIdx >= 0) {{
     const rx = xPos(retIdx);
@@ -3799,6 +3800,8 @@ function drawFanChart(balances, retirementAge, baselineBalances = null, reemploy
     ctx.font = '11px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('退職', rx, padT - 4);
+    retLabelX = rx;
+    retLabelHalfW = ctx.measureText('退職').width / 2;
   }}
 
   // 再雇用終了年齢の縦線（退職年齢より後に設定されている場合のみ）
@@ -3814,7 +3817,10 @@ function drawFanChart(balances, retirementAge, baselineBalances = null, reemploy
       ctx.fillStyle = '#f39c12';
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('再雇用終了', rex, padT - 4);
+      const reLabelHalfW = ctx.measureText('再雇用終了').width / 2;
+      // 退職ラベルと近接・重複する場合は1行下にずらして衝突を避ける
+      const overlapsRetLabel = retLabelX !== null && Math.abs(rex - retLabelX) < (retLabelHalfW + reLabelHalfW + 4);
+      ctx.fillText('再雇用終了', rex, overlapsRetLabel ? padT + 10 : padT - 4);
     }}
   }}
 
