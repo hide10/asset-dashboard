@@ -229,6 +229,127 @@ class TestLifecycleSimulation:
         )
         assert with_events.net_final < baseline.net_final
 
+    def test_reemployment_reduces_depletion_by_end_of_reemployment(self):
+        """60歳定年・65歳まで再雇用収入あり → 65歳までの枯渇確率が再雇用なしより低い。"""
+        common = dict(
+            current_age=60,
+            retirement_age=60,
+            end_age=65,  # 65歳までの枯渇確率を直接測る
+            initial_investment=10_000_000,
+            monthly_contribution=0,
+            annual_return=0.03,
+            annual_volatility=0.15,
+            monthly_withdrawal=300_000,
+            pension_start_age=65,
+            monthly_pension=150_000,
+            simulations=500,
+            rng_seed=42,
+        )
+        without = run_lifecycle_simulation(**common)
+        with_reemployment = run_lifecycle_simulation(
+            **common,
+            reemployment_end_age=65,
+            reemployment_monthly_income=200_000,
+        )
+        assert with_reemployment.depletion_probability < without.depletion_probability
+
+    def test_reemployment_income_stops_after_end_age(self):
+        """reemployment_end_age を過ぎると再雇用収入が計上されない（決定論的に検証）。"""
+        # リターン0・ボラ0・インフレ0で決定論的に:
+        # 60〜64歳: 取崩し10万 = 再雇用収入10万 → 残高変化なし
+        # 65〜69歳: 収入0 → 毎年120万ずつ減少
+        result = run_lifecycle_simulation(
+            current_age=60,
+            retirement_age=60,
+            end_age=70,
+            initial_investment=0,
+            safe_value=12_000_000,
+            monthly_contribution=0,
+            annual_return=0.0,
+            annual_volatility=0.0,
+            monthly_withdrawal=100_000,
+            pension_start_age=75,  # 期間中は年金なし
+            monthly_pension=0,
+            reemployment_end_age=65,
+            reemployment_monthly_income=100_000,
+            simulations=10,
+            rng_seed=42,
+        )
+        balances = {yb["age"]: yb["p50"] for yb in result.yearly_balances}
+        # 再雇用期間中（〜65歳の年末）は残高が維持される
+        assert balances[61] == pytest.approx(12_000_000)
+        assert balances[65] == pytest.approx(12_000_000)
+        # 再雇用終了後は毎年120万ずつ減る（収入が0になった証拠）
+        assert balances[66] == pytest.approx(10_800_000)
+        assert balances[70] == pytest.approx(6_000_000)
+
+    def test_reemployment_disabled_matches_two_phase_model(self):
+        """reemployment_end_age 未設定 or retirement_age と同値なら従来の2段階モデルと同一結果。"""
+        common = dict(
+            current_age=55,
+            retirement_age=60,
+            end_age=90,
+            initial_investment=15_000_000,
+            monthly_contribution=50_000,
+            annual_return=0.04,
+            annual_volatility=0.15,
+            monthly_withdrawal=250_000,
+            pension_start_age=65,
+            monthly_pension=150_000,
+            simulations=300,
+            rng_seed=42,
+        )
+        baseline = run_lifecycle_simulation(**common)
+        # None（デフォルト）+ 収入指定 → 収入は無視される
+        with_none = run_lifecycle_simulation(
+            **common,
+            reemployment_end_age=None,
+            reemployment_monthly_income=200_000,
+        )
+        # retirement_age と同値 + 収入指定 → 再雇用期間ゼロなので無効
+        with_same_age = run_lifecycle_simulation(
+            **common,
+            reemployment_end_age=60,
+            reemployment_monthly_income=200_000,
+        )
+        assert with_none.net_final == pytest.approx(baseline.net_final)
+        assert with_none.depletion_probability == baseline.depletion_probability
+        assert with_same_age.net_final == pytest.approx(baseline.net_final)
+        assert with_same_age.depletion_probability == baseline.depletion_probability
+
+    def test_reemployment_can_overlap_pension(self):
+        """再雇用期間と年金受給が重なっても計算できる（併給で残高が増える）。"""
+        common = dict(
+            current_age=60,
+            retirement_age=60,
+            end_age=75,
+            initial_investment=10_000_000,
+            monthly_contribution=0,
+            annual_return=0.03,
+            annual_volatility=0.15,
+            monthly_withdrawal=250_000,
+            pension_start_age=65,
+            monthly_pension=150_000,
+            simulations=300,
+            rng_seed=42,
+        )
+        # 再雇用終了68歳 > 年金開始65歳（重複期間あり）
+        overlap = run_lifecycle_simulation(
+            **common,
+            reemployment_end_age=68,
+            reemployment_monthly_income=150_000,
+        )
+        no_overlap = run_lifecycle_simulation(
+            **common,
+            reemployment_end_age=65,
+            reemployment_monthly_income=150_000,
+        )
+        assert overlap.depletion_probability < no_overlap.depletion_probability
+        # 併給期間（65〜67歳）明けの残高中央値は、併給ありの方が高い
+        overlap_p50 = {yb["age"]: yb["p50"] for yb in overlap.yearly_balances}
+        no_overlap_p50 = {yb["age"]: yb["p50"] for yb in no_overlap.yearly_balances}
+        assert overlap_p50[68] > no_overlap_p50[68]
+
     def test_annual_event_expenses_can_increase_tax(self):
         """イベント支出でリスク資産を売却する場合、税額が増える。"""
         baseline = run_lifecycle_simulation(

@@ -96,6 +96,8 @@ function runLifecycleSimulationJS(params) {
     pension_start_age = 65,
     monthly_pension = 0.0,
     other_monthly_income = 0.0,
+    reemployment_end_age = null,
+    reemployment_monthly_income = 0.0,
     tax_rate = 0.20315,
     safe_value = 0.0,
     simulations = 2000,
@@ -151,8 +153,9 @@ function runLifecycleSimulationJS(params) {
         const yearInSim = Math.floor(month / 12);
         const age = current_age + yearInSim;
 
-        // Income (pension + other) -> safe asset
+        // Income (reemployment + pension + other) -> safe asset
         let income = other_monthly_income;
+        if (reemployment_end_age != null && age < reemployment_end_age) income += reemployment_monthly_income;
         if (age >= pension_start_age) income += monthly_pension;
         safe += income;
 
@@ -281,7 +284,8 @@ async function recalcSimulator() {
   const params = {};
   const fields = ['current_age','retirement_age','end_age','initial_investment','safe_value','monthly_contribution',
     'annual_return','annual_volatility','monthly_withdrawal','inflation_rate','expense_ratio',
-    'pension_start_age','monthly_pension','other_monthly_income'];
+    'pension_start_age','monthly_pension','other_monthly_income',
+    'reemployment_end_age','reemployment_monthly_income'];
   fields.forEach(f => {
     const el = document.getElementById(f);
     params[f] = el.classList.contains('money-input') ? parseMoney(el.value) : parseFloat(el.value);
@@ -293,9 +297,9 @@ async function recalcSimulator() {
       if (data.error) alert(data.error);
     } else {
       updateSummary(data);
-      updateProjection(data.yearly_balances, params.retirement_age);
+      updateProjection(data.yearly_balances, params.retirement_age, params.reemployment_end_age);
       _initBalances = data.yearly_balances;
-      drawFanChart(data.yearly_balances, params.retirement_age);
+      drawFanChart(data.yearly_balances, params.retirement_age, null, params.reemployment_end_age);
     }
   } catch(e) {
     console.error('Simulator error:', e);
