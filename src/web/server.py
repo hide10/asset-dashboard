@@ -7078,11 +7078,17 @@ class Handler(BaseHTTPRequestHandler):
         return _build_ai_prompt_simulator(data)
 
     def _check_origin(self) -> bool:
-        """Origin ヘッダを検証し、ローカルホストからのリクエストのみ許可する。"""
+        """Origin ヘッダを検証し、リクエスト先の Host と異なる場合のみ拒否する（CSRF 対策）。
+
+        リバースプロキシ経由の独自ドメイン（例: money.home.arpa）でもアクセスできるよう、
+        localhost 固定のホワイトリストではなく Host ヘッダとの一致判定にする。
+        """
         origin = self.headers.get("Origin", "")
         referer = self.headers.get("Referer", "")
         source = origin or referer
-        if source and not any(source.startswith(p) for p in ("http://localhost", "http://127.0.0.1")):
+        host = self.headers.get("Host", "")
+        source_host = urlparse(source).netloc if source else ""
+        if source_host and source_host != host:
             self.send_response(403)
             self.send_header("Content-Type", "application/json")
             self.end_headers()

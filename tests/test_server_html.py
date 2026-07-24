@@ -1096,3 +1096,51 @@ class TestHoldingDetailCard:
         first = next(iter(histories.values()))
         assert len(first["history"]) == 365
         assert "total_value" in first["history"][0]
+
+
+class _FakeWfile:
+    def __init__(self):
+        self.written = b""
+
+    def write(self, data: bytes) -> None:
+        self.written += data
+
+
+class TestCheckOrigin:
+    """Origin ヘッダの検証（CSRF対策）。money.home.arpa 等の独自ドメイン経由でも動作すること。"""
+
+    def _make_handler(self, headers: dict) -> Handler:
+        handler = Handler.__new__(Handler)
+        handler.headers = headers
+        handler.wfile = _FakeWfile()
+        handler._sent_status = None
+        handler.send_response = lambda code: setattr(handler, "_sent_status", code)
+        handler.send_header = lambda *a, **k: None
+        handler.end_headers = lambda: None
+        return handler
+
+    def test_no_origin_or_referer_allowed(self):
+        handler = self._make_handler({"Host": "money.home.arpa"})
+        assert handler._check_origin() is True
+        assert handler._sent_status is None
+
+    def test_origin_matches_host_allowed(self):
+        handler = self._make_handler({"Origin": "https://money.home.arpa", "Host": "money.home.arpa"})
+        assert handler._check_origin() is True
+        assert handler._sent_status is None
+
+    def test_localhost_origin_matches_host_allowed(self):
+        handler = self._make_handler({"Origin": "http://localhost:8080", "Host": "localhost:8080"})
+        assert handler._check_origin() is True
+        assert handler._sent_status is None
+
+    def test_origin_mismatch_forbidden(self):
+        handler = self._make_handler({"Origin": "https://evil.example", "Host": "money.home.arpa"})
+        assert handler._check_origin() is False
+        assert handler._sent_status == 403
+        assert b"forbidden" in handler.wfile.written
+
+    def test_referer_used_when_origin_missing(self):
+        handler = self._make_handler({"Referer": "https://money.home.arpa/simulator", "Host": "money.home.arpa"})
+        assert handler._check_origin() is True
+        assert handler._sent_status is None
