@@ -169,6 +169,71 @@ def save_budgets(conn: sqlite3.Connection, budgets: dict[str, int]) -> None:
     save_setting(conn, "monthly_budgets", json.dumps(budgets, ensure_ascii=False))
 
 
+def calculate_investable_cash(
+    conn: sqlite3.Connection,
+    as_of: date_cls | None = None,
+    snapshot_date: str | None = None,
+) -> dict:
+    """生活防衛資金と予定支出を控除した投資可能額を返す。"""
+    as_of = as_of or date_cls.today()
+    if snapshot_date is None:
+        latest = conn.execute("SELECT MAX(date) FROM snapshots").fetchone()
+        snapshot_date = latest[0] if latest and latest[0] else None
+
+    cash_balance = 0.0
+    if snapshot_date:
+        row = conn.execute("SELECT by_class_json FROM snapshots WHERE date = ?", (snapshot_date,)).fetchone()
+        if row:
+            by_class = normalize_asset_classes(json.loads(row[0]))
+            cash_balance = max(0.0, float(by_class.get("預金・現金", 0)))
+
+    def non_negative_setting(key: str, default: float) -> float:
+        try:
+            return max(0.0, float(get_setting(conn, key, str(default)) or default))
+        except (TypeError, ValueError):
+            return default
+
+    monthly_living_expense = non_negative_setting("monthly_living_expense", 0)
+    expense_source = "setting"
+    if monthly_living_expense <= 0:
+        rows = conn.execute("SELECT expense FROM monthly_cashflows ORDER BY year_month DESC LIMIT 6").fetchall()
+        monthly_living_expense = sum(max(0.0, float(row[0])) for row in rows) / len(rows) if rows else 0.0
+        expense_source = "history" if rows else "unavailable"
+
+    emergency_months = non_negative_setting("emergency_fund_months", 6)
+    horizon_months = int(min(120, non_negative_setting("planned_expense_horizon_months", 12)))
+    additional_reserve = non_negative_setting("additional_cash_reserve", 0)
+    emergency_fund = monthly_living_expense * emergency_months
+
+    horizon_end = as_of + timedelta(days=horizon_months * 30)
+    planned_by_year = get_annual_life_event_expenses(
+        conn,
+        start_year=as_of.year,
+        end_year=horizon_end.year,
+        include_children=True,
+    )
+    planned_expenses = sum(planned_by_year.values())
+    required_cash = emergency_fund + planned_expenses + additional_reserve
+    raw_investable = cash_balance - required_cash
+    return {
+        "as_of": as_of.isoformat(),
+        "snapshot_date": snapshot_date,
+        "cash_balance": cash_balance,
+        "monthly_living_expense": monthly_living_expense,
+        "monthly_living_expense_source": expense_source,
+        "emergency_fund_months": emergency_months,
+        "emergency_fund": emergency_fund,
+        "planned_expense_horizon_months": horizon_months,
+        "planned_expenses": planned_expenses,
+        "planned_expenses_by_year": planned_by_year,
+        "additional_reserve": additional_reserve,
+        "required_cash": required_cash,
+        "investable_cash": max(0.0, raw_investable),
+        "shortfall": max(0.0, -raw_investable),
+        "formula": "cash - emergency_fund - planned_expenses - additional_reserve",
+    }
+
+
 # --- ライフイベント（ライフプラン） ---
 
 EDUCATION_STAGE_RULES = [

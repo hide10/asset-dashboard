@@ -27,6 +27,7 @@ from src.analysis.metrics import concentration_top_n, daily_volatility, max_draw
 from src.data.stock_master import get_dividend, get_sector, is_us_stock
 from src.db.repository import (
     build_education_events_for_child,
+    calculate_investable_cash,
     create_child_profile,
     create_life_event,
     delete_child_profile,
@@ -420,6 +421,11 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
                 "latest_value": latest["total_value"],
                 "latest_cost": latest.get("total_cost"),
             }
+        investable_cash = calculate_investable_cash(
+            conn,
+            as_of=datetime.strptime(date, "%Y-%m-%d").date(),
+            snapshot_date=date,
+        )
     finally:
         conn.close()
 
@@ -549,6 +555,7 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         "comparisons": comparisons,
         "fund_total_history": fund_total_history,
         "holding_histories": holding_histories,
+        "investable_cash": investable_cash,
     }
 
 
@@ -686,6 +693,7 @@ def _build_html(
     comparisons = data.get("comparisons", [])
     fund_total_history = data.get("fund_total_history", [])
     holding_histories = data.get("holding_histories", {})
+    investable_cash = data.get("investable_cash")
 
     # 日付セレクタ
     date_options = ""
@@ -981,6 +989,38 @@ def _build_html(
       <div class="no-data">データ不足</div>
     </div>"""
 
+    investable_cash_html = ""
+    if investable_cash:
+        investable = float(investable_cash.get("investable_cash", 0))
+        cash_balance = float(investable_cash.get("cash_balance", 0))
+        emergency_fund = float(investable_cash.get("emergency_fund", 0))
+        planned_expenses = float(investable_cash.get("planned_expenses", 0))
+        additional_reserve = float(investable_cash.get("additional_reserve", 0))
+        shortfall = float(investable_cash.get("shortfall", 0))
+        status_html = (
+            f'<span style="color:#DF3727">必要額に {shortfall:,.0f}円不足</span>'
+            if shortfall > 0
+            else "投資先を比較できる上限額"
+        )
+        investable_cash_html = f"""
+  <div class="card full" data-card-id="dash-investable-cash">
+    <div class="card-header">
+      <h2>投資可能額</h2>
+      <button class="collapse-btn">&#x25BC;</button>
+    </div>
+    <div class="card-body">
+      <div style="font-size:1.8rem;font-weight:700;color:#0F7F30">{investable:,.0f}円</div>
+      <div style="font-size:0.82rem;color:#636e72;margin-bottom:12px">{status_html}</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.85rem">
+        <span>預金・現金 {cash_balance:,.0f}円</span>
+        <span>− 生活防衛資金 {emergency_fund:,.0f}円</span>
+        <span>− 予定支出 {planned_expenses:,.0f}円</span>
+        <span>− 追加確保 {additional_reserve:,.0f}円</span>
+      </div>
+      <div style="margin-top:10px"><a href="/settings#investable-cash">計算条件を変更</a></div>
+    </div>
+  </div>"""
+
     return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -1174,6 +1214,7 @@ def _build_html(
   <div class="compare-cards" style="margin-bottom:20px">
     {risk_cards_html}
   </div>
+  {investable_cash_html}
   <div class="grid">
     <div class="card" data-card-id="dash-class">
       <div class="card-header">
@@ -2194,6 +2235,23 @@ def _demo_data() -> dict:
         "_sector_holdings": demo_sector_holdings,
         "fund_total_history": fund_total_history,
         "holding_histories": holding_histories,
+        "investable_cash": {
+            "as_of": today,
+            "snapshot_date": today,
+            "cash_balance": 3_250_000,
+            "monthly_living_expense": 300_000,
+            "monthly_living_expense_source": "setting",
+            "emergency_fund_months": 6,
+            "emergency_fund": 1_800_000,
+            "planned_expense_horizon_months": 12,
+            "planned_expenses": 300_000,
+            "planned_expenses_by_year": {int(today[:4]): 300_000},
+            "additional_reserve": 150_000,
+            "required_cash": 2_250_000,
+            "investable_cash": 1_000_000,
+            "shortfall": 0,
+            "formula": "cash - emergency_fund - planned_expenses - additional_reserve",
+        },
     }
 
 
@@ -4857,6 +4915,11 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME) or _SCHEDULER_DEFAULT_TIME
         scheduler_last_run = get_setting(conn, "scheduler_last_run_at")
         scheduler_last_result = get_setting(conn, "scheduler_last_result")
+        investable = calculate_investable_cash(conn)
+        monthly_living_expense = int(float(get_setting(conn, "monthly_living_expense", "0") or "0"))
+        emergency_fund_months = float(get_setting(conn, "emergency_fund_months", "6") or "6")
+        planned_expense_horizon_months = int(float(get_setting(conn, "planned_expense_horizon_months", "12") or "12"))
+        additional_cash_reserve = int(float(get_setting(conn, "additional_cash_reserve", "0") or "0"))
     finally:
         conn.close()
 
@@ -5002,6 +5065,38 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         <label>実行時刻</label>
         <input type="time" name="scheduler_time" value="{scheduler_time}" style="width:auto">
         <div class="hint">デフォルトは毎日 7:00 です。設定はサーバー再起動なしで反映されます。</div>
+      </div>
+      <button type="submit" class="btn">保存</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2 id="investable-cash">投資可能額の計算</h2>
+    <div class="status">
+      現在の投資可能額: <strong style="color:#0F7F30">{investable["investable_cash"]:,.0f}円</strong>
+      ／ 預金・現金 {investable["cash_balance"]:,.0f}円
+    </div>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      預金・現金から生活防衛資金、計画期間内のライフイベント、追加確保額を差し引きます。
+      年単位のイベントは対象年の全額を保守的に確保します。
+    </p>
+    <form method="POST" action="/settings">
+      <input type="hidden" name="setting_type" value="investable_cash">
+      <div class="field">
+        <label>月間生活費（円）</label>
+        <input type="number" name="monthly_living_expense" min="0" step="1000" value="{monthly_living_expense}">
+        <div class="hint">0の場合は直近6か月の支出実績平均を使います。</div>
+      </div>
+      <div class="field">
+        <label>生活防衛資金（月数）</label>
+        <input type="number" name="emergency_fund_months" min="0" max="60" step="0.5" value="{emergency_fund_months:g}">
+      </div>
+      <div class="field">
+        <label>予定支出を確保する期間（月）</label>
+        <input type="number" name="planned_expense_horizon_months" min="0" max="120" step="1" value="{planned_expense_horizon_months}">
+      </div>
+      <div class="field">
+        <label>追加で現金として確保する額（円）</label>
+        <input type="number" name="additional_cash_reserve" min="0" step="1000" value="{additional_cash_reserve}">
       </div>
       <button type="submit" class="btn">保存</button>
     </form>
@@ -6951,6 +7046,23 @@ class Handler(BaseHTTPRequestHandler):
             pct = amt / total * 100 if total else 0
             lines.append(f"| {cls} | {amt:,.0f}円 | {pct:.1f}% |")
 
+        investable = calculate_investable_cash(
+            conn,
+            as_of=datetime.strptime(date, "%Y-%m-%d").date(),
+            snapshot_date=date,
+        )
+        lines += [
+            "",
+            "## 投資可能額",
+            "",
+            f"- 投資可能額: **{investable['investable_cash']:,.0f}円**",
+            f"- 預金・現金: {investable['cash_balance']:,.0f}円",
+            f"- 生活防衛資金: {investable['emergency_fund']:,.0f}円",
+            f"- 計画期間内の予定支出: {investable['planned_expenses']:,.0f}円",
+            f"- 追加確保額: {investable['additional_reserve']:,.0f}円",
+            f"- 計画期間: {investable['planned_expense_horizon_months']}か月",
+        ]
+
         # 保有銘柄
         holdings = conn.execute(
             "SELECT name, symbol_or_code, asset_class, value, quantity, unrealized_gain, unrealized_gain_pct FROM snapshot_holdings WHERE date = ? ORDER BY value DESC LIMIT 20",
@@ -6977,7 +7089,8 @@ class Handler(BaseHTTPRequestHandler):
             "上記は私の資産ポートフォリオです。以下の観点で分析・アドバイスをお願いします：",
             "1. ポートフォリオのバランス評価",
             "2. リスク分散の状況",
-            "3. 改善提案",
+            "3. 投資可能額を投資信託・日本株・米国株・現金のどこへ振るか、根拠と金額を含む比較",
+            "4. 改善提案",
         ]
         return "\n".join(lines)
 
@@ -7114,7 +7227,7 @@ class Handler(BaseHTTPRequestHandler):
             post_params = parse_qs(body)
             setting_type = post_params.get("setting_type", ["gemini"])[0]
             # リダイレクト URL に反映するためホワイトリストで正規化
-            if setting_type not in ("closing_day", "scheduler"):
+            if setting_type not in ("closing_day", "scheduler", "investable_cash"):
                 setting_type = "gemini"
 
             if setting_type == "closing_day":
@@ -7147,6 +7260,27 @@ class Handler(BaseHTTPRequestHandler):
                     save_setting(conn, "scheduler_enabled", enabled_val)
                     save_setting(conn, "scheduler_time", time_str)
                     logger.info("スケジューラ設定更新: enabled=%s, time=%s", enabled_val, time_str)
+                finally:
+                    conn.close()
+            elif setting_type == "investable_cash":
+
+                def bounded_number(name: str, default: float, maximum: float) -> float:
+                    try:
+                        value = float(post_params.get(name, [str(default)])[0])
+                    except (TypeError, ValueError):
+                        value = default
+                    return max(0.0, min(maximum, value))
+
+                monthly_expense_val = bounded_number("monthly_living_expense", 0, 100_000_000)
+                emergency_months_val = bounded_number("emergency_fund_months", 6, 60)
+                horizon_months_val = bounded_number("planned_expense_horizon_months", 12, 120)
+                additional_reserve_val = bounded_number("additional_cash_reserve", 0, 1_000_000_000)
+                conn = get_connection(self.db_path)
+                try:
+                    save_setting(conn, "monthly_living_expense", str(monthly_expense_val))
+                    save_setting(conn, "emergency_fund_months", str(emergency_months_val))
+                    save_setting(conn, "planned_expense_horizon_months", str(int(horizon_months_val)))
+                    save_setting(conn, "additional_cash_reserve", str(additional_reserve_val))
                 finally:
                     conn.close()
             else:
