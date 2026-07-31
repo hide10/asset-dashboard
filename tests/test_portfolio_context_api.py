@@ -4,7 +4,7 @@ import json
 from io import BytesIO
 
 from src.db.schema import init_db
-from src.web.server import Handler, _get_portfolio_context
+from src.web.server import Handler, _get_portfolio_context, _screener_detail_url
 
 
 def _build_test_db(tmp_path, *, with_snapshot: bool = True) -> str:
@@ -46,6 +46,10 @@ def test_portfolio_context_uses_latest_snapshot_and_omits_accounts(tmp_path):
     assert all("account" not in item and "position" not in item for item in context["holdings"])
     assert "架空旧工業" not in json.dumps(context, ensure_ascii=False)
     assert "sector_totals" in context
+    assert context["regional_exposure"]["configured_value"] == 0
+    assert context["regional_exposure"]["unconfigured_value"] == 3_000_000
+    assert context["investable_cash"] == 3_100_000
+    assert context["investable_detail"]["formula"] == "cash - emergency_fund - planned_expenses - additional_reserve"
 
 
 def _invoke_portfolio_endpoint(
@@ -105,3 +109,9 @@ def test_portfolio_context_endpoint_is_disabled_without_server_token(tmp_path):
     assert status == 503
     assert headers["Cache-Control"] == "no-store"
     assert payload == {"error": "portfolio api is not configured"}
+
+
+def test_screener_link_uses_runtime_base_url_and_normalized_identifier():
+    assert _screener_detail_url("https://screener.invalid", "2222") == "https://screener.invalid/?stock=22220"
+    assert _screener_detail_url("", "2222") is None
+    assert _screener_detail_url("https://screener.invalid", "") is None

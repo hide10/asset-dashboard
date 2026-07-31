@@ -21,7 +21,7 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from src.analysis.ai_comment import generate_comments, get_comment
 from src.analysis.compare import ComparisonResult, get_all_comparisons
@@ -57,6 +57,7 @@ from src.db.repository import (
     get_latest_portfolio_snapshot,
     get_latest_stock_codes,
     get_life_plan_inflation_rate,
+    get_portfolio_regional_exposure,
     get_regional_exposure_config,
     get_regional_exposure_holdings,
     get_setting,
@@ -98,6 +99,13 @@ def _get_portfolio_context(db_path: str) -> dict | None:
     conn = get_connection(db_path)
     try:
         context = get_latest_portfolio_snapshot(conn)
+        if context is not None:
+            regional = get_portfolio_regional_exposure(conn)
+            investable = calculate_investable_cash(
+                conn,
+                as_of=datetime.strptime(context["as_of"], "%Y-%m-%d").date(),
+                snapshot_date=context["as_of"],
+            )
     finally:
         conn.close()
     if context is None:
@@ -110,6 +118,13 @@ def _get_portfolio_context(db_path: str) -> dict | None:
         sector = get_sector(holding["code"])
         sector_totals[sector] = sector_totals.get(sector, 0) + holding["value"]
     context["sector_totals"] = sector_totals
+    context["regional_exposure"] = {
+        "by_region": regional["by_region"],
+        "configured_value": regional["configured_value"],
+        "unconfigured_value": regional["unconfigured_value"],
+    }
+    context["investable_cash"] = investable["investable_cash"]
+    context["investable_detail"] = investable
     return context
 
 
@@ -126,6 +141,19 @@ def _holding_history_key(asset_class: str, code: str, name: str) -> str:
         unicodedata.normalize("NFKC", name or "").strip(),
     ]
     return "|".join(parts)
+
+
+def _screener_detail_url(base_url: str, code: str | None) -> str | None:
+    """実行時設定されたスクリーナーURLへ、日本株コードだけを渡す。"""
+    parsed = urlparse(base_url)
+    value = str(code or "").strip()
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    if len(value) == 4 and value.isdigit():
+        value = f"{value}0"
+    elif not (len(value) == 5 and value.isdigit()):
+        return None
+    return f"{base_url.rstrip('/')}/?stock={quote(value)}"
 
 
 def _is_top_expense_excluded(item: dict) -> bool:
@@ -813,6 +841,7 @@ def _build_html(
     session_expired: str | None = None,
     last_fetch_at: str | None = None,
     next_run_at: str | None = None,
+    screener_base_url: str = "",
 ) -> str:
     if not data:
         return "<html><body><h1>データがありません</h1></body></html>"
@@ -955,6 +984,11 @@ def _build_html(
             )
         else:
             name_html = f"{code}{_h(h['name'])}{qty}"
+        detail_url = _screener_detail_url(screener_base_url, h["code"])
+        if h["asset_class"] == "株式（現物）" and detail_url:
+            name_html += (
+                f' <a class="screener-detail-link" href="{_h(detail_url)}" target="_blank" rel="noreferrer">財務</a>'
+            )
         hold_rows += f'<tr><td>{name_html}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
 
     # 業種別円グラフ用データ
@@ -1275,6 +1309,8 @@ def _build_html(
   }}
   .holding-link:hover {{ color: #174a94; text-decoration: underline; }}
   .holding-link.active {{ color: #0f7f30; font-weight: 700; }}
+  .screener-detail-link {{ margin-left:6px;font-size:.72rem;color:#0f7f30;text-decoration:none; }}
+  .screener-detail-link:hover {{ text-decoration:underline; }}
   .holding-detail-card .card-body {{ overflow-x: auto; }}
   .holding-detail-head {{
     display: flex; justify-content: space-between; gap: 16px; margin-bottom: 12px; flex-wrap: wrap;
@@ -6852,6 +6888,7 @@ class Handler(BaseHTTPRequestHandler):
     demo: bool = False
     skip_update: bool = False
     portfolio_api_token: str = os.environ.get("PORTFOLIO_API_TOKEN", "")
+    screener_base_url: str = os.environ.get("SCREENER_BASE_URL", "")
 
     def _send_html(self, html: str) -> None:
         """HTMLレスポンスを送信する。デモモード時はバナーを挿入。"""
@@ -7027,6 +7064,7 @@ class Handler(BaseHTTPRequestHandler):
                 session_expired=session_expired,
                 last_fetch_at=last_fetch_at,
                 next_run_at=next_run_at,
+                screener_base_url=self.screener_base_url,
             )
             self._send_html(html)
 
