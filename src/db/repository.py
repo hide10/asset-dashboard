@@ -124,6 +124,41 @@ def get_latest_stock_codes(conn: sqlite3.Connection) -> list[str]:
     return [r[0] for r in rows]
 
 
+def get_latest_portfolio_snapshot(conn: sqlite3.Connection) -> dict | None:
+    """最新の資産クラス集計と保有銘柄を連携用に返す。
+
+    口座名・金融機関名・取得元ファイルパスは連携に不要なため含めない。
+    """
+    row = conn.execute("SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
+    if row is None:
+        return None
+
+    holdings = conn.execute(
+        """
+        SELECT symbol_or_code, name, quantity, value, asset_class
+        FROM snapshot_holdings
+        WHERE date = ?
+        ORDER BY id ASC
+        """,
+        (row[0],),
+    ).fetchall()
+    return {
+        "as_of": row[0],
+        "total_asset": row[1],
+        "by_asset_class": normalize_asset_classes(json.loads(row[2])),
+        "holdings": [
+            {
+                "code": holding[0],
+                "name": holding[1],
+                "quantity": holding[2],
+                "value": holding[3],
+                "asset_class": holding[4],
+            }
+            for holding in holdings
+        ],
+    }
+
+
 def save_cashflows(conn: sqlite3.Connection, months: list[CashflowMonth], fetched_date: str) -> None:
     """月次収支データをDBに保存する。同月データがあれば差し替える。"""
     for m in months:

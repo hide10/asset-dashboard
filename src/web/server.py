@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hmac
 import html as html_mod
 import json
 import logging
 import math
+import os
 import sqlite3
 import threading
 import time
@@ -47,6 +49,7 @@ from src.db.repository import (
     get_daily_assets,
     get_fund_total_history,
     get_holding_history,
+    get_latest_portfolio_snapshot,
     get_latest_stock_codes,
     get_life_plan_inflation_rate,
     get_setting,
@@ -80,6 +83,26 @@ _update_lock = threading.Lock()
 
 _SCHEDULER_CHECK_INTERVAL = 60  # 秒
 _SCHEDULER_DEFAULT_TIME = "07:00"
+
+
+def _get_portfolio_context(db_path: str) -> dict | None:
+    """別プロセスとの連携に必要な最小限のポートフォリオ情報を返す。"""
+    conn = get_connection(db_path)
+    try:
+        context = get_latest_portfolio_snapshot(conn)
+    finally:
+        conn.close()
+    if context is None:
+        return None
+
+    sector_totals: dict[str, float] = {}
+    for holding in context["holdings"]:
+        if holding["asset_class"] != "株式（現物）":
+            continue
+        sector = get_sector(holding["code"])
+        sector_totals[sector] = sector_totals.get(sector, 0) + holding["value"]
+    context["sector_totals"] = sector_totals
+    return context
 
 
 def _h(s: str) -> str:
@@ -6561,6 +6584,7 @@ class Handler(BaseHTTPRequestHandler):
     db_path: str = str(DB_DEFAULT)
     demo: bool = False
     skip_update: bool = False
+    portfolio_api_token: str = os.environ.get("PORTFOLIO_API_TOKEN", "")
 
     def _send_html(self, html: str) -> None:
         """HTMLレスポンスを送信する。デモモード時はバナーを挿入。"""
@@ -6570,6 +6594,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(html.encode())
+
+    def _send_private_json(self, payload: dict, status: int = 200) -> None:
+        """キャッシュ・別オリジン共有を許可しないJSONレスポンスを送る。"""
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -6584,6 +6618,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(payload).encode())
+
+        elif parsed.path == "/api/portfolio-context":
+            if not self.portfolio_api_token:
+                self._send_private_json({"error": "portfolio api is not configured"}, status=503)
+            else:
+                supplied = self.headers.get("Authorization", "")
+                expected = f"Bearer {self.portfolio_api_token}"
+                if not hmac.compare_digest(supplied, expected):
+                    self._send_private_json({"error": "unauthorized"}, status=401)
+                else:
+                    context = _get_portfolio_context(self.db_path)
+                    if context is None:
+                        self._send_private_json({"error": "portfolio data unavailable"}, status=404)
+                    else:
+                        self._send_private_json(context)
 
         elif parsed.path == "/api/data":
             if self.demo:
