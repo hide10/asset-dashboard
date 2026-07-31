@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hmac
 import html as html_mod
 import json
 import logging
 import math
+import os
 import sqlite3
 import threading
 import time
@@ -19,18 +21,23 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from src.analysis.ai_comment import generate_comments, get_comment
 from src.analysis.compare import ComparisonResult, get_all_comparisons
 from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
 from src.data.stock_master import get_dividend, get_sector, is_us_stock
 from src.db.repository import (
+    ALLOCATION_LABELS,
+    ALLOCATION_PRESETS,
     build_education_events_for_child,
+    calculate_allocation_scenario,
+    calculate_investable_cash,
     create_child_profile,
     create_life_event,
     delete_child_profile,
     delete_life_event,
+    get_allocation_context,
     get_annual_life_event_expenses,
     get_budgets,
     get_cashflows,
@@ -47,8 +54,12 @@ from src.db.repository import (
     get_daily_assets,
     get_fund_total_history,
     get_holding_history,
+    get_latest_portfolio_snapshot,
     get_latest_stock_codes,
     get_life_plan_inflation_rate,
+    get_portfolio_regional_exposure,
+    get_regional_exposure_config,
+    get_regional_exposure_holdings,
     get_setting,
     list_children_profiles,
     list_life_events,
@@ -56,6 +67,7 @@ from src.db.repository import (
     save_cf_csv_month,
     save_cf_transactions,
     save_life_plan_inflation_rate,
+    save_regional_exposure_config,
     save_setting,
     update_child_profile,
     update_life_event,
@@ -82,6 +94,40 @@ _SCHEDULER_CHECK_INTERVAL = 60  # 秒
 _SCHEDULER_DEFAULT_TIME = "07:00"
 
 
+def _get_portfolio_context(db_path: str) -> dict | None:
+    """別プロセスとの連携に必要な最小限のポートフォリオ情報を返す。"""
+    conn = get_connection(db_path)
+    try:
+        context = get_latest_portfolio_snapshot(conn)
+        if context is not None:
+            regional = get_portfolio_regional_exposure(conn)
+            investable = calculate_investable_cash(
+                conn,
+                as_of=datetime.strptime(context["as_of"], "%Y-%m-%d").date(),
+                snapshot_date=context["as_of"],
+            )
+    finally:
+        conn.close()
+    if context is None:
+        return None
+
+    sector_totals: dict[str, float] = {}
+    for holding in context["holdings"]:
+        if holding["asset_class"] != "株式（現物）":
+            continue
+        sector = get_sector(holding["code"])
+        sector_totals[sector] = sector_totals.get(sector, 0) + holding["value"]
+    context["sector_totals"] = sector_totals
+    context["regional_exposure"] = {
+        "by_region": regional["by_region"],
+        "configured_value": regional["configured_value"],
+        "unconfigured_value": regional["unconfigured_value"],
+    }
+    context["investable_cash"] = investable["investable_cash"]
+    context["investable_detail"] = investable
+    return context
+
+
 def _h(s: str) -> str:
     """HTML エスケープのショートカット。"""
     return html_mod.escape(str(s))
@@ -95,6 +141,19 @@ def _holding_history_key(asset_class: str, code: str, name: str) -> str:
         unicodedata.normalize("NFKC", name or "").strip(),
     ]
     return "|".join(parts)
+
+
+def _screener_detail_url(base_url: str, code: str | None) -> str | None:
+    """実行時設定されたスクリーナーURLへ、日本株コードだけを渡す。"""
+    parsed = urlparse(base_url)
+    value = str(code or "").strip()
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    if len(value) == 4 and value.isdigit():
+        value = f"{value}0"
+    elif not (len(value) == 5 and value.isdigit()):
+        return None
+    return f"{base_url.rstrip('/')}/?stock={quote(value)}"
 
 
 def _is_top_expense_excluded(item: dict) -> bool:
@@ -277,6 +336,7 @@ def _nav_html(active: str) -> str:
     """ナビゲーションツールバーのHTMLを返す。"""
     pages = [
         ("/", "ダッシュボード"),
+        ("/allocation", "資産配分"),
         ("/cf", "家計簿分析"),
         ("/plan", "ライフプラン"),
         ("/simulator", "シミュレーター"),
@@ -420,6 +480,11 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
                 "latest_value": latest["total_value"],
                 "latest_cost": latest.get("total_cost"),
             }
+        investable_cash = calculate_investable_cash(
+            conn,
+            as_of=datetime.strptime(date, "%Y-%m-%d").date(),
+            snapshot_date=date,
+        )
     finally:
         conn.close()
 
@@ -549,7 +614,129 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         "comparisons": comparisons,
         "fund_total_history": fund_total_history,
         "holding_histories": holding_histories,
+        "investable_cash": investable_cash,
     }
+
+
+def _get_allocation_data(db_path: str, custom_allocation: dict[str, float] | None = None) -> dict:
+    """投資可能額と配分シナリオを画面表示用に組み立てる。"""
+    conn = get_connection(db_path)
+    try:
+        context = get_allocation_context(conn)
+    finally:
+        conn.close()
+    if not context:
+        return {}
+
+    scenarios = [
+        calculate_allocation_scenario(context, preset["allocation"], name=preset["name"])
+        for preset in ALLOCATION_PRESETS
+    ]
+    custom = custom_allocation or dict(ALLOCATION_PRESETS[1]["allocation"])
+    custom_scenario = calculate_allocation_scenario(context, custom, name="カスタム")
+    return {
+        "context": context,
+        "presets": scenarios,
+        "custom": custom_scenario,
+    }
+
+
+def _demo_allocation_data(custom_allocation: dict[str, float] | None = None) -> dict:
+    """デモ資産から配分シナリオを組み立てる。"""
+    demo = _demo_data()
+    stock_holdings = [holding for holding in demo["holdings"] if holding["asset_class"] == "株式（現物）"]
+    us_stock = sum(holding["value"] for holding in stock_holdings if holding["code"] and str(holding["code"]).isalpha())
+    current_values = {
+        "cash": float(demo["by_class"].get("預金・現金", 0)),
+        "fund": float(demo["by_class"].get("投資信託", 0)),
+        "jp_stock": float(demo["by_class"].get("株式（現物）", 0)) - us_stock,
+        "us_stock": float(us_stock),
+    }
+    current_values["other"] = float(demo["total_asset"]) - sum(current_values.values())
+    context = {
+        "as_of": demo["date"],
+        "total_asset": float(demo["total_asset"]),
+        "current_values": current_values,
+        "investable_cash": float(demo["investable_cash"]["investable_cash"]),
+        "investable_detail": demo["investable_cash"],
+    }
+    scenarios = [
+        calculate_allocation_scenario(context, preset["allocation"], name=preset["name"])
+        for preset in ALLOCATION_PRESETS
+    ]
+    custom = custom_allocation or dict(ALLOCATION_PRESETS[1]["allocation"])
+    return {
+        "context": context,
+        "presets": scenarios,
+        "custom": calculate_allocation_scenario(context, custom, name="カスタム"),
+    }
+
+
+def _build_allocation_html(data: dict, error: str | None = None) -> str:
+    """余剰資金の配分比較ページを生成する。"""
+    if not data:
+        return "<html><body><h1>資産データがありません</h1></body></html>"
+    context = data["context"]
+    scenarios = data["presets"]
+    custom = data["custom"]
+    labels = {**ALLOCATION_LABELS, "other": "その他資産"}
+
+    scenario_cards = ""
+    for scenario in scenarios:
+        allocation_text = " / ".join(
+            f"{ALLOCATION_LABELS[key]} {value:g}%" for key, value in scenario["allocation"].items()
+        )
+        amount_rows = "".join(
+            f"<tr><td>{ALLOCATION_LABELS[key]}</td><td>{scenario['allocation'][key]:g}%</td>"
+            f"<td>{scenario['allocation_amounts'][key]:,.0f}円</td></tr>"
+            for key in ALLOCATION_LABELS
+        )
+        scenario_cards += f"""
+        <section class="scenario-card">
+          <h3>{_h(scenario["name"])}</h3>
+          <p class="scenario-summary">{allocation_text}</p>
+          <table><thead><tr><th>配分先</th><th>比率</th><th>金額</th></tr></thead><tbody>{amount_rows}</tbody></table>
+        </section>"""
+
+    custom_inputs = "".join(
+        f'<label>{label}<input type="number" name="{key}" min="0" max="100" step="1" '
+        f'value="{custom["allocation"][key]:g}" required><span>%</span></label>'
+        for key, label in ALLOCATION_LABELS.items()
+    )
+    post_rows = "".join(
+        f"<tr><td>{labels[key]}</td><td>{context['current_values'].get(key, 0):,.0f}円</td>"
+        f"<td>{custom['post_values'][key]:,.0f}円</td><td>{custom['post_ratios'][key]:.1f}%</td></tr>"
+        for key in ("cash", "fund", "jp_stock", "us_stock", "other")
+    )
+    error_html = f'<div class="error">{_h(error)}</div>' if error else ""
+    investable = context["investable_cash"]
+    return f"""<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>資産配分シナリオ</title><style>
+* {{ box-sizing:border-box }} body {{ margin:0;background:#f5f6fa;color:#2d3436;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6 }}
+.container {{ max-width:1100px;margin:auto;padding:20px }} {_NAV_CSS}
+.hero,.card,.scenario-card {{ background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.08) }}
+.hero {{ margin:18px 0 }} .amount {{ color:#0F7F30;font-size:2rem;font-weight:800 }}
+.scenarios {{ display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:14px 0 20px }}
+.scenario-card h3 {{ margin:0 0 4px }} .scenario-summary {{ color:#636e72;font-size:.78rem;min-height:42px }}
+table {{ width:100%;border-collapse:collapse;font-size:.86rem }} th,td {{ padding:7px;border-bottom:1px solid #eee;text-align:right }} th:first-child,td:first-child {{ text-align:left }}
+.card {{ margin-bottom:20px }} .allocation-inputs {{ display:grid;grid-template-columns:repeat(4,1fr);gap:10px }}
+.allocation-inputs label {{ font-size:.82rem;font-weight:600 }} .allocation-inputs input {{ width:calc(100% - 24px);padding:8px;border:1px solid #dfe6e9;border-radius:6px;margin-top:4px }}
+.btn {{ display:inline-block;margin-top:14px;padding:9px 18px;border:0;border-radius:7px;background:#2881D7;color:#fff;font-weight:700;cursor:pointer;text-decoration:none }}
+.btn.secondary {{ background:#636e72;margin-left:8px }} .error {{ background:#DF3727;color:#fff;padding:10px 14px;border-radius:8px;margin:12px 0 }}
+@media(max-width:760px) {{ .scenarios {{ grid-template-columns:1fr }} .allocation-inputs {{ grid-template-columns:1fr 1fr }} .page-header {{ align-items:flex-start }} .nav-toolbar {{ flex-wrap:wrap }} }}
+</style></head><body><div class="container">
+<div class="page-header"><h1>余剰資金の配分を比較</h1>{_nav_html("/allocation")}</div>
+<div class="hero"><div>現在の投資可能額</div><div class="amount">{investable:,.0f}円</div>
+<p>生活防衛資金と予定支出を確保した後、この範囲で現金・投資信託・日本株・米国株を比較します。</p></div>
+<div class="card" data-card-id="allocation-scenarios"><h2>プリセット比較</h2><div class="scenarios">{scenario_cards}</div></div>
+<div class="card"><h2>自分で比率を調整</h2>{error_html}
+<form method="GET" action="/allocation" data-testid="allocation-custom-form"><div class="allocation-inputs">{custom_inputs}</div>
+<button class="btn" type="submit">この比率で比較</button><button class="btn secondary" type="button" onclick="copyAllocationPrompt(this)">AIに相談するデータをコピー</button></form></div>
+<div class="card"><h2>購入後の構成</h2><table><thead><tr><th>区分</th><th>現在</th><th>購入後</th><th>購入後比率</th></tr></thead><tbody>{post_rows}</tbody></table></div>
+</div><script>
+async function copyAllocationPrompt(btn) {{ const r=await fetch('/api/ai-prompt?type=allocation'); const t=await r.text(); await navigator.clipboard.writeText(t); const old=btn.textContent; btn.textContent='コピーしました'; setTimeout(()=>btn.textContent=old,1500); }}
+</script></body></html>"""
 
 
 def _avg_yield_html(dividends: list[dict]) -> str:
@@ -654,6 +841,7 @@ def _build_html(
     session_expired: str | None = None,
     last_fetch_at: str | None = None,
     next_run_at: str | None = None,
+    screener_base_url: str = "",
 ) -> str:
     if not data:
         return "<html><body><h1>データがありません</h1></body></html>"
@@ -686,6 +874,7 @@ def _build_html(
     comparisons = data.get("comparisons", [])
     fund_total_history = data.get("fund_total_history", [])
     holding_histories = data.get("holding_histories", {})
+    investable_cash = data.get("investable_cash")
 
     # 日付セレクタ
     date_options = ""
@@ -795,6 +984,11 @@ def _build_html(
             )
         else:
             name_html = f"{code}{_h(h['name'])}{qty}"
+        detail_url = _screener_detail_url(screener_base_url, h["code"])
+        if h["asset_class"] == "株式（現物）" and detail_url:
+            name_html += (
+                f' <a class="screener-detail-link" href="{_h(detail_url)}" target="_blank" rel="noreferrer">財務</a>'
+            )
         hold_rows += f'<tr><td>{name_html}</td><td class="num">{h["value"]:,.0f}円</td>{gain_cell}{diff_cells}</tr>'
 
     # 業種別円グラフ用データ
@@ -981,6 +1175,38 @@ def _build_html(
       <div class="no-data">データ不足</div>
     </div>"""
 
+    investable_cash_html = ""
+    if investable_cash:
+        investable = float(investable_cash.get("investable_cash", 0))
+        cash_balance = float(investable_cash.get("cash_balance", 0))
+        emergency_fund = float(investable_cash.get("emergency_fund", 0))
+        planned_expenses = float(investable_cash.get("planned_expenses", 0))
+        additional_reserve = float(investable_cash.get("additional_reserve", 0))
+        shortfall = float(investable_cash.get("shortfall", 0))
+        status_html = (
+            f'<span style="color:#DF3727">必要額に {shortfall:,.0f}円不足</span>'
+            if shortfall > 0
+            else "投資先を比較できる上限額"
+        )
+        investable_cash_html = f"""
+  <div class="card full" data-card-id="dash-investable-cash">
+    <div class="card-header">
+      <h2>投資可能額</h2>
+      <button class="collapse-btn">&#x25BC;</button>
+    </div>
+    <div class="card-body">
+      <div style="font-size:1.8rem;font-weight:700;color:#0F7F30">{investable:,.0f}円</div>
+      <div style="font-size:0.82rem;color:#636e72;margin-bottom:12px">{status_html}</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.85rem">
+        <span>預金・現金 {cash_balance:,.0f}円</span>
+        <span>− 生活防衛資金 {emergency_fund:,.0f}円</span>
+        <span>− 予定支出 {planned_expenses:,.0f}円</span>
+        <span>− 追加確保 {additional_reserve:,.0f}円</span>
+      </div>
+      <div style="margin-top:10px"><a href="/settings#investable-cash">計算条件を変更</a></div>
+    </div>
+  </div>"""
+
     return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -1083,6 +1309,8 @@ def _build_html(
   }}
   .holding-link:hover {{ color: #174a94; text-decoration: underline; }}
   .holding-link.active {{ color: #0f7f30; font-weight: 700; }}
+  .screener-detail-link {{ margin-left:6px;font-size:.72rem;color:#0f7f30;text-decoration:none; }}
+  .screener-detail-link:hover {{ text-decoration:underline; }}
   .holding-detail-card .card-body {{ overflow-x: auto; }}
   .holding-detail-head {{
     display: flex; justify-content: space-between; gap: 16px; margin-bottom: 12px; flex-wrap: wrap;
@@ -1174,6 +1402,7 @@ def _build_html(
   <div class="compare-cards" style="margin-bottom:20px">
     {risk_cards_html}
   </div>
+  {investable_cash_html}
   <div class="grid">
     <div class="card" data-card-id="dash-class">
       <div class="card-header">
@@ -2194,6 +2423,23 @@ def _demo_data() -> dict:
         "_sector_holdings": demo_sector_holdings,
         "fund_total_history": fund_total_history,
         "holding_histories": holding_histories,
+        "investable_cash": {
+            "as_of": today,
+            "snapshot_date": today,
+            "cash_balance": 3_250_000,
+            "monthly_living_expense": 300_000,
+            "monthly_living_expense_source": "setting",
+            "emergency_fund_months": 6,
+            "emergency_fund": 1_800_000,
+            "planned_expense_horizon_months": 12,
+            "planned_expenses": 300_000,
+            "planned_expenses_by_year": {int(today[:4]): 300_000},
+            "additional_reserve": 150_000,
+            "required_cash": 2_250_000,
+            "investable_cash": 1_000_000,
+            "shortfall": 0,
+            "formula": "cash - emergency_fund - planned_expenses - additional_reserve",
+        },
     }
 
 
@@ -4857,6 +5103,13 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME) or _SCHEDULER_DEFAULT_TIME
         scheduler_last_run = get_setting(conn, "scheduler_last_run_at")
         scheduler_last_result = get_setting(conn, "scheduler_last_result")
+        regional_holdings = get_regional_exposure_holdings(conn)
+        regional_config = get_regional_exposure_config(conn)
+        investable = calculate_investable_cash(conn)
+        monthly_living_expense = int(float(get_setting(conn, "monthly_living_expense", "0") or "0"))
+        emergency_fund_months = float(get_setting(conn, "emergency_fund_months", "6") or "6")
+        planned_expense_horizon_months = int(float(get_setting(conn, "planned_expense_horizon_months", "12") or "12"))
+        additional_cash_reserve = int(float(get_setting(conn, "additional_cash_reserve", "0") or "0"))
     finally:
         conn.close()
 
@@ -4887,7 +5140,11 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         display_key = ""
 
     # 保存メッセージは setting_type ごとに分岐（"1" は旧URL互換で gemini 扱い）
-    if saved in ("gemini", "1"):
+    if saved == "regional_error":
+        saved_msg = (
+            '<div class="saved-msg" style="background:#DF3727">地域配分の合計を商品ごとに100%にしてください。</div>'
+        )
+    elif saved in ("gemini", "1"):
         saved_msg = (
             '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です'
             " — 数十秒後にダッシュボードを開くと表示されます。</div>"
@@ -4896,6 +5153,31 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         saved_msg = '<div class="saved-msg">設定を保存しました。</div>'
     else:
         saved_msg = ""
+
+    region_fields = [
+        ("日本", "japan"),
+        ("米国", "us"),
+        ("先進国（日本・米国除く）", "developed"),
+        ("新興国", "emerging"),
+        ("その他", "other"),
+    ]
+    regional_rows = ""
+    for index, holding in enumerate(regional_holdings):
+        allocation = regional_config.get(holding["key"], {})
+        inputs = "".join(
+            f'<label style="font-size:0.75rem;display:block">{_h(label)}<input type="number" min="0" max="100" step="0.1" '
+            f'style="display:block;width:100%;padding:6px 8px;border:1px solid #dfe6e9;border-radius:6px" '
+            f'name="region_{index}_{slug}" value="{float(allocation.get(label, 0)):g}" required></label>'
+            for label, slug in region_fields
+        )
+        regional_rows += f"""
+        <div style="border-top:1px solid #eee;padding:12px 0">
+          <input type="hidden" name="exposure_key_{index}" value="{_h(holding["key"])}">
+          <div style="font-weight:600">{_h(holding["name"])} <span style="color:#636e72;font-size:0.8rem">({_h(holding["asset_class"])})</span></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin-top:8px">{inputs}</div>
+        </div>"""
+    if not regional_rows:
+        regional_rows = '<p style="font-size:0.85rem;color:#636e72">最新データに投資信託・年金の商品がありません。</p>'
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -5004,6 +5286,50 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         <div class="hint">デフォルトは毎日 7:00 です。設定はサーバー再起動なしで反映されます。</div>
       </div>
       <button type="submit" class="btn">保存</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>投信・年金の地域配分</h2>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      各商品の投資地域を設定します。推測は行わず、商品ごとの合計を100%にしてください。
+    </p>
+    <form method="POST" action="/settings">
+      <input type="hidden" name="setting_type" value="regional_exposure">
+      <input type="hidden" name="exposure_count" value="{len(regional_holdings)}">
+      {regional_rows}
+      <button type="submit" class="btn" style="margin-top:12px">保存</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2 id="investable-cash">投資可能額の計算</h2>
+    <div class="status">
+      現在の投資可能額: <strong style="color:#0F7F30">{investable["investable_cash"]:,.0f}円</strong>
+      ／ 預金・現金 {investable["cash_balance"]:,.0f}円
+    </div>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      預金・現金から生活防衛資金、計画期間内のライフイベント、追加確保額を差し引きます。
+      年単位のイベントは対象年の全額を保守的に確保します。
+    </p>
+    <form method="POST" action="/settings">
+      <input type="hidden" name="setting_type" value="investable_cash">
+      <div class="field">
+        <label>月間生活費（円）</label>
+        <input type="number" name="monthly_living_expense" min="0" step="1000" value="{monthly_living_expense}">
+        <div class="hint">0の場合は直近6か月の支出実績平均を使います。</div>
+      </div>
+      <div class="field">
+        <label>生活防衛資金（月数）</label>
+        <input type="number" name="emergency_fund_months" min="0" max="60" step="0.5" value="{emergency_fund_months:g}">
+      </div>
+      <div class="field">
+        <label>予定支出を確保する期間（月）</label>
+        <input type="number" name="planned_expense_horizon_months" min="0" max="120" step="1" value="{planned_expense_horizon_months}">
+      </div>
+      <div class="field">
+        <label>追加で現金として確保する額（円）</label>
+        <input type="number" name="additional_cash_reserve" min="0" step="1000" value="{additional_cash_reserve}">
+       </div>
+       <button type="submit" class="btn">保存</button>
     </form>
   </div>
   <div class="card">
@@ -6561,6 +6887,8 @@ class Handler(BaseHTTPRequestHandler):
     db_path: str = str(DB_DEFAULT)
     demo: bool = False
     skip_update: bool = False
+    portfolio_api_token: str = os.environ.get("PORTFOLIO_API_TOKEN", "")
+    screener_base_url: str = os.environ.get("SCREENER_BASE_URL", "")
 
     def _send_html(self, html: str) -> None:
         """HTMLレスポンスを送信する。デモモード時はバナーを挿入。"""
@@ -6570,6 +6898,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(html.encode())
+
+    def _send_private_json(self, payload: dict, status: int = 200) -> None:
+        """キャッシュ・別オリジン共有を許可しないJSONレスポンスを送る。"""
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -6584,6 +6922,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(payload).encode())
+
+        elif parsed.path == "/api/portfolio-context":
+            if not self.portfolio_api_token:
+                self._send_private_json({"error": "portfolio api is not configured"}, status=503)
+            else:
+                supplied = self.headers.get("Authorization", "")
+                expected = f"Bearer {self.portfolio_api_token}"
+                if not hmac.compare_digest(supplied, expected):
+                    self._send_private_json({"error": "unauthorized"}, status=401)
+                else:
+                    context = _get_portfolio_context(self.db_path)
+                    if context is None:
+                        self._send_private_json({"error": "portfolio data unavailable"}, status=404)
+                    else:
+                        self._send_private_json(context)
 
         elif parsed.path == "/api/data":
             if self.demo:
@@ -6605,6 +6958,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(dates).encode())
+
+        elif parsed.path == "/allocation":
+            custom = None
+            error = None
+            allocation_keys = ("cash", "fund", "jp_stock", "us_stock")
+            if any(key in params for key in allocation_keys):
+                try:
+                    custom = {key: float(params.get(key, ["0"])[0]) for key in allocation_keys}
+                    if abs(sum(custom.values()) - 100) > 0.01:
+                        raise ValueError("配分の合計は100%にしてください")
+                    if any(value < 0 or value > 100 for value in custom.values()):
+                        raise ValueError("配分は0〜100%で指定してください")
+                except (TypeError, ValueError) as exc:
+                    error = str(exc)
+                    custom = None
+            data = _demo_allocation_data(custom) if self.demo else _get_allocation_data(self.db_path, custom)
+            self._send_html(_build_allocation_html(data, error=error))
 
         elif parsed.path == "/plan":
             # contrib パラメータがあれば設定に保存、なければDB設定を使用
@@ -6694,6 +7064,7 @@ class Handler(BaseHTTPRequestHandler):
                 session_expired=session_expired,
                 last_fetch_at=last_fetch_at,
                 next_run_at=next_run_at,
+                screener_base_url=self.screener_base_url,
             )
             self._send_html(html)
 
@@ -6875,6 +7246,8 @@ class Handler(BaseHTTPRequestHandler):
         # simulator は _get_simulator_data が内部で接続を管理するため先に分岐
         if prompt_type == "simulator":
             return self._ai_prompt_simulator()
+        if prompt_type == "allocation":
+            return self._ai_prompt_allocation()
         conn = get_connection(self.db_path)
         try:
             if prompt_type == "all":
@@ -6889,6 +7262,42 @@ class Handler(BaseHTTPRequestHandler):
                 return "不明なタイプです。"
         finally:
             conn.close()
+
+    def _ai_prompt_allocation(self) -> str:
+        """余剰資金の配分比較をAIへ相談するMarkdownを返す。"""
+        data = _demo_allocation_data() if self.demo else _get_allocation_data(self.db_path)
+        if not data:
+            return "資産データがありません。"
+        context = data["context"]
+        detail = context["investable_detail"]
+        lines = [
+            f"# 余剰資金の配分シナリオ（{context['as_of']}時点）",
+            "",
+            f"- 投資可能額: **{context['investable_cash']:,.0f}円**",
+            f"- 預金・現金: {detail['cash_balance']:,.0f}円",
+            f"- 生活防衛資金: {detail['emergency_fund']:,.0f}円",
+            f"- 予定支出: {detail['planned_expenses']:,.0f}円",
+            "",
+            "## 比較案",
+            "",
+            "| 案 | 現金 | 投資信託 | 日本株 | 米国株 |",
+            "|---|---:|---:|---:|---:|",
+        ]
+        for scenario in data["presets"]:
+            amounts = scenario["allocation_amounts"]
+            lines.append(
+                f"| {scenario['name']} | {amounts['cash']:,.0f}円 | {amounts['fund']:,.0f}円 | "
+                f"{amounts['jp_stock']:,.0f}円 | {amounts['us_stock']:,.0f}円 |"
+            )
+        lines += [
+            "",
+            "---",
+            "",
+            "投資信託・日本株・米国株・現金のどこへ振るか相談したいです。",
+            "現在の資産構成、地域分散、集中リスク、予定支出を踏まえ、各案の長所・短所を比較してください。",
+            "断定ではなく、追加で確認すべき条件と推奨額の範囲を示してください。",
+        ]
+        return "\n".join(lines)
 
     def _ai_prompt_all(self, conn: sqlite3.Connection) -> str:
         """AI相談用データ（全種類）を1つのMarkdownにまとめる。"""
@@ -6951,6 +7360,23 @@ class Handler(BaseHTTPRequestHandler):
             pct = amt / total * 100 if total else 0
             lines.append(f"| {cls} | {amt:,.0f}円 | {pct:.1f}% |")
 
+        investable = calculate_investable_cash(
+            conn,
+            as_of=datetime.strptime(date, "%Y-%m-%d").date(),
+            snapshot_date=date,
+        )
+        lines += [
+            "",
+            "## 投資可能額",
+            "",
+            f"- 投資可能額: **{investable['investable_cash']:,.0f}円**",
+            f"- 預金・現金: {investable['cash_balance']:,.0f}円",
+            f"- 生活防衛資金: {investable['emergency_fund']:,.0f}円",
+            f"- 計画期間内の予定支出: {investable['planned_expenses']:,.0f}円",
+            f"- 追加確保額: {investable['additional_reserve']:,.0f}円",
+            f"- 計画期間: {investable['planned_expense_horizon_months']}か月",
+        ]
+
         # 保有銘柄
         holdings = conn.execute(
             "SELECT name, symbol_or_code, asset_class, value, quantity, unrealized_gain, unrealized_gain_pct FROM snapshot_holdings WHERE date = ? ORDER BY value DESC LIMIT 20",
@@ -6977,7 +7403,8 @@ class Handler(BaseHTTPRequestHandler):
             "上記は私の資産ポートフォリオです。以下の観点で分析・アドバイスをお願いします：",
             "1. ポートフォリオのバランス評価",
             "2. リスク分散の状況",
-            "3. 改善提案",
+            "3. 投資可能額を投資信託・日本株・米国株・現金のどこへ振るか、根拠と金額を含む比較",
+            "4. 改善提案",
         ]
         return "\n".join(lines)
 
@@ -7114,7 +7541,7 @@ class Handler(BaseHTTPRequestHandler):
             post_params = parse_qs(body)
             setting_type = post_params.get("setting_type", ["gemini"])[0]
             # リダイレクト URL に反映するためホワイトリストで正規化
-            if setting_type not in ("closing_day", "scheduler"):
+            if setting_type not in ("closing_day", "scheduler", "regional_exposure", "investable_cash"):
                 setting_type = "gemini"
 
             if setting_type == "closing_day":
@@ -7147,6 +7574,55 @@ class Handler(BaseHTTPRequestHandler):
                     save_setting(conn, "scheduler_enabled", enabled_val)
                     save_setting(conn, "scheduler_time", time_str)
                     logger.info("スケジューラ設定更新: enabled=%s, time=%s", enabled_val, time_str)
+                finally:
+                    conn.close()
+            elif setting_type == "regional_exposure":
+                region_fields = {
+                    "日本": "japan",
+                    "米国": "us",
+                    "先進国（日本・米国除く）": "developed",
+                    "新興国": "emerging",
+                    "その他": "other",
+                }
+                try:
+                    count = max(0, min(500, int(post_params.get("exposure_count", ["0"])[0])))
+                except ValueError:
+                    count = 0
+                config = {}
+                for index in range(count):
+                    holding_key = post_params.get(f"exposure_key_{index}", [""])[0].strip()
+                    if not holding_key:
+                        continue
+                    config[holding_key] = {
+                        region: float(post_params.get(f"region_{index}_{slug}", ["0"])[0])
+                        for region, slug in region_fields.items()
+                    }
+                conn = get_connection(self.db_path)
+                try:
+                    save_regional_exposure_config(conn, config)
+                except (ValueError, TypeError):
+                    setting_type = "regional_error"
+                finally:
+                    conn.close()
+            elif setting_type == "investable_cash":
+
+                def bounded_number(name: str, default: float, maximum: float) -> float:
+                    try:
+                        value = float(post_params.get(name, [str(default)])[0])
+                    except (TypeError, ValueError):
+                        value = default
+                    return max(0.0, min(maximum, value))
+
+                monthly_expense_val = bounded_number("monthly_living_expense", 0, 100_000_000)
+                emergency_months_val = bounded_number("emergency_fund_months", 6, 60)
+                horizon_months_val = bounded_number("planned_expense_horizon_months", 12, 120)
+                additional_reserve_val = bounded_number("additional_cash_reserve", 0, 1_000_000_000)
+                conn = get_connection(self.db_path)
+                try:
+                    save_setting(conn, "monthly_living_expense", str(monthly_expense_val))
+                    save_setting(conn, "emergency_fund_months", str(emergency_months_val))
+                    save_setting(conn, "planned_expense_horizon_months", str(int(horizon_months_val)))
+                    save_setting(conn, "additional_cash_reserve", str(additional_reserve_val))
                 finally:
                     conn.close()
             else:

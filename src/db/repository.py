@@ -13,6 +13,8 @@ from src.parser.cashflow import CashflowMonth
 from src.parser.cf_csv import CfTransaction
 from src.parser.normalize import AssetSnapshot
 
+REGIONAL_EXPOSURE_REGIONS = ("日本", "米国", "先進国（日本・米国除く）", "新興国", "その他")
+
 
 def save_snapshot(conn: sqlite3.Connection, snapshot: AssetSnapshot, raw_path: str) -> None:
     """AssetSnapshotをDBに保存する。同日データがあれば差し替える。"""
@@ -124,6 +126,41 @@ def get_latest_stock_codes(conn: sqlite3.Connection) -> list[str]:
     return [r[0] for r in rows]
 
 
+def get_latest_portfolio_snapshot(conn: sqlite3.Connection) -> dict | None:
+    """最新の資産クラス集計と保有銘柄を連携用に返す。
+
+    口座名・金融機関名・取得元ファイルパスは連携に不要なため含めない。
+    """
+    row = conn.execute("SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1").fetchone()
+    if row is None:
+        return None
+
+    holdings = conn.execute(
+        """
+        SELECT symbol_or_code, name, quantity, value, asset_class
+        FROM snapshot_holdings
+        WHERE date = ?
+        ORDER BY id ASC
+        """,
+        (row[0],),
+    ).fetchall()
+    return {
+        "as_of": row[0],
+        "total_asset": row[1],
+        "by_asset_class": normalize_asset_classes(json.loads(row[2])),
+        "holdings": [
+            {
+                "code": holding[0],
+                "name": holding[1],
+                "quantity": holding[2],
+                "value": holding[3],
+                "asset_class": holding[4],
+            }
+            for holding in holdings
+        ],
+    }
+
+
 def save_cashflows(conn: sqlite3.Connection, months: list[CashflowMonth], fetched_date: str) -> None:
     """月次収支データをDBに保存する。同月データがあれば差し替える。"""
     for m in months:
@@ -169,6 +206,219 @@ def save_budgets(conn: sqlite3.Connection, budgets: dict[str, int]) -> None:
     save_setting(conn, "monthly_budgets", json.dumps(budgets, ensure_ascii=False))
 
 
+def get_regional_exposure_config(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
+    """投信・年金の商品別地域配分設定を返す。"""
+    raw = get_setting(conn, "regional_exposure_config", "{}")
+    try:
+        config = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def save_regional_exposure_config(conn: sqlite3.Connection, config: dict[str, dict[str, float]]) -> None:
+    """商品別地域配分を検証して保存する。各商品の合計は100%とする。"""
+    normalized: dict[str, dict[str, float]] = {}
+    for holding_key, allocation in config.items():
+        values = {region: float(allocation.get(region, 0)) for region in REGIONAL_EXPOSURE_REGIONS}
+        if any(value < 0 or value > 100 for value in values.values()):
+            raise ValueError("地域配分は0〜100%で指定してください")
+        if abs(sum(values.values()) - 100) > 0.01:
+            raise ValueError("地域配分の合計は100%にしてください")
+        normalized[str(holding_key)] = values
+    save_setting(conn, "regional_exposure_config", json.dumps(normalized, ensure_ascii=False, sort_keys=True))
+
+
+def get_regional_exposure_holdings(conn: sqlite3.Connection) -> list[dict]:
+    """最新スナップショットの投資信託・年金商品を返す。"""
+    latest = conn.execute("SELECT MAX(date) FROM snapshots").fetchone()
+    if not latest or not latest[0]:
+        return []
+    rows = conn.execute(
+        """
+        SELECT symbol_or_code, name, value, asset_class
+        FROM snapshot_holdings
+        WHERE date = ? AND asset_class IN ('投資信託', '年金')
+        ORDER BY asset_class, id
+        """,
+        (latest[0],),
+    ).fetchall()
+    return [
+        {
+            "key": f"{row[3]}|{row[0]}|{row[1]}",
+            "code": row[0],
+            "name": row[1],
+            "value": row[2],
+            "asset_class": row[3],
+        }
+        for row in rows
+    ]
+
+
+def get_portfolio_regional_exposure(conn: sqlite3.Connection) -> dict:
+    """最新評価額と商品別設定から地域エクスポージャーを集計する。"""
+    latest = conn.execute("SELECT MAX(date) FROM snapshots").fetchone()
+    as_of = latest[0] if latest and latest[0] else None
+    config = get_regional_exposure_config(conn)
+    by_region = dict.fromkeys(REGIONAL_EXPOSURE_REGIONS, 0.0)
+    configured_value = 0.0
+    unconfigured = []
+    for holding in get_regional_exposure_holdings(conn):
+        allocation = config.get(holding["key"])
+        if allocation is None:
+            unconfigured.append({"key": holding["key"], "name": holding["name"], "value": holding["value"]})
+            continue
+        configured_value += holding["value"]
+        for region in REGIONAL_EXPOSURE_REGIONS:
+            by_region[region] += holding["value"] * float(allocation.get(region, 0)) / 100
+    return {
+        "as_of": as_of,
+        "by_region": by_region,
+        "configured_value": configured_value,
+        "unconfigured_value": sum(item["value"] for item in unconfigured),
+        "unconfigured": unconfigured,
+    }
+
+
+def calculate_investable_cash(
+    conn: sqlite3.Connection,
+    as_of: date_cls | None = None,
+    snapshot_date: str | None = None,
+) -> dict:
+    """生活防衛資金と予定支出を控除した投資可能額を返す。"""
+    as_of = as_of or date_cls.today()
+    if snapshot_date is None:
+        latest = conn.execute("SELECT MAX(date) FROM snapshots").fetchone()
+        snapshot_date = latest[0] if latest and latest[0] else None
+
+    cash_balance = 0.0
+    if snapshot_date:
+        row = conn.execute("SELECT by_class_json FROM snapshots WHERE date = ?", (snapshot_date,)).fetchone()
+        if row:
+            by_class = normalize_asset_classes(json.loads(row[0]))
+            cash_balance = max(0.0, float(by_class.get("預金・現金", 0)))
+
+    def non_negative_setting(key: str, default: float) -> float:
+        try:
+            return max(0.0, float(get_setting(conn, key, str(default)) or default))
+        except (TypeError, ValueError):
+            return default
+
+    monthly_living_expense = non_negative_setting("monthly_living_expense", 0)
+    expense_source = "setting"
+    if monthly_living_expense <= 0:
+        rows = conn.execute("SELECT expense FROM monthly_cashflows ORDER BY year_month DESC LIMIT 6").fetchall()
+        monthly_living_expense = sum(max(0.0, float(row[0])) for row in rows) / len(rows) if rows else 0.0
+        expense_source = "history" if rows else "unavailable"
+
+    emergency_months = non_negative_setting("emergency_fund_months", 6)
+    horizon_months = int(min(120, non_negative_setting("planned_expense_horizon_months", 12)))
+    additional_reserve = non_negative_setting("additional_cash_reserve", 0)
+    emergency_fund = monthly_living_expense * emergency_months
+
+    horizon_end = as_of + timedelta(days=horizon_months * 30)
+    planned_by_year = get_annual_life_event_expenses(
+        conn,
+        start_year=as_of.year,
+        end_year=horizon_end.year,
+        include_children=True,
+    )
+    planned_expenses = sum(planned_by_year.values())
+    required_cash = emergency_fund + planned_expenses + additional_reserve
+    raw_investable = cash_balance - required_cash
+    return {
+        "as_of": as_of.isoformat(),
+        "snapshot_date": snapshot_date,
+        "cash_balance": cash_balance,
+        "monthly_living_expense": monthly_living_expense,
+        "monthly_living_expense_source": expense_source,
+        "emergency_fund_months": emergency_months,
+        "emergency_fund": emergency_fund,
+        "planned_expense_horizon_months": horizon_months,
+        "planned_expenses": planned_expenses,
+        "planned_expenses_by_year": planned_by_year,
+        "additional_reserve": additional_reserve,
+        "required_cash": required_cash,
+        "investable_cash": max(0.0, raw_investable),
+        "shortfall": max(0.0, -raw_investable),
+        "formula": "cash - emergency_fund - planned_expenses - additional_reserve",
+    }
+
+
+def get_allocation_context(conn: sqlite3.Connection, as_of: date_cls | None = None) -> dict:
+    """最新ポートフォリオを配分比較用の4区分へ集約する。"""
+    latest = conn.execute(
+        "SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    if not latest:
+        return {}
+    snapshot_date, total_asset, by_class_json = latest
+    by_class = normalize_asset_classes(json.loads(by_class_json))
+    stock_total = float(by_class.get("株式（現物）", 0))
+    rows = conn.execute(
+        """
+        SELECT symbol_or_code, value
+        FROM snapshot_holdings
+        WHERE date = ? AND asset_class IN ('株式（現物）', '株式(現物)')
+        """,
+        (snapshot_date,),
+    ).fetchall()
+    us_stock = sum(float(row[1]) for row in rows if row[0] and str(row[0]).isalpha() and 1 <= len(str(row[0])) <= 5)
+    classified_stock = sum(float(row[1]) for row in rows)
+    jp_stock = max(0.0, stock_total - us_stock)
+    if classified_stock < stock_total:
+        jp_stock = max(jp_stock, stock_total - us_stock)
+
+    current_values = {
+        "cash": float(by_class.get("預金・現金", 0)),
+        "fund": float(by_class.get("投資信託", 0)),
+        "jp_stock": jp_stock,
+        "us_stock": us_stock,
+    }
+    current_values["other"] = max(0.0, float(total_asset) - sum(current_values.values()))
+    investable = calculate_investable_cash(
+        conn,
+        as_of=as_of or date_cls.fromisoformat(snapshot_date),
+        snapshot_date=snapshot_date,
+    )
+    return {
+        "as_of": snapshot_date,
+        "total_asset": float(total_asset),
+        "current_values": current_values,
+        "investable_cash": float(investable["investable_cash"]),
+        "investable_detail": investable,
+    }
+
+
+def calculate_allocation_scenario(context: dict, allocation: dict[str, float], name: str = "カスタム") -> dict:
+    """投資可能額を指定比率で振り分けた購入後ポートフォリオを返す。"""
+    normalized = {key: float(allocation.get(key, 0)) for key in ALLOCATION_LABELS}
+    if any(value < 0 or value > 100 for value in normalized.values()):
+        raise ValueError("配分は0〜100%で指定してください")
+    if abs(sum(normalized.values()) - 100) > 0.01:
+        raise ValueError("配分の合計は100%にしてください")
+
+    investable = float(context.get("investable_cash", 0))
+    amounts = {key: investable * value / 100 for key, value in normalized.items()}
+    current = dict(context.get("current_values", {}))
+    post_values = {
+        "cash": float(current.get("cash", 0)) - amounts["fund"] - amounts["jp_stock"] - amounts["us_stock"],
+        "fund": float(current.get("fund", 0)) + amounts["fund"],
+        "jp_stock": float(current.get("jp_stock", 0)) + amounts["jp_stock"],
+        "us_stock": float(current.get("us_stock", 0)) + amounts["us_stock"],
+        "other": float(current.get("other", 0)),
+    }
+    total = float(context.get("total_asset", sum(post_values.values())))
+    post_ratios = {key: (value / total * 100 if total else 0) for key, value in post_values.items()}
+    return {
+        "name": name,
+        "allocation": normalized,
+        "allocation_amounts": amounts,
+        "post_values": post_values,
+        "post_ratios": post_ratios,
+    }
+
+
 # --- ライフイベント（ライフプラン） ---
 
 EDUCATION_STAGE_RULES = [
@@ -196,6 +446,19 @@ DEFAULT_EDUCATION_PLAN = {
     "high_school": "public",
     "university": "public",
 }
+
+ALLOCATION_LABELS = {
+    "cash": "現金",
+    "fund": "投資信託",
+    "jp_stock": "日本株",
+    "us_stock": "米国株",
+}
+
+ALLOCATION_PRESETS = [
+    {"name": "守り重視", "allocation": {"cash": 30, "fund": 50, "jp_stock": 15, "us_stock": 5}},
+    {"name": "バランス", "allocation": {"cash": 10, "fund": 50, "jp_stock": 25, "us_stock": 15}},
+    {"name": "成長重視", "allocation": {"cash": 5, "fund": 35, "jp_stock": 30, "us_stock": 30}},
+]
 
 
 def get_life_plan_inflation_rate(conn: sqlite3.Connection, default: float = 0.01) -> float:
