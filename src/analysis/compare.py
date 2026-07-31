@@ -12,6 +12,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from src.asset_classes import normalize_asset_classes
+
 
 @dataclass
 class ComparisonResult:
@@ -48,7 +50,7 @@ def _get_snapshot_full(conn: sqlite3.Connection, target_date: str) -> dict | Non
 
     return {
         "total_asset": row[0],
-        "by_class": json.loads(row[1]),
+        "by_class": normalize_asset_classes(json.loads(row[1])),
         "accounts": accounts,
         "holdings": holdings,
     }

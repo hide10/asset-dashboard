@@ -18,7 +18,7 @@ def test_build_lifeplan_prompt_uses_explicit_prediction_args(monkeypatch, tmp_pa
         (
             "2026-02-14",
             10_000_000,
-            json.dumps({"株式（現物）": 4_000_000, "投資信託": 2_000_000, "預金・現金・暗号資産": 4_000_000}),
+            json.dumps({"株式（現物）": 4_000_000, "投資信託": 2_000_000, "預金・現金": 4_000_000}),
             "dummy.json",
         ),
     )

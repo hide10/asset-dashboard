@@ -15,6 +15,8 @@ import re
 import sqlite3
 from dataclasses import dataclass
 
+from src.asset_classes import CASH_ASSET_CLASS
+
 TRADING_DAYS_PER_YEAR = 252
 
 # リスク資産とみなす資産クラス（基本）
@@ -26,7 +28,7 @@ CLASS_PARAMS: dict[str, tuple[float, float]] = {
     "投資信託": (0.07, 0.15),  # インデックス投信主体
     "年金（株式型）": (0.07, 0.15),  # iDeCo インデックス中心
     "不動産": (0.01, 0.05),
-    "預金・現金・暗号資産": (0.0, 0.0),
+    CASH_ASSET_CLASS: (0.0, 0.0),
     "年金（保険型）": (0.01, 0.02),  # 個人年金保険等
     "債券": (0.01, 0.03),
 }

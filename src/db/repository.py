@@ -8,6 +8,7 @@ import sqlite3
 from datetime import date as date_cls
 from datetime import timedelta
 
+from src.asset_classes import normalize_asset_classes
 from src.parser.cashflow import CashflowMonth
 from src.parser.cf_csv import CfTransaction
 from src.parser.normalize import AssetSnapshot
@@ -17,7 +18,12 @@ def save_snapshot(conn: sqlite3.Connection, snapshot: AssetSnapshot, raw_path: s
     """AssetSnapshotをDBに保存する。同日データがあれば差し替える。"""
     conn.execute(
         "INSERT OR REPLACE INTO snapshots (date, total_asset, by_class_json, raw_path) VALUES (?, ?, ?, ?)",
-        (snapshot.date, snapshot.total_asset, json.dumps(snapshot.by_class, ensure_ascii=False), raw_path),
+        (
+            snapshot.date,
+            snapshot.total_asset,
+            json.dumps(normalize_asset_classes(snapshot.by_class), ensure_ascii=False),
+            raw_path,
+        ),
     )
     # 同日の既存データを削除してから再挿入
     conn.execute("DELETE FROM snapshot_accounts WHERE date = ?", (snapshot.date,))
@@ -99,6 +105,23 @@ def get_daily_assets(conn: sqlite3.Connection, months: int = 6) -> list[dict]:
         (cutoff,),
     ).fetchall()
     return [{"date": r[0], "total": r[1], "by_class": json.loads(r[2])} for r in rows]
+
+
+def get_latest_stock_codes(conn: sqlite3.Connection) -> list[str]:
+    """最新スナップショットで保有している株式コードを返す。"""
+    row = conn.execute("SELECT MAX(date) FROM snapshots").fetchone()
+    if not row or not row[0]:
+        return []
+    rows = conn.execute(
+        """
+        SELECT DISTINCT symbol_or_code
+        FROM snapshot_holdings
+        WHERE date = ? AND asset_class = '株式（現物）' AND symbol_or_code <> ''
+        ORDER BY symbol_or_code
+        """,
+        (row[0],),
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 def save_cashflows(conn: sqlite3.Connection, months: list[CashflowMonth], fetched_date: str) -> None:

@@ -4,7 +4,8 @@
 取得できない銘柄は None を返し、UI 側で「取得エラー」表示する。
 （ハードコードフォールバックは古くなる/誤情報になりやすいため廃止）
 
-業種は data/sectors.json（自動取得）→ STOCK_MASTER の順でフォールバックする。
+日本株の業種は東証33業種の正式名称に限定し、
+data/sectors.json（自動取得）→ STOCK_MASTER の順でフォールバックする。
 """
 
 from __future__ import annotations
@@ -19,12 +20,51 @@ _SECTORS_JSON = Path(__file__).resolve().parent.parent.parent / "data" / "sector
 _dividend_cache: dict | None = None
 _sector_cache: dict | None = None
 
+JPX_33_SECTORS = {
+    "水産・農林業",
+    "鉱業",
+    "建設業",
+    "食料品",
+    "繊維製品",
+    "パルプ・紙",
+    "化学",
+    "医薬品",
+    "石油・石炭製品",
+    "ゴム製品",
+    "ガラス・土石製品",
+    "鉄鋼",
+    "非鉄金属",
+    "金属製品",
+    "機械",
+    "電気機器",
+    "輸送用機器",
+    "精密機器",
+    "その他製品",
+    "電気・ガス業",
+    "陸運業",
+    "海運業",
+    "空運業",
+    "倉庫・運輸関連業",
+    "情報・通信業",
+    "卸売業",
+    "小売業",
+    "銀行業",
+    "証券、商品先物取引業",
+    "保険業",
+    "その他金融業",
+    "不動産業",
+    "サービス業",
+}
+UNCLASSIFIED_SECTOR = "未分類（取得失敗）"
+
 # 業種分類のみ保持。配当はハードコードせず dividends.json（自動取得）のみを参照。
 STOCK_MASTER: dict[str, dict] = {
     "8053": {"name": "住友商事", "sector": "卸売業"},
     "8766": {"name": "東京海上HD", "sector": "保険業"},
     "4502": {"name": "武田薬品", "sector": "医薬品"},
     "8591": {"name": "オリックス", "sector": "その他金融業"},
+    "8593": {"name": "三菱HCキャピタル", "sector": "その他金融業"},
+    "8316": {"name": "三井住友フィナンシャルG", "sector": "銀行業"},
     "9433": {"name": "KDDI", "sector": "情報・通信業"},
     "6918": {"name": "アバールデータ", "sector": "電気機器"},
     "1928": {"name": "積水ハウス", "sector": "建設業"},
@@ -116,47 +156,53 @@ def _save_sectors(data: dict) -> None:
 def get_sector(code: str) -> str:
     """銘柄コードから業種を返す。
 
-    日本株: sectors.json → Yahoo Finance（自動取得＋キャッシュ） → STOCK_MASTER → 'その他'
+    日本株: sectors.json → STOCK_MASTER → '未分類（取得失敗）'
     米国株: sectors.json → US_STOCK_MASTER → '米国株'
+
+    表示処理中に外部通信は行わない。キャッシュ更新は update_sectors() が担う。
     """
     # 1. sectors.json キャッシュ
     sectors = _load_sectors()
-    if code in sectors:
-        return sectors[code]
 
-    # 2. 米国株の場合
+    # 米国株は東証33業種の検証対象外。既存の米国セクター分類を維持する。
     if is_us_stock(code):
+        cached_sector = sectors.get(code)
+        if isinstance(cached_sector, str) and cached_sector:
+            return cached_sector
         us_info = US_STOCK_MASTER.get(code)
         return us_info["sector"] if us_info else "米国株"
 
-    # 3. STOCK_MASTER ハードコード（日本株）
+    cached_sector = sectors.get(code)
+    if cached_sector in JPX_33_SECTORS or cached_sector == "ETF":
+        return cached_sector
+
+    # 2. STOCK_MASTER ハードコード（日本株）
     info = STOCK_MASTER.get(code)
     if info:
         return info["sector"]
 
-    # 4. Yahoo Finance から自動取得してキャッシュ（日本株のみ）
-    sector = _fetch_sector(code)
-    if sector:
-        sectors[code] = sector
-        _save_sectors(sectors)
-        return sector
-
-    return "その他"
+    return UNCLASSIFIED_SECTOR
 
 
 def update_sectors(codes: list[str]) -> dict:
-    """指定銘柄の業種を Yahoo Finance から取得し sectors.json に保存する。"""
+    """指定銘柄の東証33業種を取得し、検証後にキャッシュする。
+
+    取得失敗や正式分類外の値では、既存キャッシュを上書きしない。
+    """
     import time
 
     sectors = _load_sectors()
     for i, code in enumerate(codes):
-        # STOCK_MASTER に既にある銘柄はスキップ
-        if code in sectors or code in STOCK_MASTER:
+        if is_us_stock(code) or STOCK_MASTER.get(code, {}).get("sector") == "ETF":
             continue
         sector = _fetch_sector(code)
-        if sector:
+        if sector in JPX_33_SECTORS:
             sectors[code] = sector
             print(f"  [sector] {code}: {sector}")
+        elif sector:
+            print(f"  [sector] {code}: 正式分類外のため不採用 ({sector})")
+        else:
+            print(f"  [sector] {code}: 取得不可（既存分類を維持）")
         if i < len(codes) - 1:
             time.sleep(0.5)
 

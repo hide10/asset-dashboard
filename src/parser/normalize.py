@@ -11,6 +11,8 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
 
+from src.asset_classes import CASH_ASSET_CLASS, normalize_asset_classes
+
 
 @dataclass
 class AccountData:
@@ -84,7 +86,7 @@ def _extract_date_from_dirname(raw_dir: Path) -> str:
 
 # --- 資産クラス別テーブル ID → 表示名 マッピング ---
 SECTION_MAP = {
-    "portfolio_det_depo": "預金・現金・暗号資産",
+    "portfolio_det_depo": CASH_ASSET_CLASS,
     "portfolio_det_eq": "株式（現物）",
     "portfolio_det_mf": "投資信託",
     "portfolio_det_re": "不動産",
@@ -125,7 +127,7 @@ def _parse_by_class(soup: BeautifulSoup) -> dict[str, float]:
 
 
 def _parse_depo_section(section: Tag) -> list[AccountData]:
-    """預金・現金・暗号資産セクションをパースする。"""
+    """預金・現金セクションをパースする。"""
     accounts: list[AccountData] = []
     table = section.find("table", class_="table-depo")
     if not table:
@@ -140,7 +142,7 @@ def _parse_depo_section(section: Tag) -> list[AccountData]:
             accounts.append(
                 AccountData(
                     account_name=name,
-                    asset_class="預金・現金・暗号資産",
+                    asset_class=CASH_ASSET_CLASS,
                     balance=balance,
                     institution=institution,
                 )
@@ -291,7 +293,7 @@ def parse_raw(raw_dir: Path) -> AssetSnapshot:
     accounts: list[AccountData] = []
     holdings: list[HoldingData] = []
 
-    # 預金・現金・暗号資産
+    # 預金・現金
     depo = soup.find("section", id="portfolio_det_depo")
     if depo:
         accounts.extend(_parse_depo_section(depo))
@@ -320,6 +322,7 @@ def parse_raw(raw_dir: Path) -> AssetSnapshot:
 
     # by_classからもポイント・マイルを除外し、総資産を再計算
     by_class.pop("ポイント・マイル", None)
+    by_class = normalize_asset_classes(by_class)
     total_asset = sum(by_class.values())
 
     # 資産クラス内の行位置を付与（同名銘柄の区別用）

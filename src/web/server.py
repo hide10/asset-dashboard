@@ -47,6 +47,7 @@ from src.db.repository import (
     get_daily_assets,
     get_fund_total_history,
     get_holding_history,
+    get_latest_stock_codes,
     get_life_plan_inflation_rate,
     get_setting,
     list_children_profiles,
@@ -697,7 +698,7 @@ def _build_html(
     class_details: dict[str, list] = {}
     for cls in by_class:
         details = []
-        if cls == "預金・現金・暗号資産":
+        if cls == "預金・現金":
             for a in accounts:
                 if a["asset_class"] == cls:
                     lbl = (
@@ -1673,7 +1674,7 @@ def _demo_data() -> dict:
     today = date.today().isoformat()
 
     by_class = {
-        "預金・現金・暗号資産": 4_820_000,
+        "預金・現金": 4_820_000,
         "株式（現物）": 6_350_000,
         "投資信託": 5_180_000,
         "不動産": 1_200_000,
@@ -1681,22 +1682,22 @@ def _demo_data() -> dict:
     }
 
     accounts = [
-        {"name": "普通預金", "asset_class": "預金・現金・暗号資産", "balance": 2_150_000, "institution": "みずほ銀行"},
+        {"name": "普通預金", "asset_class": "預金・現金", "balance": 2_150_000, "institution": "みずほ銀行"},
         {
             "name": "普通預金",
-            "asset_class": "預金・現金・暗号資産",
+            "asset_class": "預金・現金",
             "balance": 1_380_000,
             "institution": "三井住友銀行",
         },
         {
             "name": "定期預金",
-            "asset_class": "預金・現金・暗号資産",
+            "asset_class": "預金・現金",
             "balance": 1_000_000,
             "institution": "住信SBIネット銀行",
         },
-        {"name": "円預金", "asset_class": "預金・現金・暗号資産", "balance": 245_000, "institution": "楽天銀行"},
-        {"name": "Suica", "asset_class": "預金・現金・暗号資産", "balance": 3_200, "institution": "モバイルSuica"},
-        {"name": "預り金", "asset_class": "預金・現金・暗号資産", "balance": 41_800, "institution": "SBI証券"},
+        {"name": "円預金", "asset_class": "預金・現金", "balance": 245_000, "institution": "楽天銀行"},
+        {"name": "Suica", "asset_class": "預金・現金", "balance": 3_200, "institution": "モバイルSuica"},
+        {"name": "預り金", "asset_class": "預金・現金", "balance": 41_800, "institution": "SBI証券"},
     ]
 
     holdings = [
@@ -2038,7 +2039,7 @@ def _demo_data() -> dict:
             compare_date=yesterday,
             total_diff=42_300,
             total_ratio=0.20,
-            by_class_diff={"株式（現物）": 35_800, "投資信託": 12_500, "預金・現金・暗号資産": -6_000},
+            by_class_diff={"株式（現物）": 35_800, "投資信託": 12_500, "預金・現金": -6_000},
             account_diffs=[],
             holding_diffs=daily_hdiffs,
         ),
@@ -2052,7 +2053,7 @@ def _demo_data() -> dict:
                 "株式（現物）": 180_000,
                 "投資信託": 95_000,
                 "年金": 25_000,
-                "預金・現金・暗号資産": -15_000,
+                "預金・現金": -15_000,
             },
             account_diffs=[],
             holding_diffs=monthly_hdiffs,
@@ -2067,7 +2068,7 @@ def _demo_data() -> dict:
                 "株式（現物）": 1_650_000,
                 "投資信託": 1_280_000,
                 "年金": 580_000,
-                "預金・現金・暗号資産": -90_000,
+                "預金・現金": -90_000,
             },
             account_diffs=[],
             holding_diffs=yearly_hdiffs,
@@ -7895,16 +7896,17 @@ def _next_scheduled_run(now: datetime, scheduled_time: str | None) -> datetime:
     return target + timedelta(days=1)
 
 
-def _needs_dividend_update() -> bool:
-    """dividends.json が存在しない or 当日取得でなければ True。"""
+def _needs_dividend_update(codes: list[str], path: Path | None = None) -> bool:
+    """全保有銘柄の配当が当日取得済みでなければ True。"""
     from datetime import date as _date
 
-    path = Path(__file__).resolve().parents[2] / "data" / "dividends.json"
+    if path is None:
+        path = Path(__file__).resolve().parents[2] / "data" / "dividends.json"
     if not path.exists():
         return True
     data = json.loads(path.read_text(encoding="utf-8"))
     today = _date.today().isoformat()
-    return not any(v.get("fetched") == today for v in data.values())
+    return bool(codes) and not all(data.get(code, {}).get("fetched") == today for code in codes)
 
 
 def _generate_ai_comments(db_path: str) -> None:
@@ -7943,13 +7945,14 @@ def _run_update_locked(db_path: str) -> None:
         conn = init_db(db_path)
         try:
             save_setting(conn, "session_expired", "")
+            stock_codes = get_latest_stock_codes(conn)
         finally:
             conn.close()
 
-        if _needs_dividend_update():
+        if _needs_dividend_update(stock_codes):
             from src.data.dividend_fetcher import update_all_dividends
 
-            update_all_dividends()
+            update_all_dividends(stock_codes)
 
         _generate_ai_comments(db_path)
 

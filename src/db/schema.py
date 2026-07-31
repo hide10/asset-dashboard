@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+
+from src.asset_classes import CASH_ASSET_CLASS, LEGACY_CASH_ASSET_CLASS, normalize_asset_classes
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "assets.db"
 
@@ -113,6 +116,31 @@ CREATE TABLE IF NOT EXISTS life_plan_settings (
 """
 
 
+def _migrate_asset_class_names(conn: sqlite3.Connection) -> None:
+    """廃止済みの資産クラス名を履歴データを含めて統一する。"""
+    snapshots = conn.execute("SELECT date, by_class_json FROM snapshots").fetchall()
+    for snapshot_date, raw_by_class in snapshots:
+        try:
+            by_class = json.loads(raw_by_class)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        normalized = normalize_asset_classes(by_class)
+        if normalized != by_class:
+            conn.execute(
+                "UPDATE snapshots SET by_class_json = ? WHERE date = ?",
+                (json.dumps(normalized, ensure_ascii=False), snapshot_date),
+            )
+
+    conn.execute(
+        "UPDATE snapshot_accounts SET asset_class = ? WHERE asset_class = ?",
+        (CASH_ASSET_CLASS, LEGACY_CASH_ASSET_CLASS),
+    )
+    conn.execute(
+        "UPDATE snapshot_holdings SET asset_class = ? WHERE asset_class = ?",
+        (CASH_ASSET_CLASS, LEGACY_CASH_ASSET_CLASS),
+    )
+
+
 def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     """データベースを初期化し、接続を返す。"""
     if db_path is None:
@@ -138,6 +166,8 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN unrealized_gain REAL")
     if "unrealized_gain_pct" not in cols:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN unrealized_gain_pct REAL")
+
+    _migrate_asset_class_names(conn)
 
     # ライフプラン設定の初期行
     conn.execute(
