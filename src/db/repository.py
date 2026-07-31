@@ -345,6 +345,80 @@ def calculate_investable_cash(
     }
 
 
+def get_allocation_context(conn: sqlite3.Connection, as_of: date_cls | None = None) -> dict:
+    """最新ポートフォリオを配分比較用の4区分へ集約する。"""
+    latest = conn.execute(
+        "SELECT date, total_asset, by_class_json FROM snapshots ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    if not latest:
+        return {}
+    snapshot_date, total_asset, by_class_json = latest
+    by_class = normalize_asset_classes(json.loads(by_class_json))
+    stock_total = float(by_class.get("株式（現物）", 0))
+    rows = conn.execute(
+        """
+        SELECT symbol_or_code, value
+        FROM snapshot_holdings
+        WHERE date = ? AND asset_class IN ('株式（現物）', '株式(現物)')
+        """,
+        (snapshot_date,),
+    ).fetchall()
+    us_stock = sum(float(row[1]) for row in rows if row[0] and str(row[0]).isalpha() and 1 <= len(str(row[0])) <= 5)
+    classified_stock = sum(float(row[1]) for row in rows)
+    jp_stock = max(0.0, stock_total - us_stock)
+    if classified_stock < stock_total:
+        jp_stock = max(jp_stock, stock_total - us_stock)
+
+    current_values = {
+        "cash": float(by_class.get("預金・現金", 0)),
+        "fund": float(by_class.get("投資信託", 0)),
+        "jp_stock": jp_stock,
+        "us_stock": us_stock,
+    }
+    current_values["other"] = max(0.0, float(total_asset) - sum(current_values.values()))
+    investable = calculate_investable_cash(
+        conn,
+        as_of=as_of or date_cls.fromisoformat(snapshot_date),
+        snapshot_date=snapshot_date,
+    )
+    return {
+        "as_of": snapshot_date,
+        "total_asset": float(total_asset),
+        "current_values": current_values,
+        "investable_cash": float(investable["investable_cash"]),
+        "investable_detail": investable,
+    }
+
+
+def calculate_allocation_scenario(context: dict, allocation: dict[str, float], name: str = "カスタム") -> dict:
+    """投資可能額を指定比率で振り分けた購入後ポートフォリオを返す。"""
+    normalized = {key: float(allocation.get(key, 0)) for key in ALLOCATION_LABELS}
+    if any(value < 0 or value > 100 for value in normalized.values()):
+        raise ValueError("配分は0〜100%で指定してください")
+    if abs(sum(normalized.values()) - 100) > 0.01:
+        raise ValueError("配分の合計は100%にしてください")
+
+    investable = float(context.get("investable_cash", 0))
+    amounts = {key: investable * value / 100 for key, value in normalized.items()}
+    current = dict(context.get("current_values", {}))
+    post_values = {
+        "cash": float(current.get("cash", 0)) - amounts["fund"] - amounts["jp_stock"] - amounts["us_stock"],
+        "fund": float(current.get("fund", 0)) + amounts["fund"],
+        "jp_stock": float(current.get("jp_stock", 0)) + amounts["jp_stock"],
+        "us_stock": float(current.get("us_stock", 0)) + amounts["us_stock"],
+        "other": float(current.get("other", 0)),
+    }
+    total = float(context.get("total_asset", sum(post_values.values())))
+    post_ratios = {key: (value / total * 100 if total else 0) for key, value in post_values.items()}
+    return {
+        "name": name,
+        "allocation": normalized,
+        "allocation_amounts": amounts,
+        "post_values": post_values,
+        "post_ratios": post_ratios,
+    }
+
+
 # --- ライフイベント（ライフプラン） ---
 
 EDUCATION_STAGE_RULES = [
@@ -372,6 +446,19 @@ DEFAULT_EDUCATION_PLAN = {
     "high_school": "public",
     "university": "public",
 }
+
+ALLOCATION_LABELS = {
+    "cash": "現金",
+    "fund": "投資信託",
+    "jp_stock": "日本株",
+    "us_stock": "米国株",
+}
+
+ALLOCATION_PRESETS = [
+    {"name": "守り重視", "allocation": {"cash": 30, "fund": 50, "jp_stock": 15, "us_stock": 5}},
+    {"name": "バランス", "allocation": {"cash": 10, "fund": 50, "jp_stock": 25, "us_stock": 15}},
+    {"name": "成長重視", "allocation": {"cash": 5, "fund": 35, "jp_stock": 30, "us_stock": 30}},
+]
 
 
 def get_life_plan_inflation_rate(conn: sqlite3.Connection, default: float = 0.01) -> float:
