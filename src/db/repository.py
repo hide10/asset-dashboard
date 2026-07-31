@@ -12,6 +12,7 @@ from src.asset_classes import normalize_asset_classes
 from src.parser.cashflow import CashflowMonth
 from src.parser.cf_csv import CfTransaction
 from src.parser.normalize import AssetSnapshot
+from src.regional_exposure import is_regional_exposure_applicable
 
 REGIONAL_EXPOSURE_REGIONS = ("日本", "米国", "先進国（日本・米国除く）", "新興国", "その他")
 
@@ -252,6 +253,7 @@ def get_regional_exposure_holdings(conn: sqlite3.Connection) -> list[dict]:
             "asset_class": row[3],
         }
         for row in rows
+        if is_regional_exposure_applicable(row[1])
     ]
 
 
@@ -376,6 +378,14 @@ def get_allocation_context(conn: sqlite3.Connection, as_of: date_cls | None = No
         "us_stock": us_stock,
     }
     current_values["other"] = max(0.0, float(total_asset) - sum(current_values.values()))
+    frame_current_values = {
+        "cash": current_values["cash"],
+        "fund": current_values["fund"],
+        "jp_stock": current_values["jp_stock"],
+        "us_stock": current_values["us_stock"],
+        "pension": float(by_class.get("年金", 0)),
+    }
+    frame_current_values["other"] = max(0.0, float(total_asset) - sum(frame_current_values.values()))
     investable = calculate_investable_cash(
         conn,
         as_of=as_of or date_cls.fromisoformat(snapshot_date),
@@ -385,8 +395,44 @@ def get_allocation_context(conn: sqlite3.Connection, as_of: date_cls | None = No
         "as_of": snapshot_date,
         "total_asset": float(total_asset),
         "current_values": current_values,
+        "frame_current_values": frame_current_values,
         "investable_cash": float(investable["investable_cash"]),
         "investable_detail": investable,
+    }
+
+
+def calculate_frame_drift(context: dict, target: dict[str, float]) -> dict:
+    """現在比率と目標枠の差分（現在 - 目標）を返す。"""
+    total = float(context.get("total_asset", 0))
+    current_values = context.get("frame_current_values") or context.get("current_values") or {}
+    current_ratios = {
+        key: (float(current_values.get(key, 0)) / total * 100 if total else 0.0) for key in FRAME_ALLOCATION_LABELS
+    }
+    target_ratios = {key: float(target.get(key, 0)) for key in FRAME_ALLOCATION_LABELS}
+    rows = []
+    for key, label in FRAME_ALLOCATION_LABELS.items():
+        delta = current_ratios[key] - target_ratios[key]
+        if delta > 2:
+            status = "over"
+        elif delta < -2:
+            status = "under"
+        else:
+            status = "on_track"
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "current": current_ratios[key],
+                "target": target_ratios[key],
+                "delta": delta,
+                "status": status,
+            }
+        )
+    return {
+        "as_of": context.get("as_of"),
+        "rows": rows,
+        "over_count": sum(row["status"] == "over" for row in rows),
+        "under_count": sum(row["status"] == "under" for row in rows),
     }
 
 
@@ -454,11 +500,61 @@ ALLOCATION_LABELS = {
     "us_stock": "米国株",
 }
 
+# 資産全体の「枠」を確認するための区分。米国株は直接保有分だけで、
+# 米国投信は「投資信託」に含まれる（地域配分は別の見方）。
+FRAME_ALLOCATION_LABELS = {
+    "cash": "現金",
+    "fund": "投資信託",
+    "jp_stock": "日本株（現物）",
+    "us_stock": "米国株（現物）",
+    "pension": "年金",
+    "other": "その他資産",
+}
+
+DEFAULT_FRAME_ALLOCATION = {
+    "cash": 20,
+    "fund": 20,
+    "jp_stock": 25,
+    "us_stock": 0,
+    "pension": 30,
+    "other": 5,
+}
+
 ALLOCATION_PRESETS = [
     {"name": "守り重視", "allocation": {"cash": 30, "fund": 50, "jp_stock": 15, "us_stock": 5}},
     {"name": "バランス", "allocation": {"cash": 10, "fund": 50, "jp_stock": 25, "us_stock": 15}},
     {"name": "成長重視", "allocation": {"cash": 5, "fund": 35, "jp_stock": 30, "us_stock": 30}},
 ]
+
+
+def get_frame_allocation_target(conn: sqlite3.Connection) -> dict[str, float]:
+    """資産全体の目標枠を返す。未設定時は編集可能な初期案を返す。"""
+    raw = get_setting(conn, "frame_allocation_target", "") or ""
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if not isinstance(parsed, dict):
+        return {key: float(value) for key, value in DEFAULT_FRAME_ALLOCATION.items()}
+    values = {key: float(parsed.get(key, 0)) for key in FRAME_ALLOCATION_LABELS}
+    if any(value < 0 or value > 100 for value in values.values()) or abs(sum(values.values()) - 100) > 0.01:
+        return {key: float(value) for key, value in DEFAULT_FRAME_ALLOCATION.items()}
+    return values
+
+
+def has_frame_allocation_target(conn: sqlite3.Connection) -> bool:
+    """目標枠がユーザー保存済みかを返す。"""
+    return bool(get_setting(conn, "frame_allocation_target", ""))
+
+
+def save_frame_allocation_target(conn: sqlite3.Connection, target: dict[str, float]) -> None:
+    """資産全体の目標枠を検証して保存する。合計は100%とする。"""
+    values = {key: float(target.get(key, 0)) for key in FRAME_ALLOCATION_LABELS}
+    if any(value < 0 or value > 100 for value in values.values()):
+        raise ValueError("目標枠は0〜100%で指定してください")
+    if abs(sum(values.values()) - 100) > 0.01:
+        raise ValueError("目標枠の合計は100%にしてください")
+    save_setting(conn, "frame_allocation_target", json.dumps(values, ensure_ascii=False, sort_keys=True))
 
 
 def get_life_plan_inflation_rate(conn: sqlite3.Connection, default: float = 0.01) -> float:

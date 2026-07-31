@@ -9,7 +9,10 @@ import pytest
 from src.db.repository import (
     ALLOCATION_PRESETS,
     calculate_allocation_scenario,
+    calculate_frame_drift,
     get_allocation_context,
+    get_frame_allocation_target,
+    save_frame_allocation_target,
     save_life_plan_inflation_rate,
     save_setting,
 )
@@ -104,6 +107,47 @@ def test_allocation_page_shows_presets_custom_form_and_post_values(tmp_path):
     assert "購入後の構成" in html
     assert "2,500,000円" in html
     assert 'class="active">資産配分' in html
+
+
+def test_frame_allocation_drift_compares_current_ratios_to_target(tmp_path):
+    db_path = _build_test_db(tmp_path)
+    conn = init_db(db_path)
+    context = get_allocation_context(conn, as_of=date(2026, 7, 31))
+    target = {"cash": 20, "fund": 20, "jp_stock": 25, "us_stock": 0, "pension": 30, "other": 5}
+    save_frame_allocation_target(conn, target)
+
+    assert get_frame_allocation_target(conn) == {key: float(value) for key, value in target.items()}
+    drift = calculate_frame_drift(context, target)
+    conn.close()
+
+    rows = {row["key"]: row for row in drift["rows"]}
+    assert rows["cash"]["current"] == 40
+    assert rows["cash"]["delta"] == 20
+    assert rows["cash"]["status"] == "over"
+    assert rows["jp_stock"]["status"] == "under"
+    assert drift["over_count"] == 3
+    assert drift["under_count"] == 3
+
+
+def test_frame_allocation_target_rejects_invalid_total(tmp_path):
+    db_path = _build_test_db(tmp_path)
+    conn = init_db(db_path)
+
+    with pytest.raises(ValueError, match="100"):
+        save_frame_allocation_target(conn, {"cash": 90})
+    conn.close()
+
+
+def test_allocation_page_shows_frame_drift_and_editable_target(tmp_path):
+    data = _get_allocation_data(_build_test_db(tmp_path))
+
+    html = _build_allocation_html(data)
+
+    assert 'data-testid="allocation-frame"' in html
+    assert "資産の枠と現在のずれ" in html
+    assert "目標枠を変更" in html
+    assert 'data-testid="frame-row-jp_stock"' in html
+    assert 'name="frame_target_jp_stock"' in html
 
 
 def test_allocation_ai_prompt_contains_scenarios_and_decision_request(tmp_path):
