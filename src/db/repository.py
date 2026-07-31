@@ -12,6 +12,7 @@ from src.asset_classes import normalize_asset_classes
 from src.parser.cashflow import CashflowMonth
 from src.parser.cf_csv import CfTransaction
 from src.parser.normalize import AssetSnapshot
+from src.regional_exposure import is_regional_exposure_applicable
 
 REGIONAL_EXPOSURE_REGIONS = ("日本", "米国", "先進国（日本・米国除く）", "新興国", "その他")
 
@@ -252,6 +253,7 @@ def get_regional_exposure_holdings(conn: sqlite3.Connection) -> list[dict]:
             "asset_class": row[3],
         }
         for row in rows
+        if is_regional_exposure_applicable(row[1])
     ]
 
 

@@ -10,6 +10,20 @@ import re
 from dataclasses import dataclass
 
 REGIONS = ("日本", "米国", "先進国（日本・米国除く）", "新興国", "その他")
+MARKET_PRODUCT_WORDS = (
+    "株",
+    "債券",
+    "ファンド",
+    "投信",
+    "インデックス",
+    "index",
+    "reit",
+    "全世界",
+    "米国",
+    "国内",
+    "海外",
+    "外国",
+)
 
 
 @dataclass(frozen=True)
@@ -59,3 +73,11 @@ def suggest_regional_exposure(name: str, code: str = "") -> RegionalExposureSugg
             "estimate",
         )
     return None
+
+
+def is_regional_exposure_applicable(name: str) -> bool:
+    """市場運用ではない円建て積立・保険商品を地域配分から除外する。"""
+    text = re.sub(r"[\s　・_\-]+", "", name).lower()
+    if "保険" in text:
+        return False
+    return "積立" not in text or any(word in text for word in MARKET_PRODUCT_WORDS)

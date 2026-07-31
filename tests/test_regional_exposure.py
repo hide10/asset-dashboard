@@ -11,7 +11,7 @@ from src.db.repository import (
     save_regional_exposure_config,
 )
 from src.db.schema import init_db
-from src.regional_exposure import suggest_regional_exposure
+from src.regional_exposure import is_regional_exposure_applicable, suggest_regional_exposure
 from src.web.server import _build_settings_html
 
 
@@ -127,6 +127,15 @@ def test_regional_exposure_suggestion_uses_explicit_product_words(name, region, 
 
 def test_regional_exposure_suggestion_leaves_ambiguous_product_unconfigured():
     assert suggest_regional_exposure("架空 バランスファンド") is None
+
+
+@pytest.mark.parametrize("name", ["架空積立保険", "架空じぶん積立"])
+def test_non_market_savings_products_are_not_regional_exposure_targets(name):
+    assert not is_regional_exposure_applicable(name)
+
+
+def test_market_products_with_tsumitate_in_name_remain_targets():
+    assert is_regional_exposure_applicable("架空積立外国株式インデックス")
 
 
 def test_settings_page_prefills_suggestions_and_marks_ambiguous_products(tmp_path):
