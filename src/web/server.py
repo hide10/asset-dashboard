@@ -52,6 +52,8 @@ from src.db.repository import (
     get_latest_portfolio_snapshot,
     get_latest_stock_codes,
     get_life_plan_inflation_rate,
+    get_regional_exposure_config,
+    get_regional_exposure_holdings,
     get_setting,
     list_children_profiles,
     list_life_events,
@@ -59,6 +61,7 @@ from src.db.repository import (
     save_cf_csv_month,
     save_cf_transactions,
     save_life_plan_inflation_rate,
+    save_regional_exposure_config,
     save_setting,
     update_child_profile,
     update_life_event,
@@ -4880,6 +4883,8 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME) or _SCHEDULER_DEFAULT_TIME
         scheduler_last_run = get_setting(conn, "scheduler_last_run_at")
         scheduler_last_result = get_setting(conn, "scheduler_last_result")
+        regional_holdings = get_regional_exposure_holdings(conn)
+        regional_config = get_regional_exposure_config(conn)
     finally:
         conn.close()
 
@@ -4910,7 +4915,11 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         display_key = ""
 
     # 保存メッセージは setting_type ごとに分岐（"1" は旧URL互換で gemini 扱い）
-    if saved in ("gemini", "1"):
+    if saved == "regional_error":
+        saved_msg = (
+            '<div class="saved-msg" style="background:#DF3727">地域配分の合計を商品ごとに100%にしてください。</div>'
+        )
+    elif saved in ("gemini", "1"):
         saved_msg = (
             '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です'
             " — 数十秒後にダッシュボードを開くと表示されます。</div>"
@@ -4919,6 +4928,31 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         saved_msg = '<div class="saved-msg">設定を保存しました。</div>'
     else:
         saved_msg = ""
+
+    region_fields = [
+        ("日本", "japan"),
+        ("米国", "us"),
+        ("先進国（日本・米国除く）", "developed"),
+        ("新興国", "emerging"),
+        ("その他", "other"),
+    ]
+    regional_rows = ""
+    for index, holding in enumerate(regional_holdings):
+        allocation = regional_config.get(holding["key"], {})
+        inputs = "".join(
+            f'<label style="font-size:0.75rem;display:block">{_h(label)}<input type="number" min="0" max="100" step="0.1" '
+            f'style="display:block;width:100%;padding:6px 8px;border:1px solid #dfe6e9;border-radius:6px" '
+            f'name="region_{index}_{slug}" value="{float(allocation.get(label, 0)):g}" required></label>'
+            for label, slug in region_fields
+        )
+        regional_rows += f"""
+        <div style="border-top:1px solid #eee;padding:12px 0">
+          <input type="hidden" name="exposure_key_{index}" value="{_h(holding["key"])}">
+          <div style="font-weight:600">{_h(holding["name"])} <span style="color:#636e72;font-size:0.8rem">({_h(holding["asset_class"])})</span></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin-top:8px">{inputs}</div>
+        </div>"""
+    if not regional_rows:
+        regional_rows = '<p style="font-size:0.85rem;color:#636e72">最新データに投資信託・年金の商品がありません。</p>'
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -5027,6 +5061,18 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         <div class="hint">デフォルトは毎日 7:00 です。設定はサーバー再起動なしで反映されます。</div>
       </div>
       <button type="submit" class="btn">保存</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>投信・年金の地域配分</h2>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      各商品の投資地域を設定します。推測は行わず、商品ごとの合計を100%にしてください。
+    </p>
+    <form method="POST" action="/settings">
+      <input type="hidden" name="setting_type" value="regional_exposure">
+      <input type="hidden" name="exposure_count" value="{len(regional_holdings)}">
+      {regional_rows}
+      <button type="submit" class="btn" style="margin-top:12px">保存</button>
     </form>
   </div>
   <div class="card">
@@ -7163,7 +7209,7 @@ class Handler(BaseHTTPRequestHandler):
             post_params = parse_qs(body)
             setting_type = post_params.get("setting_type", ["gemini"])[0]
             # リダイレクト URL に反映するためホワイトリストで正規化
-            if setting_type not in ("closing_day", "scheduler"):
+            if setting_type not in ("closing_day", "scheduler", "regional_exposure"):
                 setting_type = "gemini"
 
             if setting_type == "closing_day":
@@ -7196,6 +7242,34 @@ class Handler(BaseHTTPRequestHandler):
                     save_setting(conn, "scheduler_enabled", enabled_val)
                     save_setting(conn, "scheduler_time", time_str)
                     logger.info("スケジューラ設定更新: enabled=%s, time=%s", enabled_val, time_str)
+                finally:
+                    conn.close()
+            elif setting_type == "regional_exposure":
+                region_fields = {
+                    "日本": "japan",
+                    "米国": "us",
+                    "先進国（日本・米国除く）": "developed",
+                    "新興国": "emerging",
+                    "その他": "other",
+                }
+                try:
+                    count = max(0, min(500, int(post_params.get("exposure_count", ["0"])[0])))
+                except ValueError:
+                    count = 0
+                config = {}
+                for index in range(count):
+                    holding_key = post_params.get(f"exposure_key_{index}", [""])[0].strip()
+                    if not holding_key:
+                        continue
+                    config[holding_key] = {
+                        region: float(post_params.get(f"region_{index}_{slug}", ["0"])[0])
+                        for region, slug in region_fields.items()
+                    }
+                conn = get_connection(self.db_path)
+                try:
+                    save_regional_exposure_config(conn, config)
+                except (ValueError, TypeError):
+                    setting_type = "regional_error"
                 finally:
                     conn.close()
             else:
