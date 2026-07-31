@@ -180,6 +180,94 @@ def get_cashflows(conn: sqlite3.Connection, limit: int = 12) -> list[dict]:
     return [{"year_month": r[0], "income": r[1], "expense": r[2]} for r in rows]
 
 
+def list_scheduled_card_payments(
+    conn: sqlite3.Connection,
+    *,
+    as_of: date_cls | None = None,
+    horizon_months: int | None = None,
+    include_disabled: bool = False,
+) -> list[dict]:
+    """カード引き落とし予定を返す。
+
+    ``as_of`` を渡した場合はその日以降、``horizon_months`` も渡した場合は
+    その期間の終了日までに絞る。日付は ISO 形式で保存しているため、
+    SQLite の文字列比較で期間を判定できる。
+    """
+    conditions = []
+    params: list[object] = []
+    if not include_disabled:
+        conditions.append("enabled = 1")
+    if as_of is not None:
+        conditions.append("due_date >= ?")
+        params.append(as_of.isoformat())
+        if horizon_months is not None:
+            horizon_end = as_of + timedelta(days=max(0, int(horizon_months)) * 30)
+            conditions.append("due_date <= ?")
+            params.append(horizon_end.isoformat())
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    rows = conn.execute(
+        f"""
+        SELECT id, due_date, card_name, amount, withdrawal_account, memo, enabled
+        FROM scheduled_card_payments
+        {where}
+        ORDER BY due_date ASC, id ASC
+        """,
+        params,
+    ).fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "due_date": row[1],
+            "card_name": row[2],
+            "amount": float(row[3]),
+            "withdrawal_account": row[4] or "",
+            "memo": row[5] or "",
+            "enabled": bool(row[6]),
+        }
+        for row in rows
+    ]
+
+
+def create_scheduled_card_payment(
+    conn: sqlite3.Connection,
+    due_date: str,
+    card_name: str,
+    amount: float,
+    withdrawal_account: str = "",
+    memo: str = "",
+) -> int:
+    """カード引き落とし予定を追加し、IDを返す。"""
+    parsed_date = date_cls.fromisoformat(str(due_date).strip())
+    name = str(card_name).strip()
+    value = float(amount)
+    if not name or value <= 0:
+        raise ValueError("カード名と正の金額が必要です")
+    cur = conn.execute(
+        """
+        INSERT INTO scheduled_card_payments
+            (due_date, card_name, amount, withdrawal_account, memo)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (parsed_date.isoformat(), name, value, str(withdrawal_account).strip(), str(memo).strip()),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def disable_scheduled_card_payment(conn: sqlite3.Connection, payment_id: int) -> None:
+    """カード引き落とし予定を無効化する。"""
+    conn.execute(
+        """
+        UPDATE scheduled_card_payments
+        SET enabled = 0, updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (int(payment_id),),
+    )
+    conn.commit()
+
+
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
     """設定値を取得する。"""
     row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
@@ -324,7 +412,13 @@ def calculate_investable_cash(
         include_children=True,
     )
     planned_expenses = sum(planned_by_year.values())
-    required_cash = emergency_fund + planned_expenses + additional_reserve
+    scheduled_card_payments = list_scheduled_card_payments(
+        conn,
+        as_of=as_of,
+        horizon_months=horizon_months,
+    )
+    scheduled_card_payment_total = sum(item["amount"] for item in scheduled_card_payments)
+    required_cash = emergency_fund + planned_expenses + scheduled_card_payment_total + additional_reserve
     raw_investable = cash_balance - required_cash
     return {
         "as_of": as_of.isoformat(),
@@ -337,11 +431,13 @@ def calculate_investable_cash(
         "planned_expense_horizon_months": horizon_months,
         "planned_expenses": planned_expenses,
         "planned_expenses_by_year": planned_by_year,
+        "scheduled_card_payments": scheduled_card_payments,
+        "scheduled_card_payment_total": scheduled_card_payment_total,
         "additional_reserve": additional_reserve,
         "required_cash": required_cash,
         "investable_cash": max(0.0, raw_investable),
         "shortfall": max(0.0, -raw_investable),
-        "formula": "cash - emergency_fund - planned_expenses - additional_reserve",
+        "formula": "cash - emergency_fund - planned_expenses - scheduled_card_payments - additional_reserve",
     }
 
 

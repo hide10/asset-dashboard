@@ -51,6 +51,20 @@ CREATE TABLE IF NOT EXISTS monthly_cashflows (
     fetched     TEXT NOT NULL       -- YYYY-MM-DD
 );
 
+CREATE TABLE IF NOT EXISTS scheduled_card_payments (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    due_date            TEXT NOT NULL,  -- YYYY-MM-DD
+    card_name           TEXT NOT NULL,
+    amount              REAL NOT NULL,
+    withdrawal_account  TEXT NOT NULL DEFAULT '',
+    memo                TEXT NOT NULL DEFAULT '',
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_card_payments_due_date
+    ON scheduled_card_payments(due_date);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
