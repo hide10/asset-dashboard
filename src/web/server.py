@@ -82,6 +82,7 @@ from src.prediction.montecarlo import (
     predict_with_contribution,
     run_lifecycle_simulation,
 )
+from src.regional_exposure import suggest_regional_exposure
 
 logger = logging.getLogger(__name__)
 
@@ -5162,8 +5163,21 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         ("その他", "other"),
     ]
     regional_rows = ""
+    suggested_count = 0
     for index, holding in enumerate(regional_holdings):
-        allocation = regional_config.get(holding["key"], {})
+        saved_allocation = regional_config.get(holding["key"])
+        suggestion = (
+            None if saved_allocation is not None else suggest_regional_exposure(holding["name"], holding["code"])
+        )
+        allocation = saved_allocation or (suggestion.allocation if suggestion else {})
+        if suggestion:
+            suggested_count += 1
+        if saved_allocation is not None:
+            status_html = '<span style="color:#0F7F30;font-size:0.78rem">設定済み</span>'
+        elif suggestion:
+            status_html = f'<span style="color:#2881D7;font-size:0.78rem">自動提案: {_h(suggestion.basis)}</span>'
+        else:
+            status_html = '<span style="color:#DF3727;font-size:0.78rem">判別できないため確認が必要</span>'
         inputs = "".join(
             f'<label style="font-size:0.75rem;display:block">{_h(label)}<input type="number" min="0" max="100" step="0.1" '
             f'style="display:block;width:100%;padding:6px 8px;border:1px solid #dfe6e9;border-radius:6px" '
@@ -5174,6 +5188,7 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         <div style="border-top:1px solid #eee;padding:12px 0">
           <input type="hidden" name="exposure_key_{index}" value="{_h(holding["key"])}">
           <div style="font-weight:600">{_h(holding["name"])} <span style="color:#636e72;font-size:0.8rem">({_h(holding["asset_class"])})</span></div>
+          <div>{status_html}</div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin-top:8px">{inputs}</div>
         </div>"""
     if not regional_rows:
@@ -5291,7 +5306,8 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
   <div class="card">
     <h2>投信・年金の地域配分</h2>
     <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
-      各商品の投資地域を設定します。推測は行わず、商品ごとの合計を100%にしてください。
+      商品名から判別できるものは入力済みです（{suggested_count}件を自動提案）。概算値は根拠を表示します。
+      判別できない商品だけ確認してください。全項目が0%の商品は未設定として保存されます。
     </p>
     <form method="POST" action="/settings">
       <input type="hidden" name="setting_type" value="regional_exposure">
@@ -7593,10 +7609,13 @@ class Handler(BaseHTTPRequestHandler):
                     holding_key = post_params.get(f"exposure_key_{index}", [""])[0].strip()
                     if not holding_key:
                         continue
-                    config[holding_key] = {
+                    allocation = {
                         region: float(post_params.get(f"region_{index}_{slug}", ["0"])[0])
                         for region, slug in region_fields.items()
                     }
+                    if abs(sum(allocation.values())) <= 0.01:
+                        continue
+                    config[holding_key] = allocation
                 conn = get_connection(self.db_path)
                 try:
                     save_regional_exposure_config(conn, config)

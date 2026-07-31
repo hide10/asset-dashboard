@@ -1,6 +1,7 @@
 """投資信託・年金の地域エクスポージャー (#87) の受け入れテスト。"""
 
 import json
+import re
 
 import pytest
 
@@ -10,6 +11,7 @@ from src.db.repository import (
     save_regional_exposure_config,
 )
 from src.db.schema import init_db
+from src.regional_exposure import suggest_regional_exposure
 from src.web.server import _build_settings_html
 
 
@@ -101,3 +103,45 @@ def test_settings_page_has_regional_exposure_inputs(tmp_path):
         assert region in html
     assert 'name="setting_type" value="regional_exposure"' in html
     assert 'value="60"' in html
+
+
+@pytest.mark.parametrize(
+    ("name", "region", "confidence"),
+    [
+        ("架空 国内株式インデックス", "日本", "high"),
+        ("架空 S&P500 インデックス", "米国", "high"),
+        ("架空 新興国株式", "新興国", "high"),
+        ("架空 オールカントリー", "米国", "estimate"),
+        ("架空 外国株式", "米国", "estimate"),
+        ("架空 グローバル株式", "米国", "estimate"),
+    ],
+)
+def test_regional_exposure_suggestion_uses_explicit_product_words(name, region, confidence):
+    suggestion = suggest_regional_exposure(name)
+
+    assert suggestion is not None
+    assert suggestion.allocation[region] > 0
+    assert sum(suggestion.allocation.values()) == 100
+    assert suggestion.confidence == confidence
+
+
+def test_regional_exposure_suggestion_leaves_ambiguous_product_unconfigured():
+    assert suggest_regional_exposure("架空 バランスファンド") is None
+
+
+def test_settings_page_prefills_suggestions_and_marks_ambiguous_products(tmp_path):
+    db_path, _, _ = _build_test_db(tmp_path)
+    conn = init_db(db_path)
+    conn.execute(
+        "UPDATE snapshot_holdings SET name = ? WHERE symbol_or_code = ?",
+        ("架空 S&P500 インデックス", "F001"),
+    )
+    conn.commit()
+    conn.close()
+
+    html = _build_settings_html(db_path)
+
+    assert "1件を自動提案" in html
+    assert "商品名に米国または米国指数を明記" in html
+    assert re.search(r'name="region_\d+_us" value="100"', html)
+    assert "判別できないため確認が必要" in html
