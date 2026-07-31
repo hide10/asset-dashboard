@@ -13,6 +13,8 @@ from src.parser.cashflow import CashflowMonth
 from src.parser.cf_csv import CfTransaction
 from src.parser.normalize import AssetSnapshot
 
+REGIONAL_EXPOSURE_REGIONS = ("日本", "米国", "先進国（日本・米国除く）", "新興国", "その他")
+
 
 def save_snapshot(conn: sqlite3.Connection, snapshot: AssetSnapshot, raw_path: str) -> None:
     """AssetSnapshotをDBに保存する。同日データがあれば差し替える。"""
@@ -167,6 +169,80 @@ def get_budgets(conn: sqlite3.Connection) -> dict[str, int]:
 def save_budgets(conn: sqlite3.Connection, budgets: dict[str, int]) -> None:
     """月間予算を保存する。"""
     save_setting(conn, "monthly_budgets", json.dumps(budgets, ensure_ascii=False))
+
+
+def get_regional_exposure_config(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
+    """投信・年金の商品別地域配分設定を返す。"""
+    raw = get_setting(conn, "regional_exposure_config", "{}")
+    try:
+        config = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def save_regional_exposure_config(conn: sqlite3.Connection, config: dict[str, dict[str, float]]) -> None:
+    """商品別地域配分を検証して保存する。各商品の合計は100%とする。"""
+    normalized: dict[str, dict[str, float]] = {}
+    for holding_key, allocation in config.items():
+        values = {region: float(allocation.get(region, 0)) for region in REGIONAL_EXPOSURE_REGIONS}
+        if any(value < 0 or value > 100 for value in values.values()):
+            raise ValueError("地域配分は0〜100%で指定してください")
+        if abs(sum(values.values()) - 100) > 0.01:
+            raise ValueError("地域配分の合計は100%にしてください")
+        normalized[str(holding_key)] = values
+    save_setting(conn, "regional_exposure_config", json.dumps(normalized, ensure_ascii=False, sort_keys=True))
+
+
+def get_regional_exposure_holdings(conn: sqlite3.Connection) -> list[dict]:
+    """最新スナップショットの投資信託・年金商品を返す。"""
+    latest = conn.execute("SELECT MAX(date) FROM snapshots").fetchone()
+    if not latest or not latest[0]:
+        return []
+    rows = conn.execute(
+        """
+        SELECT symbol_or_code, name, value, asset_class
+        FROM snapshot_holdings
+        WHERE date = ? AND asset_class IN ('投資信託', '年金')
+        ORDER BY asset_class, id
+        """,
+        (latest[0],),
+    ).fetchall()
+    return [
+        {
+            "key": f"{row[3]}|{row[0]}|{row[1]}",
+            "code": row[0],
+            "name": row[1],
+            "value": row[2],
+            "asset_class": row[3],
+        }
+        for row in rows
+    ]
+
+
+def get_portfolio_regional_exposure(conn: sqlite3.Connection) -> dict:
+    """最新評価額と商品別設定から地域エクスポージャーを集計する。"""
+    latest = conn.execute("SELECT MAX(date) FROM snapshots").fetchone()
+    as_of = latest[0] if latest and latest[0] else None
+    config = get_regional_exposure_config(conn)
+    by_region = dict.fromkeys(REGIONAL_EXPOSURE_REGIONS, 0.0)
+    configured_value = 0.0
+    unconfigured = []
+    for holding in get_regional_exposure_holdings(conn):
+        allocation = config.get(holding["key"])
+        if allocation is None:
+            unconfigured.append({"key": holding["key"], "name": holding["name"], "value": holding["value"]})
+            continue
+        configured_value += holding["value"]
+        for region in REGIONAL_EXPOSURE_REGIONS:
+            by_region[region] += holding["value"] * float(allocation.get(region, 0)) / 100
+    return {
+        "as_of": as_of,
+        "by_region": by_region,
+        "configured_value": configured_value,
+        "unconfigured_value": sum(item["value"] for item in unconfigured),
+        "unconfigured": unconfigured,
+    }
 
 
 # --- ライフイベント（ライフプラン） ---
