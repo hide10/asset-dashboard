@@ -30,8 +30,11 @@ from src.data.stock_master import get_dividend, get_sector, is_us_stock
 from src.db.repository import (
     ALLOCATION_LABELS,
     ALLOCATION_PRESETS,
+    DEFAULT_FRAME_ALLOCATION,
+    FRAME_ALLOCATION_LABELS,
     build_education_events_for_child,
     calculate_allocation_scenario,
+    calculate_frame_drift,
     calculate_investable_cash,
     create_child_profile,
     create_life_event,
@@ -52,6 +55,7 @@ from src.db.repository import (
     get_cf_income_trend,
     get_cf_monthly_trend,
     get_daily_assets,
+    get_frame_allocation_target,
     get_fund_total_history,
     get_holding_history,
     get_latest_portfolio_snapshot,
@@ -61,11 +65,13 @@ from src.db.repository import (
     get_regional_exposure_config,
     get_regional_exposure_holdings,
     get_setting,
+    has_frame_allocation_target,
     list_children_profiles,
     list_life_events,
     save_budgets,
     save_cf_csv_month,
     save_cf_transactions,
+    save_frame_allocation_target,
     save_life_plan_inflation_rate,
     save_regional_exposure_config,
     save_setting,
@@ -624,6 +630,8 @@ def _get_allocation_data(db_path: str, custom_allocation: dict[str, float] | Non
     conn = get_connection(db_path)
     try:
         context = get_allocation_context(conn)
+        frame_target = get_frame_allocation_target(conn)
+        frame_target_saved = has_frame_allocation_target(conn)
     finally:
         conn.close()
     if not context:
@@ -639,6 +647,9 @@ def _get_allocation_data(db_path: str, custom_allocation: dict[str, float] | Non
         "context": context,
         "presets": scenarios,
         "custom": custom_scenario,
+        "frame_target": frame_target,
+        "frame_target_saved": frame_target_saved,
+        "frame_drift": calculate_frame_drift(context, frame_target),
     }
 
 
@@ -654,10 +665,19 @@ def _demo_allocation_data(custom_allocation: dict[str, float] | None = None) -> 
         "us_stock": float(us_stock),
     }
     current_values["other"] = float(demo["total_asset"]) - sum(current_values.values())
+    frame_current_values = {
+        "cash": current_values["cash"],
+        "fund": current_values["fund"],
+        "jp_stock": current_values["jp_stock"],
+        "us_stock": current_values["us_stock"],
+        "pension": float(demo["by_class"].get("年金", 0)),
+    }
+    frame_current_values["other"] = float(demo["total_asset"]) - sum(frame_current_values.values())
     context = {
         "as_of": demo["date"],
         "total_asset": float(demo["total_asset"]),
         "current_values": current_values,
+        "frame_current_values": frame_current_values,
         "investable_cash": float(demo["investable_cash"]["investable_cash"]),
         "investable_detail": demo["investable_cash"],
     }
@@ -666,14 +686,23 @@ def _demo_allocation_data(custom_allocation: dict[str, float] | None = None) -> 
         for preset in ALLOCATION_PRESETS
     ]
     custom = custom_allocation or dict(ALLOCATION_PRESETS[1]["allocation"])
+    frame_target = {key: float(value) for key, value in DEFAULT_FRAME_ALLOCATION.items()}
     return {
         "context": context,
         "presets": scenarios,
         "custom": calculate_allocation_scenario(context, custom, name="カスタム"),
+        "frame_target": frame_target,
+        "frame_target_saved": False,
+        "frame_drift": calculate_frame_drift(context, frame_target),
     }
 
 
-def _build_allocation_html(data: dict, error: str | None = None) -> str:
+def _build_allocation_html(
+    data: dict,
+    error: str | None = None,
+    frame_error: str | None = None,
+    frame_saved: bool = False,
+) -> str:
     """余剰資金の配分比較ページを生成する。"""
     if not data:
         return "<html><body><h1>資産データがありません</h1></body></html>"
@@ -681,6 +710,40 @@ def _build_allocation_html(data: dict, error: str | None = None) -> str:
     scenarios = data["presets"]
     custom = data["custom"]
     labels = {**ALLOCATION_LABELS, "other": "その他資産"}
+    frame_target = data["frame_target"]
+    frame_drift = data["frame_drift"]
+    frame_saved = frame_saved or data.get("frame_target_saved", False)
+
+    frame_status = (
+        f'<div class="frame-notice frame-error">{_h(frame_error)}</div>'
+        if frame_error
+        else (
+            '<div class="frame-notice">おすすめ初期枠（未保存）を表示しています。差分は「現在 − 目標」、'
+            "±2ポイント以内は許容範囲です。保存して自分の基準にできます。</div>"
+            if not frame_saved
+            else '<div class="frame-notice">差分は「現在 − 目標」。±2ポイント以内は許容範囲として表示します。</div>'
+        )
+    )
+    if frame_saved:
+        frame_status = (
+            '<div class="frame-notice frame-success">目標枠を保存しました。買い増しは不足枠を優先します。</div>'
+        )
+    frame_rows = ""
+    for row in frame_drift["rows"]:
+        status_label = {"over": "目標超過", "under": "不足", "on_track": "範囲内"}[row["status"]]
+        delta_text = f"{row['delta']:+.1f}pt"
+        frame_rows += f"""
+        <div class="frame-row {row["status"]}" data-testid="frame-row-{row["key"]}">
+          <div class="frame-row-head"><strong>{_h(row["label"])}</strong><span>現在 {row["current"]:.1f}% ／ 目標 {row["target"]:.1f}%</span><b>{delta_text}・{status_label}</b></div>
+          <div class="frame-track" aria-label="{_h(row["label"])}の現在と目標">
+            <span class="frame-current" style="width:{min(max(row["current"], 0), 100):.2f}%"></span>
+            <i class="frame-target" style="left:{min(max(row["target"], 0), 100):.2f}%"></i>
+          </div>
+        </div>"""
+    frame_inputs = "".join(
+        f'<label>{_h(label)}<input type="number" name="frame_target_{key}" min="0" max="100" step="1" value="{frame_target[key]:g}" required><span>%</span></label>'
+        for key, label in FRAME_ALLOCATION_LABELS.items()
+    )
 
     scenario_cards = ""
     for scenario in scenarios:
@@ -725,11 +788,25 @@ table {{ width:100%;border-collapse:collapse;font-size:.86rem }} th,td {{ paddin
 .allocation-inputs label {{ font-size:.82rem;font-weight:600 }} .allocation-inputs input {{ width:calc(100% - 24px);padding:8px;border:1px solid #dfe6e9;border-radius:6px;margin-top:4px }}
 .btn {{ display:inline-block;margin-top:14px;padding:9px 18px;border:0;border-radius:7px;background:#2881D7;color:#fff;font-weight:700;cursor:pointer;text-decoration:none }}
 .btn.secondary {{ background:#636e72;margin-left:8px }} .error {{ background:#DF3727;color:#fff;padding:10px 14px;border-radius:8px;margin:12px 0 }}
-@media(max-width:760px) {{ .scenarios {{ grid-template-columns:1fr }} .allocation-inputs {{ grid-template-columns:1fr 1fr }} .page-header {{ align-items:flex-start }} .nav-toolbar {{ flex-wrap:wrap }} }}
+.frame-notice {{ padding:10px 12px;border-radius:8px;background:#eef5f2;color:#476258;font-size:.84rem;margin:10px 0 }} .frame-success {{ background:#e8f5ec;color:#206238 }} .frame-error {{ background:#fff0ed;color:#a23b2d }}
+.frame-summary {{ display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 }} .frame-summary span {{ padding:6px 10px;border-radius:999px;background:#f1f4f2;font-size:.8rem }}
+.frame-legend {{ color:#697871;font-size:.78rem;margin:4px 0 14px }} .frame-legend i {{ display:inline-block;width:18px;height:4px;background:#2f8666;vertical-align:middle;margin:0 4px 0 10px }} .frame-legend i.target {{ height:14px;width:2px;background:#d4753e }}
+.frame-row {{ padding:10px 0;border-top:1px solid #e6ece9 }} .frame-row-head {{ display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;font-size:.82rem }} .frame-row-head span {{ color:#697871 }} .frame-row-head b {{ min-width:100px;text-align:right }}
+.frame-row.over .frame-row-head b {{ color:#b3542b }} .frame-row.under .frame-row-head b {{ color:#2873a5 }} .frame-row.on_track .frame-row-head b {{ color:#43805d }}
+.frame-track {{ position:relative;height:9px;background:#e8eeeb;border-radius:999px;margin-top:7px }} .frame-current {{ display:block;height:100%;background:#2f8666;border-radius:999px }} .frame-target {{ position:absolute;top:-5px;width:2px;height:19px;background:#d4753e;border-radius:2px }}
+.frame-inputs {{ display:grid;grid-template-columns:repeat(6,1fr);gap:10px }} .frame-inputs label {{ font-size:.8rem;font-weight:600 }} .frame-inputs input {{ width:calc(100% - 24px);padding:8px;border:1px solid #dfe6e9;border-radius:6px;margin-top:4px }}
+@media(max-width:760px) {{ .scenarios {{ grid-template-columns:1fr }} .allocation-inputs,.frame-inputs {{ grid-template-columns:1fr 1fr }} .frame-row-head {{ grid-template-columns:1fr auto }} .frame-row-head b {{ text-align:left;grid-column:1 / -1 }} .page-header {{ align-items:flex-start }} .nav-toolbar {{ flex-wrap:wrap }} }}
 </style></head><body><div class="container">
 <div class="page-header"><h1>余剰資金の配分を比較</h1>{_nav_html("/allocation")}</div>
 <div class="hero"><div>現在の投資可能額</div><div class="amount">{investable:,.0f}円</div>
 <p>生活防衛資金と予定支出を確保した後、この範囲で現金・投資信託・日本株・米国株を比較します。</p></div>
+<div class="card" data-testid="allocation-frame"><h2>資産の枠と現在のずれ</h2>
+<p>資産全体の目標枠と、最新スナップショットの現在比率を比較します。米国投信は「投資信託」に含まれ、地域配分とは別の見方です。</p>
+{frame_status}<div class="frame-summary"><span>目標超過 {frame_drift["over_count"]}区分</span><span>不足 {frame_drift["under_count"]}区分</span><span>基準日 {_h(frame_drift["as_of"] or "不明")}</span></div>
+<div class="frame-legend"><i></i>現在比率 <i class="target"></i>目標</div><div class="frame-rows">{frame_rows}</div>
+<details style="margin-top:16px"><summary style="cursor:pointer;font-weight:700">目標枠を変更</summary>
+<form method="POST" action="/allocation"><div class="frame-inputs">{frame_inputs}</div>
+<button class="btn" type="submit">目標枠を保存</button></form></details></div>
 <div class="card" data-card-id="allocation-scenarios"><h2>プリセット比較</h2><div class="scenarios">{scenario_cards}</div></div>
 <div class="card"><h2>自分で比率を調整</h2>{error_html}
 <form method="GET" action="/allocation" data-testid="allocation-custom-form"><div class="allocation-inputs">{custom_inputs}</div>
@@ -6978,6 +7055,8 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/allocation":
             custom = None
             error = None
+            frame_error = params.get("frame_error", [None])[0]
+            frame_saved = params.get("saved", [None])[0] == "frame_allocation"
             allocation_keys = ("cash", "fund", "jp_stock", "us_stock")
             if any(key in params for key in allocation_keys):
                 try:
@@ -6990,7 +7069,7 @@ class Handler(BaseHTTPRequestHandler):
                     error = str(exc)
                     custom = None
             data = _demo_allocation_data(custom) if self.demo else _get_allocation_data(self.db_path, custom)
-            self._send_html(_build_allocation_html(data, error=error))
+            self._send_html(_build_allocation_html(data, error=error, frame_error=frame_error, frame_saved=frame_saved))
 
         elif parsed.path == "/plan":
             # contrib パラメータがあれば設定に保存、なければDB設定を使用
@@ -7551,7 +7630,28 @@ class Handler(BaseHTTPRequestHandler):
         if not self._check_origin():
             return
         parsed = urlparse(self.path)
-        if parsed.path == "/settings":
+        if parsed.path == "/allocation":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            post_params = parse_qs(body)
+            target = {}
+            try:
+                target = {
+                    key: float(post_params.get(f"frame_target_{key}", ["0"])[0]) for key in FRAME_ALLOCATION_LABELS
+                }
+                conn = get_connection(self.db_path)
+                try:
+                    save_frame_allocation_target(conn, target)
+                finally:
+                    conn.close()
+            except (TypeError, ValueError) as exc:
+                data = _demo_allocation_data() if self.demo else _get_allocation_data(self.db_path)
+                self._send_html(_build_allocation_html(data, frame_error=str(exc)))
+                return
+            self.send_response(303)
+            self.send_header("Location", "/allocation?saved=frame_allocation")
+            self.end_headers()
+        elif parsed.path == "/settings":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode()
             post_params = parse_qs(body)
