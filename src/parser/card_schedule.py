@@ -66,7 +66,7 @@ def parse_card_account_links(html: str) -> list[CardAccountLink]:
     カード名に「カード」が含まれない登録名（例: 三井住友）もあるため、
     ここでは口座種別を推測せず全口座を返し、詳細ページ側の見出しで絞り込む。
     """
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     links: list[CardAccountLink] = []
     seen: set[str] = set()
     for anchor in soup.select('a[href^="/accounts/show/"]'):
@@ -94,7 +94,7 @@ def parse_card_schedule_html(html: str, account: CardAccountLink) -> list[Schedu
     引落額未確定（`-`）の行、ポイント行、日付のない行は対象外にする。
     MoneyForwardは補助カード等を複数行で返すため、金額が入った行は個別に保持する。
     """
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     table = _schedule_table(soup)
     if table is None:
         return []
