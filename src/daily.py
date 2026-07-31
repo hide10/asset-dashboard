@@ -17,6 +17,7 @@ from pathlib import Path
 
 from src.db.repository import (
     get_snapshot,
+    replace_moneyforward_card_payments,
     save_cashflows,
     save_cf_csv_month,
     save_cf_transactions,
@@ -27,7 +28,14 @@ from src.db.schema import init_db
 from src.parser.cashflow import parse_monthly
 from src.parser.cf_csv import parse_cf_csv
 from src.parser.normalize import AssetSnapshot, parse_raw
-from src.scraper.fetch import create_context, fetch_cf_csv, fetch_monthly, fetch_page, request_aggregation
+from src.scraper.fetch import (
+    create_context,
+    fetch_card_schedules,
+    fetch_cf_csv,
+    fetch_monthly,
+    fetch_page,
+    request_aggregation,
+)
 
 
 def _deploy_cloudflare_pages(out_dir: Path, deploy_project_name: str | None = None) -> None:
@@ -125,6 +133,16 @@ async def run(
                     print("\nデータが更新されました。")
 
         # 4. 月次収支取得
+        card_schedule_result = None
+        try:
+            print("\nカード引落予定データ取得中...")
+            card_schedule_result = await fetch_card_schedules(page)
+            if not card_schedule_result.complete:
+                print("  一部の口座詳細を取得できなかったため、前回の自動取得値を保持します")
+        except Exception as e:
+            print(f"  カード引落予定取得失敗（前回値を保持して続行）: {e}")
+
+        # 5. 月次収支取得
         try:
             print("\n月次収支データ取得中...")
             await fetch_monthly(page, raw_path)
@@ -137,7 +155,7 @@ async def run(
             print(f"  月次収支取得失敗（続行）: {e}")
             cashflows = []
 
-        # 5. 当月家計簿CSV取得
+        # 6. 当月家計簿CSV取得
         try:
             from datetime import date as _d
 
@@ -156,7 +174,7 @@ async def run(
             print(f"  家計簿CSV取得失敗（続行）: {e}")
             cf_transactions = []
 
-        # 6. DB保存
+        # 7. DB保存
         print("\n[3/3] DB保存中...")
         conn = init_db()
         if snapshot.total_asset > 0:
@@ -167,6 +185,18 @@ async def run(
             print(f"\n完了: {snapshot.date} のスナップショットを保存しました。")
         else:
             print("\n※ 総資産0円のため、スナップショットの保存をスキップしました。")
+        if card_schedule_result and card_schedule_result.complete:
+            replace_moneyforward_card_payments(
+                conn,
+                card_schedule_result.payments,
+                card_schedule_result.fetched_at,
+            )
+            save_setting(
+                conn,
+                "moneyforward_card_schedule_last_fetch_at",
+                card_schedule_result.fetched_at,
+            )
+            print(f"  カード引落予定: {len(card_schedule_result.payments)}件をDB保存")
         if cashflows:
             from datetime import date as _date
 
@@ -181,7 +211,7 @@ async def run(
             print(f"  家計簿CSV: {len(cf_transactions)}件をDB保存")
         conn.close()
 
-        # 7. 静的HTMLビルド / Cloudflare Pages デプロイ（任意）
+        # 8. 静的HTMLビルド / Cloudflare Pages デプロイ（任意）
         if build_static or deploy:
             print("\n静的HTMLを生成します（dist/）...")
             from scripts.build_static import build as build_static_pages

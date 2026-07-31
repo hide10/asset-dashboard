@@ -5112,6 +5112,7 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME) or _SCHEDULER_DEFAULT_TIME
         scheduler_last_run = get_setting(conn, "scheduler_last_run_at")
         scheduler_last_result = get_setting(conn, "scheduler_last_result")
+        moneyforward_card_schedule_last_fetch = get_setting(conn, "moneyforward_card_schedule_last_fetch_at")
         regional_holdings = get_regional_exposure_holdings(conn)
         regional_config = get_regional_exposure_config(conn)
         investable = calculate_investable_cash(conn)
@@ -5204,6 +5205,19 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
             status = '<span style="color:#0F7F30">投資可能額に反映</span>'
         else:
             status = '<span style="color:#636e72">計画期間外</span>'
+        is_moneyforward = payment.get("source") == "moneyforward"
+        source_label = "MoneyForward自動" if is_moneyforward else "手入力"
+        action_html = (
+            '<span style="color:#636e72;font-size:0.75rem">自動更新</span>'
+            if is_moneyforward
+            else f"""
+            <form method="POST" action="/settings" style="margin:0">
+              <input type="hidden" name="setting_type" value="scheduled_card_payment">
+              <input type="hidden" name="scheduled_action" value="disable">
+              <input type="hidden" name="scheduled_payment_id" value="{payment["id"]}">
+              <button type="submit" class="btn btn-muted" style="padding:4px 8px;font-size:0.75rem">無効化</button>
+            </form>"""
+        )
         scheduled_card_rows += f"""
         <tr>
           <td>{_h(payment["due_date"])}</td>
@@ -5212,17 +5226,11 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
           <td style="text-align:right">{payment["amount"]:,.0f}円</td>
           <td>{_h(payment["memo"]) or "-"}</td>
           <td>{status}</td>
-          <td>
-            <form method="POST" action="/settings" style="margin:0">
-              <input type="hidden" name="setting_type" value="scheduled_card_payment">
-              <input type="hidden" name="scheduled_action" value="disable">
-              <input type="hidden" name="scheduled_payment_id" value="{payment["id"]}">
-              <button type="submit" class="btn btn-muted" style="padding:4px 8px;font-size:0.75rem">無効化</button>
-            </form>
-          </td>
+          <td>{source_label}</td>
+          <td>{action_html}</td>
         </tr>"""
     if not scheduled_card_rows:
-        scheduled_card_rows = '<tr><td colspan="7" style="color:#636e72">登録済みの予定はありません。</td></tr>'
+        scheduled_card_rows = '<tr><td colspan="8" style="color:#636e72">登録済みの予定はありません。</td></tr>'
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -5386,17 +5394,23 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
   </div>
   <div class="card" id="scheduled-card-payments" data-testid="scheduled-card-payments">
     <h2>カード引き落とし予定</h2>
+    <div class="status">
+      {f"MoneyForwardから最終取得: {moneyforward_card_schedule_last_fetch}" if moneyforward_card_schedule_last_fetch else "MoneyForwardからの自動取得はまだ実行されていません。"}
+    </div>
     <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      MoneyForwardの登録口座詳細から、引落日と引落額を日次で自動取得します。
       引落予定日が「予定支出を確保する期間」内にあるものだけ、投資可能額から差し引きます。
-      引落後は予定を無効化してください。過去日・期間外の予定は計算対象外です。
+      自動取得にない予定だけ、補助的に手入力できます。過去日・期間外の予定は計算対象外です。
     </p>
     <div class="scheduled-scroll">
       <table class="scheduled-table">
-        <thead><tr><th>引落日</th><th>カード</th><th>引落口座</th><th>金額</th><th>メモ</th><th>状態</th><th></th></tr></thead>
+        <thead><tr><th>引落日</th><th>カード</th><th>引落口座</th><th>金額</th><th>メモ</th><th>状態</th><th>取得元</th><th></th></tr></thead>
         <tbody>{scheduled_card_rows}</tbody>
       </table>
     </div>
-    <form method="POST" action="/settings">
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;color:#2881D7;font-size:0.9rem">自動取得できない予定を手入力</summary>
+    <form method="POST" action="/settings" style="margin-top:14px">
       <input type="hidden" name="setting_type" value="scheduled_card_payment">
       <input type="hidden" name="scheduled_action" value="add">
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
@@ -5408,6 +5422,7 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
       </div>
       <button type="submit" class="btn">予定を追加</button>
     </form>
+    </details>
   </div>
   <div class="card">
     <h2>データエクスポート</h2>
@@ -8531,7 +8546,9 @@ def _run_update_locked(db_path: str) -> None:
 
         from src.daily import run
 
-        asyncio.run(run(headless=True))
+        # MoneyForwardの認証ページはヘッドレスChromiumを403にするため、
+        # ローカルの表示セッション（DISPLAY）を使って日次取得する。
+        asyncio.run(run(headless=False))
 
         # 更新成功 → セッション切れフラグをクリア
         conn = init_db(db_path)

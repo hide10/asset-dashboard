@@ -58,6 +58,9 @@ CREATE TABLE IF NOT EXISTS scheduled_card_payments (
     amount              REAL NOT NULL,
     withdrawal_account  TEXT NOT NULL DEFAULT '',
     memo                TEXT NOT NULL DEFAULT '',
+    source              TEXT NOT NULL DEFAULT 'manual', -- manual / moneyforward
+    external_id         TEXT NOT NULL DEFAULT '',
+    fetched_at          TEXT NOT NULL DEFAULT '',
     enabled             INTEGER NOT NULL DEFAULT 1,
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
@@ -180,6 +183,19 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN unrealized_gain REAL")
     if "unrealized_gain_pct" not in cols:
         conn.execute("ALTER TABLE snapshot_holdings ADD COLUMN unrealized_gain_pct REAL")
+
+    # カード引落予定: 既存の手入力データを残したままMoneyForward自動取得の出所を追加する。
+    scheduled_cols = [row[1] for row in conn.execute("PRAGMA table_info(scheduled_card_payments)").fetchall()]
+    if "source" not in scheduled_cols:
+        conn.execute("ALTER TABLE scheduled_card_payments ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+    if "external_id" not in scheduled_cols:
+        conn.execute("ALTER TABLE scheduled_card_payments ADD COLUMN external_id TEXT NOT NULL DEFAULT ''")
+    if "fetched_at" not in scheduled_cols:
+        conn.execute("ALTER TABLE scheduled_card_payments ADD COLUMN fetched_at TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_card_payments_source_external "
+        "ON scheduled_card_payments(source, external_id)"
+    )
 
     _migrate_asset_class_names(conn)
 
