@@ -26,12 +26,16 @@ from src.analysis.compare import ComparisonResult, get_all_comparisons
 from src.analysis.metrics import concentration_top_n, daily_volatility, max_drawdown
 from src.data.stock_master import get_dividend, get_sector, is_us_stock
 from src.db.repository import (
+    ALLOCATION_LABELS,
+    ALLOCATION_PRESETS,
     build_education_events_for_child,
+    calculate_allocation_scenario,
     calculate_investable_cash,
     create_child_profile,
     create_life_event,
     delete_child_profile,
     delete_life_event,
+    get_allocation_context,
     get_annual_life_event_expenses,
     get_budgets,
     get_cashflows,
@@ -278,6 +282,7 @@ def _nav_html(active: str) -> str:
     """ナビゲーションツールバーのHTMLを返す。"""
     pages = [
         ("/", "ダッシュボード"),
+        ("/allocation", "資産配分"),
         ("/cf", "家計簿分析"),
         ("/plan", "ライフプラン"),
         ("/simulator", "シミュレーター"),
@@ -557,6 +562,127 @@ def _get_data(db_path: str, date: str | None = None) -> dict:
         "holding_histories": holding_histories,
         "investable_cash": investable_cash,
     }
+
+
+def _get_allocation_data(db_path: str, custom_allocation: dict[str, float] | None = None) -> dict:
+    """投資可能額と配分シナリオを画面表示用に組み立てる。"""
+    conn = get_connection(db_path)
+    try:
+        context = get_allocation_context(conn)
+    finally:
+        conn.close()
+    if not context:
+        return {}
+
+    scenarios = [
+        calculate_allocation_scenario(context, preset["allocation"], name=preset["name"])
+        for preset in ALLOCATION_PRESETS
+    ]
+    custom = custom_allocation or dict(ALLOCATION_PRESETS[1]["allocation"])
+    custom_scenario = calculate_allocation_scenario(context, custom, name="カスタム")
+    return {
+        "context": context,
+        "presets": scenarios,
+        "custom": custom_scenario,
+    }
+
+
+def _demo_allocation_data(custom_allocation: dict[str, float] | None = None) -> dict:
+    """デモ資産から配分シナリオを組み立てる。"""
+    demo = _demo_data()
+    stock_holdings = [holding for holding in demo["holdings"] if holding["asset_class"] == "株式（現物）"]
+    us_stock = sum(holding["value"] for holding in stock_holdings if holding["code"] and str(holding["code"]).isalpha())
+    current_values = {
+        "cash": float(demo["by_class"].get("預金・現金", 0)),
+        "fund": float(demo["by_class"].get("投資信託", 0)),
+        "jp_stock": float(demo["by_class"].get("株式（現物）", 0)) - us_stock,
+        "us_stock": float(us_stock),
+    }
+    current_values["other"] = float(demo["total_asset"]) - sum(current_values.values())
+    context = {
+        "as_of": demo["date"],
+        "total_asset": float(demo["total_asset"]),
+        "current_values": current_values,
+        "investable_cash": float(demo["investable_cash"]["investable_cash"]),
+        "investable_detail": demo["investable_cash"],
+    }
+    scenarios = [
+        calculate_allocation_scenario(context, preset["allocation"], name=preset["name"])
+        for preset in ALLOCATION_PRESETS
+    ]
+    custom = custom_allocation or dict(ALLOCATION_PRESETS[1]["allocation"])
+    return {
+        "context": context,
+        "presets": scenarios,
+        "custom": calculate_allocation_scenario(context, custom, name="カスタム"),
+    }
+
+
+def _build_allocation_html(data: dict, error: str | None = None) -> str:
+    """余剰資金の配分比較ページを生成する。"""
+    if not data:
+        return "<html><body><h1>資産データがありません</h1></body></html>"
+    context = data["context"]
+    scenarios = data["presets"]
+    custom = data["custom"]
+    labels = {**ALLOCATION_LABELS, "other": "その他資産"}
+
+    scenario_cards = ""
+    for scenario in scenarios:
+        allocation_text = " / ".join(
+            f"{ALLOCATION_LABELS[key]} {value:g}%" for key, value in scenario["allocation"].items()
+        )
+        amount_rows = "".join(
+            f"<tr><td>{ALLOCATION_LABELS[key]}</td><td>{scenario['allocation'][key]:g}%</td>"
+            f"<td>{scenario['allocation_amounts'][key]:,.0f}円</td></tr>"
+            for key in ALLOCATION_LABELS
+        )
+        scenario_cards += f"""
+        <section class="scenario-card">
+          <h3>{_h(scenario["name"])}</h3>
+          <p class="scenario-summary">{allocation_text}</p>
+          <table><thead><tr><th>配分先</th><th>比率</th><th>金額</th></tr></thead><tbody>{amount_rows}</tbody></table>
+        </section>"""
+
+    custom_inputs = "".join(
+        f'<label>{label}<input type="number" name="{key}" min="0" max="100" step="1" '
+        f'value="{custom["allocation"][key]:g}" required><span>%</span></label>'
+        for key, label in ALLOCATION_LABELS.items()
+    )
+    post_rows = "".join(
+        f"<tr><td>{labels[key]}</td><td>{context['current_values'].get(key, 0):,.0f}円</td>"
+        f"<td>{custom['post_values'][key]:,.0f}円</td><td>{custom['post_ratios'][key]:.1f}%</td></tr>"
+        for key in ("cash", "fund", "jp_stock", "us_stock", "other")
+    )
+    error_html = f'<div class="error">{_h(error)}</div>' if error else ""
+    investable = context["investable_cash"]
+    return f"""<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>資産配分シナリオ</title><style>
+* {{ box-sizing:border-box }} body {{ margin:0;background:#f5f6fa;color:#2d3436;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6 }}
+.container {{ max-width:1100px;margin:auto;padding:20px }} {_NAV_CSS}
+.hero,.card,.scenario-card {{ background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.08) }}
+.hero {{ margin:18px 0 }} .amount {{ color:#0F7F30;font-size:2rem;font-weight:800 }}
+.scenarios {{ display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:14px 0 20px }}
+.scenario-card h3 {{ margin:0 0 4px }} .scenario-summary {{ color:#636e72;font-size:.78rem;min-height:42px }}
+table {{ width:100%;border-collapse:collapse;font-size:.86rem }} th,td {{ padding:7px;border-bottom:1px solid #eee;text-align:right }} th:first-child,td:first-child {{ text-align:left }}
+.card {{ margin-bottom:20px }} .allocation-inputs {{ display:grid;grid-template-columns:repeat(4,1fr);gap:10px }}
+.allocation-inputs label {{ font-size:.82rem;font-weight:600 }} .allocation-inputs input {{ width:calc(100% - 24px);padding:8px;border:1px solid #dfe6e9;border-radius:6px;margin-top:4px }}
+.btn {{ display:inline-block;margin-top:14px;padding:9px 18px;border:0;border-radius:7px;background:#2881D7;color:#fff;font-weight:700;cursor:pointer;text-decoration:none }}
+.btn.secondary {{ background:#636e72;margin-left:8px }} .error {{ background:#DF3727;color:#fff;padding:10px 14px;border-radius:8px;margin:12px 0 }}
+@media(max-width:760px) {{ .scenarios {{ grid-template-columns:1fr }} .allocation-inputs {{ grid-template-columns:1fr 1fr }} .page-header {{ align-items:flex-start }} .nav-toolbar {{ flex-wrap:wrap }} }}
+</style></head><body><div class="container">
+<div class="page-header"><h1>余剰資金の配分を比較</h1>{_nav_html("/allocation")}</div>
+<div class="hero"><div>現在の投資可能額</div><div class="amount">{investable:,.0f}円</div>
+<p>生活防衛資金と予定支出を確保した後、この範囲で現金・投資信託・日本株・米国株を比較します。</p></div>
+<div class="card" data-card-id="allocation-scenarios"><h2>プリセット比較</h2><div class="scenarios">{scenario_cards}</div></div>
+<div class="card"><h2>自分で比率を調整</h2>{error_html}
+<form method="GET" action="/allocation" data-testid="allocation-custom-form"><div class="allocation-inputs">{custom_inputs}</div>
+<button class="btn" type="submit">この比率で比較</button><button class="btn secondary" type="button" onclick="copyAllocationPrompt(this)">AIに相談するデータをコピー</button></form></div>
+<div class="card"><h2>購入後の構成</h2><table><thead><tr><th>区分</th><th>現在</th><th>購入後</th><th>購入後比率</th></tr></thead><tbody>{post_rows}</tbody></table></div>
+</div><script>
+async function copyAllocationPrompt(btn) {{ const r=await fetch('/api/ai-prompt?type=allocation'); const t=await r.text(); await navigator.clipboard.writeText(t); const old=btn.textContent; btn.textContent='コピーしました'; setTimeout(()=>btn.textContent=old,1500); }}
+</script></body></html>"""
 
 
 def _avg_yield_html(dividends: list[dict]) -> str:
@@ -6701,6 +6827,23 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(dates).encode())
 
+        elif parsed.path == "/allocation":
+            custom = None
+            error = None
+            allocation_keys = ("cash", "fund", "jp_stock", "us_stock")
+            if any(key in params for key in allocation_keys):
+                try:
+                    custom = {key: float(params.get(key, ["0"])[0]) for key in allocation_keys}
+                    if abs(sum(custom.values()) - 100) > 0.01:
+                        raise ValueError("配分の合計は100%にしてください")
+                    if any(value < 0 or value > 100 for value in custom.values()):
+                        raise ValueError("配分は0〜100%で指定してください")
+                except (TypeError, ValueError) as exc:
+                    error = str(exc)
+                    custom = None
+            data = _demo_allocation_data(custom) if self.demo else _get_allocation_data(self.db_path, custom)
+            self._send_html(_build_allocation_html(data, error=error))
+
         elif parsed.path == "/plan":
             # contrib パラメータがあれば設定に保存、なければDB設定を使用
             contrib = None
@@ -6970,6 +7113,8 @@ class Handler(BaseHTTPRequestHandler):
         # simulator は _get_simulator_data が内部で接続を管理するため先に分岐
         if prompt_type == "simulator":
             return self._ai_prompt_simulator()
+        if prompt_type == "allocation":
+            return self._ai_prompt_allocation()
         conn = get_connection(self.db_path)
         try:
             if prompt_type == "all":
@@ -6984,6 +7129,42 @@ class Handler(BaseHTTPRequestHandler):
                 return "不明なタイプです。"
         finally:
             conn.close()
+
+    def _ai_prompt_allocation(self) -> str:
+        """余剰資金の配分比較をAIへ相談するMarkdownを返す。"""
+        data = _demo_allocation_data() if self.demo else _get_allocation_data(self.db_path)
+        if not data:
+            return "資産データがありません。"
+        context = data["context"]
+        detail = context["investable_detail"]
+        lines = [
+            f"# 余剰資金の配分シナリオ（{context['as_of']}時点）",
+            "",
+            f"- 投資可能額: **{context['investable_cash']:,.0f}円**",
+            f"- 預金・現金: {detail['cash_balance']:,.0f}円",
+            f"- 生活防衛資金: {detail['emergency_fund']:,.0f}円",
+            f"- 予定支出: {detail['planned_expenses']:,.0f}円",
+            "",
+            "## 比較案",
+            "",
+            "| 案 | 現金 | 投資信託 | 日本株 | 米国株 |",
+            "|---|---:|---:|---:|---:|",
+        ]
+        for scenario in data["presets"]:
+            amounts = scenario["allocation_amounts"]
+            lines.append(
+                f"| {scenario['name']} | {amounts['cash']:,.0f}円 | {amounts['fund']:,.0f}円 | "
+                f"{amounts['jp_stock']:,.0f}円 | {amounts['us_stock']:,.0f}円 |"
+            )
+        lines += [
+            "",
+            "---",
+            "",
+            "投資信託・日本株・米国株・現金のどこへ振るか相談したいです。",
+            "現在の資産構成、地域分散、集中リスク、予定支出を踏まえ、各案の長所・短所を比較してください。",
+            "断定ではなく、追加で確認すべき条件と推奨額の範囲を示してください。",
+        ]
+        return "\n".join(lines)
 
     def _ai_prompt_all(self, conn: sqlite3.Connection) -> str:
         """AI相談用データ（全種類）を1つのMarkdownにまとめる。"""
