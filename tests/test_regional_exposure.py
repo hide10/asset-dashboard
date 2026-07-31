@@ -110,6 +110,7 @@ def test_settings_page_has_regional_exposure_inputs(tmp_path):
     [
         ("架空 国内株式インデックス", "日本", "high"),
         ("架空 S&P500 インデックス", "米国", "high"),
+        ("架空 全米株式インデックス", "米国", "high"),
         ("架空 新興国株式", "新興国", "high"),
         ("架空 オールカントリー", "米国", "estimate"),
         ("架空 外国株式", "米国", "estimate"),

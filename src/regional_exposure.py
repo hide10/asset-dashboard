@@ -56,7 +56,7 @@ def suggest_regional_exposure(name: str, code: str = "") -> RegionalExposureSugg
         )
     if "新興国" in text or "emerging" in text:
         return RegionalExposureSuggestion(_allocation(emerging=100), "商品名に新興国を明記", "high")
-    if any(word in text for word in ("米国", "s&p500", "sp500", "nasdaq", "nyダウ", "ダウ30")):
+    if any(word in text for word in ("米国", "全米", "s&p500", "sp500", "nasdaq", "nyダウ", "ダウ30")):
         return RegionalExposureSuggestion(_allocation(us=100), "商品名に米国または米国指数を明記", "high")
     if any(word in text for word in ("国内", "日本株", "topix", "日経225", "nikkei225")):
         return RegionalExposureSuggestion(_allocation(japan=100), "商品名に国内または日本株指数を明記", "high")
