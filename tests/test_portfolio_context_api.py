@@ -49,7 +49,10 @@ def test_portfolio_context_uses_latest_snapshot_and_omits_accounts(tmp_path):
     assert context["regional_exposure"]["configured_value"] == 0
     assert context["regional_exposure"]["unconfigured_value"] == 3_000_000
     assert context["investable_cash"] == 3_100_000
-    assert context["investable_detail"]["formula"] == "cash - emergency_fund - planned_expenses - additional_reserve"
+    assert (
+        context["investable_detail"]["formula"]
+        == "cash - emergency_fund - planned_expenses - scheduled_card_payments - additional_reserve"
+    )
 
 
 def _invoke_portfolio_endpoint(

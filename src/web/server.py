@@ -35,8 +35,10 @@ from src.db.repository import (
     calculate_investable_cash,
     create_child_profile,
     create_life_event,
+    create_scheduled_card_payment,
     delete_child_profile,
     delete_life_event,
+    disable_scheduled_card_payment,
     get_allocation_context,
     get_annual_life_event_expenses,
     get_budgets,
@@ -63,6 +65,7 @@ from src.db.repository import (
     get_setting,
     list_children_profiles,
     list_life_events,
+    list_scheduled_card_payments,
     save_budgets,
     save_cf_csv_month,
     save_cf_transactions,
@@ -728,7 +731,7 @@ table {{ width:100%;border-collapse:collapse;font-size:.86rem }} th,td {{ paddin
 </style></head><body><div class="container">
 <div class="page-header"><h1>余剰資金の配分を比較</h1>{_nav_html("/allocation")}</div>
 <div class="hero"><div>現在の投資可能額</div><div class="amount">{investable:,.0f}円</div>
-<p>生活防衛資金と予定支出を確保した後、この範囲で現金・投資信託・日本株・米国株を比較します。</p></div>
+<p>生活防衛資金・予定支出・カード引き落とし予定を確保した後、この範囲で現金・投資信託・日本株・米国株を比較します。</p></div>
 <div class="card" data-card-id="allocation-scenarios"><h2>プリセット比較</h2><div class="scenarios">{scenario_cards}</div></div>
 <div class="card"><h2>自分で比率を調整</h2>{error_html}
 <form method="GET" action="/allocation" data-testid="allocation-custom-form"><div class="allocation-inputs">{custom_inputs}</div>
@@ -1181,8 +1184,10 @@ def _build_html(
         cash_balance = float(investable_cash.get("cash_balance", 0))
         emergency_fund = float(investable_cash.get("emergency_fund", 0))
         planned_expenses = float(investable_cash.get("planned_expenses", 0))
+        scheduled_card_payment_total = float(investable_cash.get("scheduled_card_payment_total", 0))
         additional_reserve = float(investable_cash.get("additional_reserve", 0))
         shortfall = float(investable_cash.get("shortfall", 0))
+        scheduled_card_payment_count = len(investable_cash.get("scheduled_card_payments", []))
         status_html = (
             f'<span style="color:#DF3727">必要額に {shortfall:,.0f}円不足</span>'
             if shortfall > 0
@@ -1197,12 +1202,14 @@ def _build_html(
     <div class="card-body">
       <div style="font-size:1.8rem;font-weight:700;color:#0F7F30">{investable:,.0f}円</div>
       <div style="font-size:0.82rem;color:#636e72;margin-bottom:12px">{status_html}</div>
-      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.85rem">
+        <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.85rem">
         <span>預金・現金 {cash_balance:,.0f}円</span>
         <span>− 生活防衛資金 {emergency_fund:,.0f}円</span>
         <span>− 予定支出 {planned_expenses:,.0f}円</span>
+        {f"<span>− カード引落予定 {scheduled_card_payment_total:,.0f}円</span>" if scheduled_card_payment_total > 0 else ""}
         <span>− 追加確保 {additional_reserve:,.0f}円</span>
       </div>
+      {f'<div style="margin-top:8px;font-size:0.78rem;color:#636e72">カード引落予定: {scheduled_card_payment_count}件（設定した計画期間内）</div>' if scheduled_card_payment_count else ""}
       <div style="margin-top:10px"><a href="/settings#investable-cash">計算条件を変更</a></div>
     </div>
   </div>"""
@@ -2434,11 +2441,13 @@ def _demo_data() -> dict:
             "planned_expense_horizon_months": 12,
             "planned_expenses": 300_000,
             "planned_expenses_by_year": {int(today[:4]): 300_000},
+            "scheduled_card_payments": [],
+            "scheduled_card_payment_total": 0,
             "additional_reserve": 150_000,
             "required_cash": 2_250_000,
             "investable_cash": 1_000_000,
             "shortfall": 0,
-            "formula": "cash - emergency_fund - planned_expenses - additional_reserve",
+            "formula": "cash - emergency_fund - planned_expenses - scheduled_card_payments - additional_reserve",
         },
     }
 
@@ -5103,9 +5112,11 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         scheduler_time = get_setting(conn, "scheduler_time", _SCHEDULER_DEFAULT_TIME) or _SCHEDULER_DEFAULT_TIME
         scheduler_last_run = get_setting(conn, "scheduler_last_run_at")
         scheduler_last_result = get_setting(conn, "scheduler_last_result")
+        moneyforward_card_schedule_last_fetch = get_setting(conn, "moneyforward_card_schedule_last_fetch_at")
         regional_holdings = get_regional_exposure_holdings(conn)
         regional_config = get_regional_exposure_config(conn)
         investable = calculate_investable_cash(conn)
+        scheduled_card_payments = list_scheduled_card_payments(conn)
         monthly_living_expense = int(float(get_setting(conn, "monthly_living_expense", "0") or "0"))
         emergency_fund_months = float(get_setting(conn, "emergency_fund_months", "6") or "6")
         planned_expense_horizon_months = int(float(get_setting(conn, "planned_expense_horizon_months", "12") or "12"))
@@ -5144,6 +5155,11 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
         saved_msg = (
             '<div class="saved-msg" style="background:#DF3727">地域配分の合計を商品ごとに100%にしてください。</div>'
         )
+    elif saved == "scheduled_card_payment_error":
+        saved_msg = (
+            '<div class="saved-msg" style="background:#DF3727">カード引き落とし予定の入力を確認してください。'
+            "日付・カード名・正の金額が必要です。</div>"
+        )
     elif saved in ("gemini", "1"):
         saved_msg = (
             '<div class="saved-msg">設定を保存しました。AIコメントをバックグラウンドで生成中です'
@@ -5179,6 +5195,43 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
     if not regional_rows:
         regional_rows = '<p style="font-size:0.85rem;color:#636e72">最新データに投資信託・年金の商品がありません。</p>'
 
+    scheduled_investable_ids = {item["id"] for item in investable.get("scheduled_card_payments", [])}
+    today_iso = date.today().isoformat()
+    scheduled_card_rows = ""
+    for payment in scheduled_card_payments:
+        if payment["due_date"] < today_iso:
+            status = '<span style="color:#b2bec3">予定日経過・計算対象外</span>'
+        elif payment["id"] in scheduled_investable_ids:
+            status = '<span style="color:#0F7F30">投資可能額に反映</span>'
+        else:
+            status = '<span style="color:#636e72">計画期間外</span>'
+        is_moneyforward = payment.get("source") == "moneyforward"
+        source_label = "MoneyForward自動" if is_moneyforward else "手入力"
+        action_html = (
+            '<span style="color:#636e72;font-size:0.75rem">自動更新</span>'
+            if is_moneyforward
+            else f"""
+            <form method="POST" action="/settings" style="margin:0">
+              <input type="hidden" name="setting_type" value="scheduled_card_payment">
+              <input type="hidden" name="scheduled_action" value="disable">
+              <input type="hidden" name="scheduled_payment_id" value="{payment["id"]}">
+              <button type="submit" class="btn btn-muted" style="padding:4px 8px;font-size:0.75rem">無効化</button>
+            </form>"""
+        )
+        scheduled_card_rows += f"""
+        <tr>
+          <td>{_h(payment["due_date"])}</td>
+          <td>{_h(payment["card_name"])}</td>
+          <td>{_h(payment["withdrawal_account"]) or "-"}</td>
+          <td style="text-align:right">{payment["amount"]:,.0f}円</td>
+          <td>{_h(payment["memo"]) or "-"}</td>
+          <td>{status}</td>
+          <td>{source_label}</td>
+          <td>{action_html}</td>
+        </tr>"""
+    if not scheduled_card_rows:
+        scheduled_card_rows = '<tr><td colspan="8" style="color:#636e72">登録済みの予定はありません。</td></tr>'
+
     return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -5205,6 +5258,13 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
   .btn {{ padding: 8px 20px; background: #2881D7; color: #fff; border: none; border-radius: 6px;
           font-size: 0.9rem; font-weight: 600; cursor: pointer; }}
   .btn:hover {{ background: #1a6cb8; }}
+  .btn-muted {{ background: #636e72; }}
+  .btn-muted:hover {{ background: #4b5559; }}
+  .scheduled-table {{ width:100%; border-collapse:collapse; font-size:0.8rem; margin:12px 0 18px; }}
+  .scheduled-table th, .scheduled-table td {{ border-bottom:1px solid #eee; padding:8px 6px; text-align:left; vertical-align:middle; }}
+  .scheduled-table th {{ color:#636e72; font-weight:600; white-space:nowrap; }}
+  .scheduled-table td:nth-child(4) {{ white-space:nowrap; }}
+  .scheduled-scroll {{ overflow-x:auto; }}
   .saved-msg {{ background: #0F7F30; color: #fff; padding: 10px 16px; border-radius: 8px;
                margin-bottom: 16px; font-size: 0.9rem; font-weight: 600; }}
 </style>
@@ -5331,6 +5391,38 @@ def _build_settings_html(db_path: str, saved: str | None = None, skip_update: bo
        </div>
        <button type="submit" class="btn">保存</button>
     </form>
+  </div>
+  <div class="card" id="scheduled-card-payments" data-testid="scheduled-card-payments">
+    <h2>カード引き落とし予定</h2>
+    <div class="status">
+      {f"MoneyForwardから最終取得: {moneyforward_card_schedule_last_fetch}" if moneyforward_card_schedule_last_fetch else "MoneyForwardからの自動取得はまだ実行されていません。"}
+    </div>
+    <p style="font-size:0.85rem;color:#636e72;margin-bottom:12px">
+      MoneyForwardの登録口座詳細から、引落日と引落額を日次で自動取得します。
+      引落予定日が「予定支出を確保する期間」内にあるものだけ、投資可能額から差し引きます。
+      自動取得にない予定だけ、補助的に手入力できます。過去日・期間外の予定は計算対象外です。
+    </p>
+    <div class="scheduled-scroll">
+      <table class="scheduled-table">
+        <thead><tr><th>引落日</th><th>カード</th><th>引落口座</th><th>金額</th><th>メモ</th><th>状態</th><th>取得元</th><th></th></tr></thead>
+        <tbody>{scheduled_card_rows}</tbody>
+      </table>
+    </div>
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;color:#2881D7;font-size:0.9rem">自動取得できない予定を手入力</summary>
+    <form method="POST" action="/settings" style="margin-top:14px">
+      <input type="hidden" name="setting_type" value="scheduled_card_payment">
+      <input type="hidden" name="scheduled_action" value="add">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+        <div class="field"><label>引落予定日</label><input type="date" name="scheduled_due_date" required></div>
+        <div class="field"><label>カード名</label><input type="text" name="scheduled_card_name" maxlength="80" placeholder="例: 楽天カード" required></div>
+        <div class="field"><label>金額（円）</label><input type="number" name="scheduled_amount" min="1" step="1" placeholder="100000" required></div>
+        <div class="field"><label>引落口座（任意）</label><input type="text" name="scheduled_withdrawal_account" maxlength="80" placeholder="例: きらぼし銀行"></div>
+        <div class="field"><label>メモ（任意）</label><input type="text" name="scheduled_memo" maxlength="160" placeholder="例: 8月利用分"></div>
+      </div>
+      <button type="submit" class="btn">予定を追加</button>
+    </form>
+    </details>
   </div>
   <div class="card">
     <h2>データエクスポート</h2>
@@ -7270,6 +7362,7 @@ class Handler(BaseHTTPRequestHandler):
             return "資産データがありません。"
         context = data["context"]
         detail = context["investable_detail"]
+        scheduled_card_payment_total = float(detail.get("scheduled_card_payment_total", 0))
         lines = [
             f"# 余剰資金の配分シナリオ（{context['as_of']}時点）",
             "",
@@ -7277,6 +7370,7 @@ class Handler(BaseHTTPRequestHandler):
             f"- 預金・現金: {detail['cash_balance']:,.0f}円",
             f"- 生活防衛資金: {detail['emergency_fund']:,.0f}円",
             f"- 予定支出: {detail['planned_expenses']:,.0f}円",
+            f"- カード引き落とし予定: {scheduled_card_payment_total:,.0f}円",
             "",
             "## 比較案",
             "",
@@ -7373,6 +7467,7 @@ class Handler(BaseHTTPRequestHandler):
             f"- 預金・現金: {investable['cash_balance']:,.0f}円",
             f"- 生活防衛資金: {investable['emergency_fund']:,.0f}円",
             f"- 計画期間内の予定支出: {investable['planned_expenses']:,.0f}円",
+            f"- カード引き落とし予定: {investable['scheduled_card_payment_total']:,.0f}円",
             f"- 追加確保額: {investable['additional_reserve']:,.0f}円",
             f"- 計画期間: {investable['planned_expense_horizon_months']}か月",
         ]
@@ -7541,7 +7636,13 @@ class Handler(BaseHTTPRequestHandler):
             post_params = parse_qs(body)
             setting_type = post_params.get("setting_type", ["gemini"])[0]
             # リダイレクト URL に反映するためホワイトリストで正規化
-            if setting_type not in ("closing_day", "scheduler", "regional_exposure", "investable_cash"):
+            if setting_type not in (
+                "closing_day",
+                "scheduler",
+                "regional_exposure",
+                "investable_cash",
+                "scheduled_card_payment",
+            ):
                 setting_type = "gemini"
 
             if setting_type == "closing_day":
@@ -7602,6 +7703,36 @@ class Handler(BaseHTTPRequestHandler):
                     save_regional_exposure_config(conn, config)
                 except (ValueError, TypeError):
                     setting_type = "regional_error"
+                finally:
+                    conn.close()
+            elif setting_type == "scheduled_card_payment":
+                scheduled_action = post_params.get("scheduled_action", ["add"])[0].strip()
+                conn = get_connection(self.db_path)
+                try:
+                    if scheduled_action == "disable":
+                        payment_id = int(post_params.get("scheduled_payment_id", ["0"])[0])
+                        if payment_id <= 0:
+                            raise ValueError("予定IDが不正です")
+                        disable_scheduled_card_payment(conn, payment_id)
+                    else:
+                        due_date = post_params.get("scheduled_due_date", [""])[0].strip()
+                        card_name = post_params.get("scheduled_card_name", [""])[0].strip()
+                        amount = float(post_params.get("scheduled_amount", ["0"])[0])
+                        withdrawal_account = post_params.get("scheduled_withdrawal_account", [""])[0].strip()
+                        memo = post_params.get("scheduled_memo", [""])[0].strip()
+                        parsed_due_date = date.fromisoformat(due_date)
+                        if parsed_due_date < date.today() or not card_name or amount <= 0 or amount > 1_000_000_000:
+                            raise ValueError("引落予定日の未来日・カード名・正の金額が必要です")
+                        create_scheduled_card_payment(
+                            conn,
+                            parsed_due_date.isoformat(),
+                            card_name[:80],
+                            amount,
+                            withdrawal_account[:80],
+                            memo[:160],
+                        )
+                except (TypeError, ValueError):
+                    setting_type = "scheduled_card_payment_error"
                 finally:
                     conn.close()
             elif setting_type == "investable_cash":
@@ -8415,7 +8546,9 @@ def _run_update_locked(db_path: str) -> None:
 
         from src.daily import run
 
-        asyncio.run(run(headless=True))
+        # MoneyForwardの認証ページはヘッドレスChromiumを403にするため、
+        # ローカルの表示セッション（DISPLAY）を使って日次取得する。
+        asyncio.run(run(headless=False))
 
         # 更新成功 → セッション切れフラグをクリア
         conn = init_db(db_path)

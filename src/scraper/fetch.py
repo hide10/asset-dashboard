@@ -9,17 +9,36 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from playwright.async_api import Page, Response, async_playwright
 
+from src.parser.card_schedule import ScheduledCardPayment, parse_card_account_links, parse_card_schedule_html
+
 RAW_DIR = Path(__file__).resolve().parents[2] / "raw"
 PORTFOLIO_URL = "https://moneyforward.com/bs/portfolio"
+ACCOUNTS_URL = "https://moneyforward.com/accounts"
 MONTHLY_URL = "https://moneyforward.com/cf/monthly"
 CF_CSV_URL = "https://moneyforward.com/cf/csv"
 AGGREGATION_URL = "https://moneyforward.com/aggregation_queue"
 DEFAULT_STORAGE_STATE = Path(__file__).resolve().parents[2] / ".auth" / "storage_state.json"
+
+
+@dataclass(frozen=True)
+class CardScheduleFetchResult:
+    """MoneyForwardカード予定の取得結果。"""
+
+    payments: list[ScheduledCardPayment]
+    account_count: int
+    failed_account_count: int
+    fetched_at: str
+
+    @property
+    def complete(self) -> bool:
+        """全口座詳細を取得できた場合にTrue。"""
+        return self.account_count > 0 and self.failed_account_count == 0
 
 
 def _build_raw_path() -> Path:
@@ -191,6 +210,52 @@ async def fetch_monthly(page: Page, raw_path: Path) -> Path:
 
     print(f"月次収支raw保存完了: {raw_path}")
     return raw_path
+
+
+async def fetch_card_schedules(page: Page) -> CardScheduleFetchResult:
+    """MoneyForwardの全口座詳細からカード引落予定を取得する。
+
+    口座一覧にある全口座の詳細を軽量なGETで確認し、「引き落とし予定額」表を
+    持つページだけをパーサーに渡す。口座の取得に失敗した場合は ``complete`` が
+    False になるため、呼び出し側は前回の自動取得値を保持できる。
+    """
+    print(f"カード引落予定取得中: {ACCOUNTS_URL}")
+    response = await page.goto(ACCOUNTS_URL, wait_until="domcontentloaded", timeout=60000)
+    if response is not None and response.status >= 400:
+        raise RuntimeError(f"MoneyForward口座一覧の取得に失敗しました（HTTP {response.status}）")
+    if "sign_in" in page.url:
+        raise RuntimeError("ログインページにリダイレクトされました。セッションが期限切れです。")
+
+    accounts = parse_card_account_links(await page.content())
+    if not accounts:
+        raise RuntimeError("MoneyForward口座一覧から口座詳細リンクを取得できませんでした")
+
+    payments: list[ScheduledCardPayment] = []
+    failed = 0
+    for account in accounts:
+        detail_url = f"https://moneyforward.com{account.href}"
+        try:
+            detail_response = await page.request.get(detail_url, timeout=30000)
+            if detail_response.status != 200:
+                failed += 1
+                continue
+            detail_html = await detail_response.text()
+            payments.extend(parse_card_schedule_html(detail_html, account))
+        except Exception as exc:
+            failed += 1
+            print(f"  口座詳細取得失敗（続行）: {exc}")
+
+    fetched_at = datetime.now().isoformat(timespec="seconds")
+    result = CardScheduleFetchResult(
+        payments=payments,
+        account_count=len(accounts),
+        failed_account_count=failed,
+        fetched_at=fetched_at,
+    )
+    print(
+        f"  カード引落予定: {len(payments)}件 / 口座詳細 {len(accounts)}件" + (f"（失敗 {failed}件）" if failed else "")
+    )
+    return result
 
 
 async def request_aggregation(page: Page) -> None:
