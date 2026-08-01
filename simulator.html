@@ -1,0 +1,1762 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
+<title>ライフサイクル・シミュレーター</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f6fa; color: #2d3436; line-height: 1.6; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  
+  .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .nav-toolbar { display: flex; gap: 0; }
+  .nav-toolbar a {
+    color: #636e72; text-decoration: none; font-size: 0.85rem; font-weight: 600;
+    padding: 7px 16px; border: 1px solid #dfe6e9; background: #fff;
+  }
+  .nav-toolbar a:first-child { border-radius: 6px 0 0 6px; }
+  .nav-toolbar a:last-child { border-radius: 0 6px 6px 0; }
+  .nav-toolbar a:not(:first-child) { border-left: none; }
+  .nav-toolbar a:hover { background: #f1f2f6; color: #2d3436; }
+  .nav-toolbar a.active { background: #2881D7; color: #fff; border-color: #2881D7; }
+  .nav-toolbar a.active + a { border-left-color: #2881D7; }
+
+  h1 { font-size: 1.5rem; }
+  .grid { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+  .sim-overview-stack {
+    position: sticky;
+    top: 12px;
+    z-index: 4;
+    display: grid;
+    gap: 12px;
+    width: 100%;
+    flex: 0 0 100%;
+  }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    width: calc(50% - 10px);
+  }
+  .card.full { width: 100%; }
+  .card-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  }
+  .card-header h2 {
+    font-size: 1rem; font-weight: 700; flex: 1; margin: 0;
+  }
+  .card-body { }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #f1f2f6; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pred-table th { background: #f8f9fa; font-weight: 600; position: sticky; top: 0; }
+  .pred-note { font-size: 0.75rem; color: #b2bec3; margin-top: 8px; }
+  
+  .collapse-btn {
+    background: none; border: none; cursor: pointer; font-size: 0.9rem;
+    color: #b2bec3; padding: 2px 6px; line-height: 1; flex-shrink: 0;
+  }
+  .collapse-btn:hover { color: #636e72; }
+  [data-card-id].collapsed > .card-body { display: none; }
+  [data-card-id].collapsed { padding-bottom: 8px; }
+
+
+  /* シミュレーター固有 */
+  .sim-field { margin-bottom: 12px; }
+  .sim-field label { display: block; font-size: 0.8rem; font-weight: 600; color: #636e72; margin-bottom: 4px; }
+  .sim-input-row { display: flex; align-items: center; gap: 8px; }
+  .sim-input-row input[type="range"] { flex: 1; }
+  .sim-input-row input[type="number"] { width: 140px; padding: 4px 8px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.9rem; }
+  .money-input { width: 140px; padding: 4px 8px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.9rem; text-align: right; }
+  .text-input { width: 100%; padding: 6px 8px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.9rem; }
+  .btn {
+    background: #2881D7; color: #fff; border: none; border-radius: 6px;
+    padding: 8px 12px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  }
+  .btn:hover { background: #1a6bb5; }
+  .btn-danger-sm {
+    background: #fff; color: #c0392b; border: 1px solid #f3b4ae; border-radius: 6px;
+    padding: 4px 8px; font-size: 0.75rem; cursor: pointer;
+  }
+  .btn-danger-sm:hover { background: #fff5f4; }
+  .btn-edit-sm {
+    background: #fff; color: #1a6bb5; border: 1px solid #b9d7f6; border-radius: 6px;
+    padding: 4px 8px; font-size: 0.75rem; cursor: pointer;
+  }
+  .btn-edit-sm:hover { background: #f4f9ff; }
+  .plan-select {
+    padding: 2px 4px; border: 1px solid #dfe6e9; border-radius: 4px; font-size: 0.75rem;
+    margin: 0 4px 4px 0; background: #fff;
+  }
+  .sim-unit { font-size: 0.8rem; color: #636e72; min-width: 20px; }
+  .stepper-btn {
+    width: 32px; height: 32px; border: 1px solid #dfe6e9; border-radius: 4px;
+    background: #f8f9fa; font-size: 1.1rem; font-weight: 700; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; color: #2d3436;
+    flex-shrink: 0;
+  }
+  .stepper-btn:hover { background: #e9ecef; }
+  .stepper-btn:active { background: #dfe6e9; }
+  .stepper-input {
+    width: 64px; text-align: center; padding: 4px 4px; border: 1px solid #dfe6e9;
+    border-radius: 4px; font-size: 0.95rem; font-weight: 600;
+    -moz-appearance: textfield;
+  }
+  .stepper-input::-webkit-outer-spin-button,
+  .stepper-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .sim-info-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%; background: #2881D7; color: #fff;
+    font-size: 0.7rem; font-weight: 700; font-style: italic; cursor: pointer;
+    vertical-align: middle; margin-left: 4px; position: relative;
+    border: 1.5px solid #2881D7;
+  }
+  .sim-info-btn:hover, .sim-info-btn:focus { background: #1a6bb5; }
+  .sim-tooltip {
+    position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    background: #2d3436; color: #fff; font-size: 0.75rem; font-style: normal; font-weight: 400;
+    padding: 6px 10px; border-radius: 6px; white-space: nowrap; z-index: 100;
+    pointer-events: none;
+  }
+  .sim-tooltip::after {
+    content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+    border: 5px solid transparent; border-top-color: #2d3436;
+  }
+  .sim-param-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .sim-param-section h3 { font-size: 0.85rem; font-weight: 700; color: #2881D7; margin-bottom: 8px; border-bottom: 2px solid #2881D7; padding-bottom: 4px; }
+  .sim-recalc { margin-top: 16px; text-align: center; }
+  .sim-recalc button {
+    background: #2881D7; color: #fff; border: none; border-radius: 6px;
+    padding: 10px 32px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+  }
+  .sim-recalc button:hover { background: #1a6bb5; }
+  .sim-recalc button:disabled { background: #b2bec3; cursor: not-allowed; }
+  .sim-reset-btn {
+    background: #fff !important; color: #636e72 !important; border: 1px solid #dfe6e9 !important;
+    font-size: 0.8rem !important; padding: 8px 16px !important;
+  }
+  .sim-reset-btn:hover { background: #f8f9fa !important; color: #2d3436 !important; }
+  .sim-summary-card {
+    padding: 14px 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    border: 1px solid #e8f1fb;
+  }
+  .sim-summary-card .card-header,
+  .sim-chart-card .card-header {
+    margin-bottom: 10px;
+  }
+  .sim-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .sim-summary-item {
+    text-align: left; padding: 10px 12px; background: rgba(248,249,250,0.92); border-radius: 10px;
+    border: 1px solid #eef2f7;
+  }
+  .sim-summary-label { font-size: 0.74rem; color: #636e72; margin-bottom: 4px; line-height: 1.4; }
+  .sim-summary-value { font-size: 1rem; font-weight: 700; line-height: 1.25; }
+  .sim-prob-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+    padding-top: 12px; border-top: 1px solid #f1f2f6;
+  }
+  .sim-prob-item { text-align: center; }
+  .sim-prob-label { display: block; font-size: 0.74rem; color: #636e72; margin-bottom: 2px; }
+  .sim-prob-value { font-size: 1.05rem; font-weight: 700; }
+  .sim-loading { display: none; margin-left: 8px; }
+  .sim-notes {
+    margin-top: 16px; padding: 0; background: #f8f9fa; border-radius: 8px;
+    border-left: 3px solid #b2bec3;
+  }
+  .sim-notes-header {
+    padding: 10px 16px; cursor: pointer; font-size: 0.8rem; font-weight: 700;
+    color: #636e72; user-select: none;
+  }
+  .sim-notes-header:hover { color: #2d3436; }
+  .sim-notes-icon {
+    display: inline-block; font-size: 0.65rem; transition: transform 0.2s;
+    margin-right: 4px;
+  }
+  .sim-notes.open .sim-notes-icon { transform: rotate(90deg); }
+  .sim-notes-body {
+    max-height: 0; overflow: hidden; transition: max-height 0.3s ease;
+    padding: 0 16px;
+  }
+  .sim-notes.open .sim-notes-body { max-height: 500px; padding: 0 16px 12px; }
+  .sim-notes ul { font-size: 0.75rem; color: #636e72; padding-left: 18px; margin: 0; }
+  .sim-notes li { margin-bottom: 3px; line-height: 1.5; }
+  .sim-notes strong { color: #2d3436; }
+  .sim-chart-card {
+    padding: 16px;
+  }
+  .sim-chart-frame {
+    position: relative; width: 100%; min-height: 220px; max-height: 320px; height: clamp(220px, 30vw, 300px);
+  }
+
+  @media (max-width: 700px) {
+    .sim-overview-stack { position: static; top: auto; }
+    .card { width: 100%; }
+    .sim-param-grid { grid-template-columns: 1fr; }
+    .sim-summary-grid { grid-template-columns: 1fr 1fr; }
+    .sim-chart-frame { min-height: 200px; height: 220px; }
+    .page-header { flex-direction: column; gap: 8px; align-items: flex-start; }
+    .nav-toolbar a { padding: 6px 10px; font-size: 0.78rem; }
+    h1 { font-size: 1.2rem; }
+    table { font-size: 0.8rem; }
+  }
+  @media (max-width: 520px) {
+    .sim-summary-grid { grid-template-columns: 1fr; }
+    .sim-prob-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<script>
+// --- Mulberry32 PRNG (seeded 32-bit PRNG) ---
+function mulberry32(seed) {
+  let s = seed | 0;
+  return function() {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// --- Box-Muller 変換 (standard normal) ---
+function gaussRandom(rng) {
+  let u1, u2;
+  do { u1 = rng(); } while (u1 === 0);
+  u2 = rng();
+  return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+}
+
+// --- ライフサイクル Monte Carlo シミュレーション ---
+function runLifecycleSimulationJS(params) {
+  const {
+    current_age, retirement_age, end_age,
+    initial_investment, monthly_contribution,
+    annual_return, annual_volatility,
+    monthly_withdrawal,
+    inflation_rate = 0.0,
+    expense_ratio = 0.0,
+    pension_start_age = 65,
+    monthly_pension = 0.0,
+    other_monthly_income = 0.0,
+    reemployment_end_age = null,
+    reemployment_monthly_income = 0.0,
+    tax_rate = 0.20315,
+    safe_value = 0.0,
+    simulations = 2000,
+    rng_seed = 42,
+  } = params;
+
+  const rng = mulberry32(rng_seed);
+
+  // Drift adjustment: inflation + expense ratio
+  const drift = (1 + annual_return) / ((1 + inflation_rate) * (1 + expense_ratio)) - 1;
+  const monthlyDrift = drift / 12;
+  const monthlyVol = annual_volatility / Math.sqrt(12);
+
+  const totalYears = end_age - current_age;
+  const totalMonths = totalYears * 12;
+  const accumulationMonths = (retirement_age - current_age) * 12;
+
+  // Total principal
+  const totalPrincipal = initial_investment + safe_value + monthly_contribution * accumulationMonths;
+
+  // Store yearly balances per simulation
+  const simYearly = [];
+  let depletedCount = 0;
+  let principalLossCount = 0;
+  const simFinal = [];
+  const simTaxTotal = [];
+
+  for (let s = 0; s < simulations; s++) {
+    let risk = initial_investment;
+    let safe = safe_value;
+    let costBasis = initial_investment;
+    let taxCumulative = 0.0;
+    let depleted = false;
+    const yearlyValues = [];
+
+    for (let month = 0; month < totalMonths; month++) {
+      if (depleted) {
+        if (month % 12 === 11) yearlyValues.push(0.0);
+        continue;
+      }
+
+      // GBM growth (risk asset only)
+      const z = gaussRandom(rng);
+      const growth = Math.exp((monthlyDrift - 0.5 * monthlyVol * monthlyVol) + monthlyVol * z);
+      risk = risk * growth;
+
+      if (month < accumulationMonths) {
+        // Accumulation phase
+        risk += monthly_contribution;
+        costBasis += monthly_contribution;
+      } else {
+        // Drawdown phase
+        const yearInSim = Math.floor(month / 12);
+        const age = current_age + yearInSim;
+
+        // Income (reemployment + pension + other) -> safe asset
+        let income = other_monthly_income;
+        if (reemployment_end_age != null && age < reemployment_end_age) income += reemployment_monthly_income;
+        if (age >= pension_start_age) income += monthly_pension;
+        safe += income;
+
+        // Tax on risk asset gains
+        const withdrawal = monthly_withdrawal;
+        if (risk > 0 && costBasis < risk) {
+          const gainRatio = (risk - costBasis) / risk;
+          const riskWithdrawal = Math.min(risk, Math.max(0.0, withdrawal - safe));
+          if (riskWithdrawal > 0) {
+            const tax = riskWithdrawal * gainRatio * tax_rate;
+            taxCumulative += tax;
+            risk -= tax;
+          }
+        }
+
+        // Withdraw: safe first, then risk
+        if (safe >= withdrawal) {
+          safe -= withdrawal;
+        } else {
+          const remainder = withdrawal - safe;
+          safe = 0.0;
+          if (risk > 0) {
+            costBasis -= remainder * (costBasis / risk);
+            if (costBasis < 0) costBasis = 0;
+          }
+          risk -= remainder;
+        }
+
+        if (risk + safe <= 0) {
+          risk = 0.0;
+          safe = 0.0;
+          depleted = true;
+        }
+      }
+
+      // Record at year-end
+      if (month % 12 === 11) {
+        yearlyValues.push(Math.max(risk + safe, 0.0));
+      }
+    }
+
+    const totalValue = Math.max(risk + safe, 0.0);
+    simYearly.push(yearlyValues);
+    simFinal.push(totalValue);
+    simTaxTotal.push(taxCumulative);
+
+    if (depleted) depletedCount++;
+    if (totalValue < totalPrincipal) principalLossCount++;
+  }
+
+  // Percentile aggregation per year
+  const yearlyBalances = [];
+  for (let yi = 0; yi < totalYears; yi++) {
+    const age = current_age + yi + 1;
+    const values = [];
+    for (let s = 0; s < simulations; s++) {
+      if (yi < simYearly[s].length) values.push(simYearly[s][yi]);
+    }
+    values.sort((a, b) => a - b);
+    const n = values.length;
+    if (n === 0) continue;
+    yearlyBalances.push({
+      age: age,
+      p10: values[Math.floor(n * 0.10)],
+      p25: values[Math.floor(n * 0.25)],
+      p50: values[Math.floor(n * 0.50)],
+      p75: values[Math.floor(n * 0.75)],
+      p90: values[Math.floor(n * 0.90)],
+    });
+  }
+
+  // P50 financial summary
+  simFinal.sort((a, b) => a - b);
+  simTaxTotal.sort((a, b) => a - b);
+  const n = simFinal.length;
+  const netFinalP50 = simFinal[Math.floor(n * 0.50)];
+  const totalTaxP50 = simTaxTotal[Math.floor(n * 0.50)];
+  const totalGains = netFinalP50 + totalTaxP50 - totalPrincipal;
+
+  return {
+    ok: true,
+    yearly_balances: yearlyBalances,
+    depletion_probability: depletedCount / simulations,
+    principal_loss_probability: principalLossCount / simulations,
+    total_principal: totalPrincipal,
+    total_gains: totalGains,
+    total_tax: totalTaxP50,
+    net_final: netFinalP50,
+  };
+}
+</script>
+
+</head>
+<body>
+<div style="background:#DF3727;color:#fff;text-align:center;padding:8px 12px;font-size:0.8rem;font-weight:700;letter-spacing:0.05em">DEMO — 表示データはすべてダミーです <a href="https://github.com/hide10/asset-dashboard" style="color:#fff;text-decoration:underline;margin-left:8px">GitHub</a></div>
+<div class="container">
+  <div class="page-header">
+    <h1>ライフサイクル・シミュレーター</h1>
+    <div class="nav-toolbar"><a href="index.html">ダッシュボード</a><a href="/allocation">資産配分</a><a href="cf.html">家計簿分析</a><a href="plan.html">ライフプラン</a><a href="simulator.html" class="active">シミュレーター</a></div>
+  </div>
+  <div class="grid">
+    <div class="sim-overview-stack full">
+      
+    <div class="card full sim-chart-card" data-card-id="sim-chart">
+      <div class="card-header">
+        <h2>資産推移グラフ</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="sim-chart-frame">
+        <canvas id="sim-fan-chart" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
+      </div>
+      <div class="pred-note">※ 実質値（インフレ調整済み）。濃い帯=P25〜P75、薄い帯=P10〜P90、線=P50（中央値）</div>
+      <div class="pred-note">※ 灰色破線はイベントなしのP50（基準線）</div>
+      </div>
+    </div>
+      
+    <div class="card full sim-summary-card" data-card-id="sim-summary">
+      <div class="card-header">
+        <h2>財務サマリー</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="sim-summary-grid">
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">投入元本</div>
+          <div class="sim-summary-value">39,500,000円</div>
+        </div>
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">運用益（P50） <span class="sim-info-btn" tabindex="0" data-tooltip="今の貨幣価値に換算した実質値。インフレ分は差し引き済み">i</span></div>
+          <div class="sim-summary-value">16,500,792円</div>
+        </div>
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">税金合計（P50） <span class="sim-info-btn" tabindex="0" data-tooltip="取崩し時にリスク資産を売却した際の実現益への課税。含み益への潜在税は含まない">i</span></div>
+          <div class="sim-summary-value">798,557円</div>
+        </div>
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">最終残高（P50） <span class="sim-info-btn" tabindex="0" data-tooltip="今の貨幣価値での残高。全売却時は含み益に別途課税あり">i</span></div>
+          <div class="sim-summary-value" style="font-size:1.3rem;color:#2881D7">55,202,235円</div>
+        </div>
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">イベント影響（最終残高差）</div>
+          <div class="sim-summary-value" id="event-impact-val" style="color:#0F7F30">+0円</div>
+        </div>
+        <div class="sim-summary-item">
+          <div class="sim-summary-label">期間内イベント支出合計</div>
+          <div class="sim-summary-value" id="event-total-val">0円</div>
+        </div>
+      </div>
+      <div class="sim-prob-grid">
+        <div class="sim-prob-item">
+          <span class="sim-prob-label">枯渇確率</span>
+          <span class="sim-prob-value" style="color:#f39c12">1.4%</span>
+        </div>
+        <div class="sim-prob-item">
+          <span class="sim-prob-label">元本割れ確率</span>
+          <span class="sim-prob-value" style="color:#e74c3c">38.8%</span>
+        </div>
+      </div>
+      <div class="sim-notes" id="sim-notes">
+        <div class="sim-notes-header" onclick="this.parentElement.classList.toggle('open')">
+          <span class="sim-notes-icon">&#x25B6;</span> 計算の前提
+        </div>
+        <div class="sim-notes-body">
+          <ul>
+            <li><strong>すべての金額は今の貨幣価値（実質値）</strong>で表示。インフレ率はリターンから差し引いて計算するため、「今の感覚でいくら」が直感的にわかります</li>
+            <li><strong>リスク資産</strong>はモンテカルロ法（2,000回）で月次シミュレーション。<strong>安全資産</strong>は変動なし</li>
+            <li><strong>積立</strong>は現在〜退職年齢まで毎月リスク資産に加算</li>
+            <li><strong>取崩し</strong>は退職後に毎月実行。安全資産から先に消費し、不足分をリスク資産から売却</li>
+            <li><strong>税金</strong>（20.3%）はリスク資産の売却時、含み益部分にのみ課税。含み益への潜在税や NISA 非課税枠は未考慮</li>
+            <li><strong>年金・その他収入</strong>は受給開始年齢以降、毎月安全資産に加算</li>
+            <li><strong>P50</strong> = 中央値（半分がこれ以上、半分がこれ以下）。P10 は悲観、P90 は楽観シナリオ</li>
+          </ul>
+        </div>
+      </div>
+      </div>
+    </div>
+    </div>
+    <div class="card full" id="sim-params" data-card-id="sim-params">
+      <div class="card-header">
+        <h2>パラメータ設定</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="sim-param-grid">
+
+          <div class="sim-field">
+            <label for="current_age">現在の年齢 <span class="sim-info-btn" tabindex="0" data-tooltip="シミュレーション開始時点の年齢">i</span></label>
+            <div class="sim-input-row">
+              <button type="button" class="stepper-btn" onclick="stepVal('current_age',-1,20,80)">-</button>
+              <input type="number" id="current_age" name="current_age" min="20" max="80" step="1" value="35" class="stepper-input">
+              <button type="button" class="stepper-btn" onclick="stepVal('current_age',1,20,80)">+</button>
+              <span class="sim-unit">歳</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="retirement_age">退職年齢 <span class="sim-info-btn" tabindex="0" data-tooltip="この年齢以降は積立を止め、取崩しフェーズに入ります">i</span></label>
+            <div class="sim-input-row">
+              <button type="button" class="stepper-btn" onclick="stepVal('retirement_age',-1,30,85)">-</button>
+              <input type="number" id="retirement_age" name="retirement_age" min="30" max="85" step="1" value="65" class="stepper-input">
+              <button type="button" class="stepper-btn" onclick="stepVal('retirement_age',1,30,85)">+</button>
+              <span class="sim-unit">歳</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="reemployment_end_age">再雇用終了年齢 <span class="sim-info-btn" tabindex="0" data-tooltip="定年後に再雇用・嘱託で働き終える年齢。退職年齢と同じなら再雇用なし（例: 60歳定年・65歳まで嘱託）">i</span></label>
+            <div class="sim-input-row">
+              <button type="button" class="stepper-btn" onclick="stepVal('reemployment_end_age',-1,30,85)">-</button>
+              <input type="number" id="reemployment_end_age" name="reemployment_end_age" min="30" max="85" step="1" value="65" class="stepper-input">
+              <button type="button" class="stepper-btn" onclick="stepVal('reemployment_end_age',1,30,85)">+</button>
+              <span class="sim-unit">歳</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="reemployment_monthly_income">再雇用の月額収入 <span class="sim-info-btn" tabindex="0" data-tooltip="退職年齢から再雇用終了年齢まで毎月受け取る収入。退職前月収の6割程度が目安">i</span></label>
+            <div class="sim-input-row">
+              <input type="text" inputmode="numeric" id="reemployment_monthly_income" name="reemployment_monthly_income" data-min="0" data-max="1000000" data-step="10000" value="0" class="money-input">
+              <span class="sim-unit">円</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="end_age">シミュレーション終了年齢 <span class="sim-info-btn" tabindex="0" data-tooltip="資産推移を何歳まで試算するか">i</span></label>
+            <div class="sim-input-row">
+              <button type="button" class="stepper-btn" onclick="stepVal('end_age',-1,70,110)">-</button>
+              <input type="number" id="end_age" name="end_age" min="70" max="110" step="1" value="95" class="stepper-input">
+              <button type="button" class="stepper-btn" onclick="stepVal('end_age',1,70,110)">+</button>
+              <span class="sim-unit">歳</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="initial_investment">リスク資産額 <span class="sim-info-btn" tabindex="0" data-tooltip="株式・投信など価格変動する資産の現在残高">i</span></label>
+            <div class="sim-input-row">
+              <input type="text" inputmode="numeric" id="initial_investment" name="initial_investment" data-min="0" data-max="200000000" data-step="100000" value="11,530,000" class="money-input">
+              <span class="sim-unit">円</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="safe_value">安全資産額 <span class="sim-info-btn" tabindex="0" data-tooltip="預金・現金など価格変動を想定しない資産の現在残高">i</span></label>
+            <div class="sim-input-row">
+              <input type="text" inputmode="numeric" id="safe_value" name="safe_value" data-min="0" data-max="200000000" data-step="100000" value="9,970,000" class="money-input">
+              <span class="sim-unit">円</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="monthly_contribution">月額積立 <span class="sim-info-btn" tabindex="0" data-tooltip="退職年齢まで毎月リスク資産へ積み立てる金額">i</span></label>
+            <div class="sim-input-row">
+              <input type="text" inputmode="numeric" id="monthly_contribution" name="monthly_contribution" data-min="0" data-max="1000000" data-step="10000" value="50,000" class="money-input">
+              <span class="sim-unit">円</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="monthly_withdrawal">月額取崩し（生活費） <span class="sim-info-btn" tabindex="0" data-tooltip="退職後に毎月取り崩す金額（生活費想定）">i</span></label>
+            <div class="sim-input-row">
+              <input type="text" inputmode="numeric" id="monthly_withdrawal" name="monthly_withdrawal" data-min="0" data-max="1000000" data-step="10000" value="200,000" class="money-input">
+              <span class="sim-unit">円</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="annual_return">期待リターン（年率） <span class="sim-info-btn" tabindex="0" data-tooltip="リスク資産の平均的な年間リターン想定。初心者の目安: 保守 2〜4% / 標準 4〜6% / 強気 6〜8%">i</span></label>
+            <div class="sim-input-row">
+              <input type="range" id="annual_return" name="annual_return" min="0.0" max="0.15" step="0.005" value="0.05"
+                     oninput="document.getElementById('annual_return-val').textContent=(this.value*100).toFixed(1)">
+              <span id="annual_return-val">5.0</span><span class="sim-unit">%</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="annual_volatility">ボラティリティ（年率） <span class="sim-info-btn" tabindex="0" data-tooltip="リターンのぶれ幅。高いほど結果の上下が大きくなります。目安: 低め 8〜12% / 標準 12〜20% / 高め 20%以上">i</span></label>
+            <div class="sim-input-row">
+              <input type="range" id="annual_volatility" name="annual_volatility" min="0.01" max="0.4" step="0.005" value="0.15"
+                     oninput="document.getElementById('annual_volatility-val').textContent=(this.value*100).toFixed(1)">
+              <span id="annual_volatility-val">15.0</span><span class="sim-unit">%</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="inflation_rate">インフレ率 <span class="sim-info-btn" tabindex="0" data-tooltip="物価上昇率。将来価値を現在価値へ換算するために使用。目安: 低め 0〜1% / 標準 1〜3% / 高め 3%以上">i</span></label>
+            <div class="sim-input-row">
+              <input type="range" id="inflation_rate" name="inflation_rate" min="0.0" max="0.1" step="0.005" value="0.02"
+                     oninput="document.getElementById('inflation_rate-val').textContent=(this.value*100).toFixed(1)">
+              <span id="inflation_rate-val">2.0</span><span class="sim-unit">%</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="expense_ratio">信託報酬 <span class="sim-info-btn" tabindex="0" data-tooltip="運用商品にかかる年間コスト（年率）。目安: 低コスト指数 0.05〜0.30% / アクティブ 0.5〜2.0%">i</span></label>
+            <div class="sim-input-row">
+              <input type="range" id="expense_ratio" name="expense_ratio" min="0.0" max="0.03" step="0.001" value="0.003"
+                     oninput="document.getElementById('expense_ratio-val').textContent=(this.value*100).toFixed(1)">
+              <span id="expense_ratio-val">0.3</span><span class="sim-unit">%</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="pension_start_age">年金受給開始年齢 <span class="sim-info-btn" tabindex="0" data-tooltip="公的年金を受け取り始める年齢">i</span></label>
+            <div class="sim-input-row">
+              <button type="button" class="stepper-btn" onclick="stepVal('pension_start_age',-1,60,75)">-</button>
+              <input type="number" id="pension_start_age" name="pension_start_age" min="60" max="75" step="1" value="65" class="stepper-input">
+              <button type="button" class="stepper-btn" onclick="stepVal('pension_start_age',1,60,75)">+</button>
+              <span class="sim-unit">歳</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="monthly_pension">月額年金 <span class="sim-info-btn" tabindex="0" data-tooltip="公的年金の月額。独身目安:約14.6万円／夫婦目安:約29.2万円（65歳・額面）">i</span></label>
+            <div class="sim-input-row">
+              <input type="text" inputmode="numeric" id="monthly_pension" name="monthly_pension" data-min="0" data-max="500000" data-step="10000" value="150,000" class="money-input">
+              <span class="sim-unit">円</span>
+            </div>
+          </div>
+          <div class="sim-field">
+            <label for="other_monthly_income">年金以外の月額収入 <span class="sim-info-btn" tabindex="0" data-tooltip="家賃収入・副業など、年金以外の定期収入">i</span></label>
+            <div class="sim-input-row">
+              <input type="text" inputmode="numeric" id="other_monthly_income" name="other_monthly_income" data-min="0" data-max="500000" data-step="10000" value="0" class="money-input">
+              <span class="sim-unit">円</span>
+            </div>
+          </div>
+      </div>
+      <div class="sim-recalc">
+        <button id="sim-reset-btn" onclick="resetFromData()" class="sim-reset-btn">デフォルトに戻す</button>
+        <span class="sim-loading" id="sim-loading">計算中...</span>
+      </div>
+      </div>
+    </div>
+    
+    <div class="card full" data-card-id="life-events">
+      <div class="card-header">
+        <h2>ライフイベント管理</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+        <div class="sim-param-grid">
+          <div class="sim-param-section">
+            <h3>イベント追加</h3>
+            <div class="sim-field"><label>タイトル</label><input id="le-title" type="text" class="text-input" placeholder="例: 車買い替え"></div>
+            <div class="sim-field"><label>金額（円）</label><input id="le-amount" type="text" class="money-input" value="2,000,000"></div>
+            <div class="sim-input-row">
+              <div class="sim-field" style="flex:1"><label>開始年</label><input id="le-start-year" type="number" class="stepper-input" min="2000" max="2200" value="2028"></div>
+              <div class="sim-field" style="flex:1"><label>繰返し年数（0=単発）</label><input id="le-repeat" type="number" class="stepper-input" min="0" max="30" value="0"></div>
+            </div>
+            <div class="sim-field"><label>終了年（任意）</label><input id="le-end-year" type="number" class="stepper-input" min="2000" max="2200" value=""></div>
+            <button class="btn" onclick="createLifeEvent()">イベント追加</button>
+            <hr style="border:none;border-top:1px solid #eef2f7;margin:14px 0">
+            <h3>住宅テンプレート</h3>
+            <div class="sim-field"><label>購入年</label><input id="house-year" type="number" class="stepper-input" min="2000" max="2200" value="2027"></div>
+            <div class="sim-field"><label>住宅価格（円）</label><input id="house-price" type="text" class="money-input" value="45,000,000"></div>
+            <div class="sim-field"><label>頭金（円）</label><input id="house-down" type="text" class="money-input" value="5,000,000"></div>
+            <div class="sim-input-row">
+              <div class="sim-field" style="flex:1"><label>ローン年数</label><input id="house-loan-years" type="number" class="stepper-input" min="1" max="50" value="35"></div>
+              <div class="sim-field" style="flex:1"><label>金利（年率 %）</label><input id="house-rate" type="number" class="stepper-input" min="0" max="10" step="0.01" value="1.2"></div>
+            </div>
+            <div class="sim-field"><label>維持費（年額円, 任意）</label><input id="house-maint" type="text" class="money-input" value="300,000"></div>
+            <button class="btn" onclick="createHousingTemplate()">住宅イベントを自動作成</button>
+          </div>
+          <div class="sim-param-section">
+            <h3>子ども登録（教育費自動反映）</h3>
+            <div class="sim-field"><label>名前</label><input id="ch-name" type="text" class="text-input" placeholder="例: 長女"></div>
+            <div class="sim-input-row">
+              <div class="sim-field" style="flex:1"><label>生年</label><input id="ch-birth-year" type="number" class="stepper-input" min="1980" max="2100" value="2021"></div>
+              <div class="sim-field" style="flex:1"><label>生月</label><input id="ch-birth-month" type="number" class="stepper-input" min="1" max="12" value="4"></div>
+            </div>
+            <button class="btn" onclick="createChildProfile()">子ども追加</button>
+            <div class="sim-field" style="margin-top:16px">
+              <label>物価上昇率（グローバル）</label>
+              <div class="sim-input-row">
+                <input id="life-inflation-rate" type="range" min="0" max="0.1" step="0.001" value="0.01" oninput="document.getElementById('life-inflation-rate-val').textContent=(this.value*100).toFixed(1)">
+                <span id="life-inflation-rate-val">1.0</span><span class="sim-unit">%</span>
+                <button class="btn" onclick="saveLifeInflationRate()">保存</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+          <div>
+            <h3 style="font-size:0.9rem;margin-bottom:8px">イベント一覧</h3>
+            <table class="pred-table"><tr><th>名称</th><th class="num">金額</th><th class="num">開始年</th><th>頻度</th><th class="num">終了年</th><th>操作</th></tr><tr><td colspan='6' style='color:#999'>イベント未登録</td></tr></table>
+          </div>
+          <div>
+            <h3 style="font-size:0.9rem;margin-bottom:8px">子ども一覧</h3>
+            <table class="pred-table"><tr><th>名前</th><th class="num">生年月</th><th>教育費プラン</th><th>操作</th></tr><tr><td colspan='4' style='color:#999'>子ども未登録</td></tr></table>
+            <h3 style="font-size:0.9rem;margin:12px 0 8px">期間内イベント支出（年次）</h3>
+            <div style="font-size:0.82rem;color:#636e72;margin-bottom:6px">年0件 / 合計 0円</div>
+            <details>
+              <summary style="cursor:pointer;color:#2881D7;font-size:0.82rem">詳細を表示</summary>
+              <div style="margin-top:8px">
+                <table class="pred-table"><tr><th class="num">年齢</th><th class="num">支出</th></tr><tr><td colspan='2' style='color:#999'>該当期間のイベント支出なし</td></tr></table>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="card full" data-card-id="sim-projection">
+      <div class="card-header">
+        <h2>年次データ</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div style="overflow-x:auto">
+      <table class="pred-table">
+        <tr><th>年齢</th><th class="num">悲観(P10)</th><th class="num">P25</th><th class="num" style="color:#2881D7">中央(P50)</th><th class="num">P75</th><th class="num">楽観(P90)</th></tr>
+        <tr>
+          <td class="num">36歳</td>
+          <td class="num">20,057,873</td>
+          <td class="num">21,030,910</td>
+          <td class="num" style="font-weight:700">22,254,933</td>
+          <td class="num">23,528,158</td>
+          <td class="num">24,834,397</td>
+        </tr><tr>
+          <td class="num">37歳</td>
+          <td class="num">20,061,833</td>
+          <td class="num">21,320,261</td>
+          <td class="num" style="font-weight:700">22,963,893</td>
+          <td class="num">25,077,377</td>
+          <td class="num">27,035,610</td>
+        </tr><tr>
+          <td class="num">38歳</td>
+          <td class="num">20,133,536</td>
+          <td class="num">21,733,020</td>
+          <td class="num" style="font-weight:700">23,976,073</td>
+          <td class="num">26,414,363</td>
+          <td class="num">29,138,391</td>
+        </tr><tr>
+          <td class="num">39歳</td>
+          <td class="num">20,314,198</td>
+          <td class="num">22,223,285</td>
+          <td class="num" style="font-weight:700">24,738,348</td>
+          <td class="num">28,068,080</td>
+          <td class="num">31,338,022</td>
+        </tr><tr>
+          <td class="num">40歳</td>
+          <td class="num">20,458,423</td>
+          <td class="num">22,731,825</td>
+          <td class="num" style="font-weight:700">25,652,964</td>
+          <td class="num">29,416,482</td>
+          <td class="num">33,355,210</td>
+        </tr><tr>
+          <td class="num">41歳</td>
+          <td class="num">20,852,081</td>
+          <td class="num">23,098,544</td>
+          <td class="num" style="font-weight:700">26,366,316</td>
+          <td class="num">30,766,585</td>
+          <td class="num">35,168,640</td>
+        </tr><tr>
+          <td class="num">42歳</td>
+          <td class="num">21,107,215</td>
+          <td class="num">23,589,714</td>
+          <td class="num" style="font-weight:700">27,065,996</td>
+          <td class="num">31,767,971</td>
+          <td class="num">37,180,170</td>
+        </tr><tr>
+          <td class="num">43歳</td>
+          <td class="num">21,524,194</td>
+          <td class="num">23,961,911</td>
+          <td class="num" style="font-weight:700">28,008,358</td>
+          <td class="num">32,886,499</td>
+          <td class="num">38,808,878</td>
+        </tr><tr>
+          <td class="num">44歳</td>
+          <td class="num">21,827,404</td>
+          <td class="num">24,707,462</td>
+          <td class="num" style="font-weight:700">28,820,142</td>
+          <td class="num">34,458,730</td>
+          <td class="num">41,139,455</td>
+        </tr><tr>
+          <td class="num">45歳</td>
+          <td class="num">22,280,029</td>
+          <td class="num">25,247,344</td>
+          <td class="num" style="font-weight:700">29,883,383</td>
+          <td class="num">35,986,117</td>
+          <td class="num">43,741,853</td>
+        </tr><tr>
+          <td class="num">46歳</td>
+          <td class="num">22,526,870</td>
+          <td class="num">25,781,471</td>
+          <td class="num" style="font-weight:700">30,641,655</td>
+          <td class="num">37,423,203</td>
+          <td class="num">45,696,552</td>
+        </tr><tr>
+          <td class="num">47歳</td>
+          <td class="num">22,927,418</td>
+          <td class="num">26,005,004</td>
+          <td class="num" style="font-weight:700">31,502,811</td>
+          <td class="num">38,919,895</td>
+          <td class="num">48,243,453</td>
+        </tr><tr>
+          <td class="num">48歳</td>
+          <td class="num">23,134,130</td>
+          <td class="num">26,774,307</td>
+          <td class="num" style="font-weight:700">32,410,789</td>
+          <td class="num">40,479,998</td>
+          <td class="num">50,291,035</td>
+        </tr><tr>
+          <td class="num">49歳</td>
+          <td class="num">23,449,709</td>
+          <td class="num">27,242,778</td>
+          <td class="num" style="font-weight:700">33,275,229</td>
+          <td class="num">41,957,403</td>
+          <td class="num">52,454,975</td>
+        </tr><tr>
+          <td class="num">50歳</td>
+          <td class="num">23,697,891</td>
+          <td class="num">27,903,238</td>
+          <td class="num" style="font-weight:700">34,280,879</td>
+          <td class="num">44,165,943</td>
+          <td class="num">55,242,183</td>
+        </tr><tr>
+          <td class="num">51歳</td>
+          <td class="num">24,180,234</td>
+          <td class="num">28,296,962</td>
+          <td class="num" style="font-weight:700">35,263,356</td>
+          <td class="num">45,832,547</td>
+          <td class="num">58,066,457</td>
+        </tr><tr>
+          <td class="num">52歳</td>
+          <td class="num">24,547,329</td>
+          <td class="num">29,011,155</td>
+          <td class="num" style="font-weight:700">36,195,224</td>
+          <td class="num">47,117,609</td>
+          <td class="num">61,417,011</td>
+        </tr><tr>
+          <td class="num">53歳</td>
+          <td class="num">24,835,725</td>
+          <td class="num">29,393,878</td>
+          <td class="num" style="font-weight:700">37,303,156</td>
+          <td class="num">48,796,753</td>
+          <td class="num">64,011,238</td>
+        </tr><tr>
+          <td class="num">54歳</td>
+          <td class="num">25,119,601</td>
+          <td class="num">29,931,512</td>
+          <td class="num" style="font-weight:700">38,256,050</td>
+          <td class="num">50,940,858</td>
+          <td class="num">66,090,031</td>
+        </tr><tr>
+          <td class="num">55歳</td>
+          <td class="num">25,619,952</td>
+          <td class="num">30,884,261</td>
+          <td class="num" style="font-weight:700">39,530,487</td>
+          <td class="num">52,564,597</td>
+          <td class="num">68,723,232</td>
+        </tr><tr>
+          <td class="num">56歳</td>
+          <td class="num">26,004,967</td>
+          <td class="num">31,405,593</td>
+          <td class="num" style="font-weight:700">40,714,153</td>
+          <td class="num">54,415,202</td>
+          <td class="num">72,899,004</td>
+        </tr><tr>
+          <td class="num">57歳</td>
+          <td class="num">26,378,170</td>
+          <td class="num">32,448,535</td>
+          <td class="num" style="font-weight:700">41,760,034</td>
+          <td class="num">56,311,986</td>
+          <td class="num">76,503,948</td>
+        </tr><tr>
+          <td class="num">58歳</td>
+          <td class="num">26,974,756</td>
+          <td class="num">33,132,038</td>
+          <td class="num" style="font-weight:700">43,614,622</td>
+          <td class="num">58,508,857</td>
+          <td class="num">79,472,882</td>
+        </tr><tr>
+          <td class="num">59歳</td>
+          <td class="num">27,449,672</td>
+          <td class="num">33,655,665</td>
+          <td class="num" style="font-weight:700">44,287,739</td>
+          <td class="num">60,004,112</td>
+          <td class="num">83,959,637</td>
+        </tr><tr>
+          <td class="num">60歳</td>
+          <td class="num">27,893,558</td>
+          <td class="num">34,085,620</td>
+          <td class="num" style="font-weight:700">45,466,988</td>
+          <td class="num">61,849,273</td>
+          <td class="num">87,505,236</td>
+        </tr><tr>
+          <td class="num">61歳</td>
+          <td class="num">28,180,516</td>
+          <td class="num">35,127,018</td>
+          <td class="num" style="font-weight:700">46,279,687</td>
+          <td class="num">64,210,942</td>
+          <td class="num">91,049,186</td>
+        </tr><tr>
+          <td class="num">62歳</td>
+          <td class="num">28,647,496</td>
+          <td class="num">35,724,942</td>
+          <td class="num" style="font-weight:700">47,812,787</td>
+          <td class="num">67,177,069</td>
+          <td class="num">93,010,941</td>
+        </tr><tr>
+          <td class="num">63歳</td>
+          <td class="num">28,517,341</td>
+          <td class="num">36,180,367</td>
+          <td class="num" style="font-weight:700">47,907,929</td>
+          <td class="num">68,896,879</td>
+          <td class="num">97,872,783</td>
+        </tr><tr>
+          <td class="num">64歳</td>
+          <td class="num">29,054,635</td>
+          <td class="num">36,829,865</td>
+          <td class="num" style="font-weight:700">49,674,735</td>
+          <td class="num">70,754,242</td>
+          <td class="num">102,827,972</td>
+        </tr><tr style="background:#eff8ff">
+          <td class="num">65歳</td>
+          <td class="num">29,579,588</td>
+          <td class="num">37,379,808</td>
+          <td class="num" style="font-weight:700">50,450,909</td>
+          <td class="num">72,761,956</td>
+          <td class="num">106,651,341</td>
+        </tr><tr>
+          <td class="num">66歳</td>
+          <td class="num">28,809,259</td>
+          <td class="num">36,857,885</td>
+          <td class="num" style="font-weight:700">51,256,733</td>
+          <td class="num">73,389,487</td>
+          <td class="num">110,231,270</td>
+        </tr><tr>
+          <td class="num">67歳</td>
+          <td class="num">28,296,770</td>
+          <td class="num">36,360,219</td>
+          <td class="num" style="font-weight:700">51,603,189</td>
+          <td class="num">75,300,417</td>
+          <td class="num">112,561,687</td>
+        </tr><tr>
+          <td class="num">68歳</td>
+          <td class="num">27,249,986</td>
+          <td class="num">35,778,958</td>
+          <td class="num" style="font-weight:700">51,332,894</td>
+          <td class="num">76,833,631</td>
+          <td class="num">114,918,315</td>
+        </tr><tr>
+          <td class="num">69歳</td>
+          <td class="num">27,068,580</td>
+          <td class="num">35,398,299</td>
+          <td class="num" style="font-weight:700">52,256,772</td>
+          <td class="num">78,214,710</td>
+          <td class="num">118,658,745</td>
+        </tr><tr>
+          <td class="num">70歳</td>
+          <td class="num">25,990,298</td>
+          <td class="num">35,459,203</td>
+          <td class="num" style="font-weight:700">51,484,088</td>
+          <td class="num">80,223,506</td>
+          <td class="num">121,097,405</td>
+        </tr><tr>
+          <td class="num">71歳</td>
+          <td class="num">24,650,067</td>
+          <td class="num">34,289,819</td>
+          <td class="num" style="font-weight:700">51,690,121</td>
+          <td class="num">81,577,566</td>
+          <td class="num">126,964,773</td>
+        </tr><tr>
+          <td class="num">72歳</td>
+          <td class="num">24,019,628</td>
+          <td class="num">34,092,923</td>
+          <td class="num" style="font-weight:700">52,045,866</td>
+          <td class="num">82,928,733</td>
+          <td class="num">128,685,461</td>
+        </tr><tr>
+          <td class="num">73歳</td>
+          <td class="num">23,270,909</td>
+          <td class="num">33,564,506</td>
+          <td class="num" style="font-weight:700">52,578,892</td>
+          <td class="num">83,325,628</td>
+          <td class="num">132,036,894</td>
+        </tr><tr>
+          <td class="num">74歳</td>
+          <td class="num">22,290,524</td>
+          <td class="num">33,287,859</td>
+          <td class="num" style="font-weight:700">51,726,259</td>
+          <td class="num">85,823,325</td>
+          <td class="num">134,439,177</td>
+        </tr><tr>
+          <td class="num">75歳</td>
+          <td class="num">21,677,681</td>
+          <td class="num">32,473,476</td>
+          <td class="num" style="font-weight:700">52,700,826</td>
+          <td class="num">87,528,138</td>
+          <td class="num">143,620,187</td>
+        </tr><tr>
+          <td class="num">76歳</td>
+          <td class="num">21,124,841</td>
+          <td class="num">31,847,184</td>
+          <td class="num" style="font-weight:700">52,397,295</td>
+          <td class="num">89,811,025</td>
+          <td class="num">148,152,497</td>
+        </tr><tr>
+          <td class="num">77歳</td>
+          <td class="num">20,905,349</td>
+          <td class="num">31,315,617</td>
+          <td class="num" style="font-weight:700">52,649,628</td>
+          <td class="num">92,345,209</td>
+          <td class="num">149,573,632</td>
+        </tr><tr>
+          <td class="num">78歳</td>
+          <td class="num">20,444,843</td>
+          <td class="num">31,414,089</td>
+          <td class="num" style="font-weight:700">52,010,639</td>
+          <td class="num">89,149,406</td>
+          <td class="num">152,400,304</td>
+        </tr><tr>
+          <td class="num">79歳</td>
+          <td class="num">19,684,651</td>
+          <td class="num">30,466,463</td>
+          <td class="num" style="font-weight:700">53,315,439</td>
+          <td class="num">93,350,258</td>
+          <td class="num">160,351,984</td>
+        </tr><tr>
+          <td class="num">80歳</td>
+          <td class="num">18,816,339</td>
+          <td class="num">29,896,584</td>
+          <td class="num" style="font-weight:700">54,192,744</td>
+          <td class="num">94,887,466</td>
+          <td class="num">163,549,215</td>
+        </tr><tr>
+          <td class="num">81歳</td>
+          <td class="num">18,308,788</td>
+          <td class="num">29,350,349</td>
+          <td class="num" style="font-weight:700">54,077,068</td>
+          <td class="num">93,038,739</td>
+          <td class="num">167,061,393</td>
+        </tr><tr>
+          <td class="num">82歳</td>
+          <td class="num">17,421,865</td>
+          <td class="num">28,440,358</td>
+          <td class="num" style="font-weight:700">53,984,922</td>
+          <td class="num">94,906,364</td>
+          <td class="num">172,683,104</td>
+        </tr><tr>
+          <td class="num">83歳</td>
+          <td class="num">16,901,236</td>
+          <td class="num">28,360,822</td>
+          <td class="num" style="font-weight:700">53,947,593</td>
+          <td class="num">96,127,520</td>
+          <td class="num">175,214,307</td>
+        </tr><tr>
+          <td class="num">84歳</td>
+          <td class="num">16,070,437</td>
+          <td class="num">27,922,333</td>
+          <td class="num" style="font-weight:700">53,483,916</td>
+          <td class="num">98,251,134</td>
+          <td class="num">180,271,032</td>
+        </tr><tr>
+          <td class="num">85歳</td>
+          <td class="num">15,692,955</td>
+          <td class="num">27,905,979</td>
+          <td class="num" style="font-weight:700">54,462,924</td>
+          <td class="num">99,641,291</td>
+          <td class="num">182,307,091</td>
+        </tr><tr>
+          <td class="num">86歳</td>
+          <td class="num">15,134,049</td>
+          <td class="num">27,307,183</td>
+          <td class="num" style="font-weight:700">54,985,698</td>
+          <td class="num">101,501,612</td>
+          <td class="num">186,130,147</td>
+        </tr><tr>
+          <td class="num">87歳</td>
+          <td class="num">14,715,272</td>
+          <td class="num">27,404,375</td>
+          <td class="num" style="font-weight:700">55,529,670</td>
+          <td class="num">103,850,733</td>
+          <td class="num">189,858,296</td>
+        </tr><tr>
+          <td class="num">88歳</td>
+          <td class="num">14,227,633</td>
+          <td class="num">26,894,327</td>
+          <td class="num" style="font-weight:700">54,804,590</td>
+          <td class="num">106,250,428</td>
+          <td class="num">198,361,874</td>
+        </tr><tr>
+          <td class="num">89歳</td>
+          <td class="num">13,503,420</td>
+          <td class="num">26,315,752</td>
+          <td class="num" style="font-weight:700">55,240,819</td>
+          <td class="num">107,709,137</td>
+          <td class="num">200,430,949</td>
+        </tr><tr>
+          <td class="num">90歳</td>
+          <td class="num">12,908,278</td>
+          <td class="num">26,345,059</td>
+          <td class="num" style="font-weight:700">55,343,394</td>
+          <td class="num">107,406,775</td>
+          <td class="num">204,472,263</td>
+        </tr><tr>
+          <td class="num">91歳</td>
+          <td class="num">12,208,106</td>
+          <td class="num">25,716,561</td>
+          <td class="num" style="font-weight:700">55,582,164</td>
+          <td class="num">109,527,135</td>
+          <td class="num">210,867,207</td>
+        </tr><tr>
+          <td class="num">92歳</td>
+          <td class="num">11,760,822</td>
+          <td class="num">24,801,030</td>
+          <td class="num" style="font-weight:700">55,714,461</td>
+          <td class="num">111,856,292</td>
+          <td class="num">216,434,969</td>
+        </tr><tr>
+          <td class="num">93歳</td>
+          <td class="num">10,962,196</td>
+          <td class="num">24,031,429</td>
+          <td class="num" style="font-weight:700">55,300,824</td>
+          <td class="num">113,462,813</td>
+          <td class="num">215,963,872</td>
+        </tr><tr>
+          <td class="num">94歳</td>
+          <td class="num">10,131,260</td>
+          <td class="num">23,612,874</td>
+          <td class="num" style="font-weight:700">55,607,882</td>
+          <td class="num">116,435,527</td>
+          <td class="num">228,319,452</td>
+        </tr><tr>
+          <td class="num">95歳</td>
+          <td class="num">9,553,571</td>
+          <td class="num">23,009,372</td>
+          <td class="num" style="font-weight:700">55,202,235</td>
+          <td class="num">118,225,816</td>
+          <td class="num">235,482,357</td>
+        </tr>
+      </table>
+      </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+
+// 折りたたみ
+(function() {
+  const saved = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
+  document.querySelectorAll('[data-card-id]').forEach(card => {
+    const id = card.dataset.cardId;
+    const defaultCollapsed = card.dataset.defaultCollapsed === 'true';
+    const body = card.querySelector('.card-body');
+    const btn = card.querySelector('.collapse-btn');
+    if (!body || !btn) return;
+    const isCollapsed = Object.prototype.hasOwnProperty.call(saved, id) ? !!saved[id] : defaultCollapsed;
+    if (isCollapsed) {
+      card.classList.add('collapsed');
+      btn.textContent = '\u25B6';
+    } else {
+      card.classList.remove('collapsed');
+      btn.textContent = '\u25BC';
+    }
+    btn.addEventListener('click', () => {
+      const nextCollapsed = card.classList.toggle('collapsed');
+      btn.textContent = nextCollapsed ? '\u25B6' : '\u25BC';
+      const s = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
+      s[id] = nextCollapsed;
+      localStorage.setItem('collapsed_cards', JSON.stringify(s));
+    });
+  });
+})();
+
+
+function fmtMoney(v) { return Math.round(v).toLocaleString('ja-JP'); }
+function parseMoney(s) { return parseFloat(String(s).replace(/,/g, '')) || 0; }
+function fmt(v) { return Math.round(v).toLocaleString('ja-JP'); }
+function fmtAxis(v) {
+  if (v >= 100_000_000) return (v / 100_000_000).toFixed(1) + '億';
+  if (v >= 10_000) return Math.round(v / 10_000) + '万';
+  return String(v);
+}
+
+function stepVal(id, dir, min, max) {
+  const el = document.getElementById(id);
+  let v = parseInt(el.value, 10) + dir;
+  if (v < min) v = min;
+  if (v > max) v = max;
+  el.value = v;
+  scheduleRecalc();
+}
+
+// --- ツールチップ ---
+document.querySelectorAll('.sim-info-btn').forEach(btn => {
+  function show() {
+    if (btn.querySelector('.sim-tooltip')) return;
+    const tip = document.createElement('span');
+    tip.className = 'sim-tooltip';
+    tip.textContent = btn.dataset.tooltip;
+    btn.appendChild(tip);
+  }
+  function hide() { const t = btn.querySelector('.sim-tooltip'); if (t) t.remove(); }
+  btn.addEventListener('mouseenter', show);
+  btn.addEventListener('mouseleave', hide);
+  btn.addEventListener('focus', show);
+  btn.addEventListener('blur', hide);
+});
+
+// --- 金額入力フィールド ---
+document.querySelectorAll('.money-input').forEach(el => {
+  el.addEventListener('blur', () => {
+    el.value = fmtMoney(parseMoney(el.value));
+    scheduleRecalc();
+  });
+  el.addEventListener('focus', () => {
+    el.value = String(parseMoney(el.value));
+  });
+});
+
+// --- デバウンス付きリアルタイム再計算 ---
+let _recalcTimer = null;
+let _recalcInFlight = false;
+function scheduleRecalc() {
+  if (_recalcTimer) clearTimeout(_recalcTimer);
+  _recalcTimer = setTimeout(() => recalcSimulator(), 600);
+}
+
+// スライダー・ステッパーの変更で自動再計算
+document.querySelectorAll('#sim-params input[type="range"]').forEach(el => {
+  el.addEventListener('change', scheduleRecalc);
+});
+document.querySelectorAll('#sim-params .stepper-input').forEach(el => {
+  el.addEventListener('change', scheduleRecalc);
+});
+
+async function recalcSimulator() {
+  if (_recalcInFlight) return;
+  _recalcInFlight = true;
+  const loading = document.getElementById('sim-loading');
+  loading.style.display = 'inline';
+
+  const params = {};
+  const fields = ['current_age','retirement_age','end_age','initial_investment','safe_value','monthly_contribution',
+    'annual_return','annual_volatility','monthly_withdrawal','inflation_rate','expense_ratio',
+    'pension_start_age','monthly_pension','other_monthly_income',
+    'reemployment_end_age','reemployment_monthly_income'];
+  fields.forEach(f => {
+    const el = document.getElementById(f);
+    params[f] = el.classList.contains('money-input') ? parseMoney(el.value) : parseFloat(el.value);
+  });
+
+  try {
+    const data = runLifecycleSimulationJS(params);
+    if (!data.ok) {
+      if (data.error) alert(data.error);
+    } else {
+      updateSummary(data);
+      updateProjection(data.yearly_balances, params.retirement_age, params.reemployment_end_age);
+      _initBalances = data.yearly_balances;
+      drawFanChart(data.yearly_balances, params.retirement_age, null, params.reemployment_end_age);
+    }
+  } catch(e) {
+    console.error('Simulator error:', e);
+  } finally {
+    _recalcInFlight = false;
+    loading.style.display = 'none';
+  }
+}
+
+function updateSummary(data) {
+  const summaryCard = document.querySelector('[data-card-id="sim-summary"] .card-body');
+  if (!summaryCard) return;
+  const grid = summaryCard.querySelector('.sim-summary-grid');
+  if (grid) {
+    const vals = grid.querySelectorAll('.sim-summary-value');
+    if (vals[0]) vals[0].textContent = fmt(data.total_principal) + '円';
+    if (vals[1]) vals[1].textContent = fmt(data.total_gains) + '円';
+    if (vals[2]) vals[2].textContent = fmt(data.total_tax) + '円';
+    if (vals[3]) vals[3].textContent = fmt(data.net_final) + '円';
+  }
+  const impact = document.getElementById('event-impact-val');
+  if (impact && data.net_final_no_events != null) {
+    const diff = data.net_final - data.net_final_no_events;
+    impact.textContent = (diff >= 0 ? '+' : '') + fmt(diff) + '円';
+    impact.style.color = diff < 0 ? '#e74c3c' : '#0F7F30';
+  }
+  const totalEvent = document.getElementById('event-total-val');
+  if (totalEvent && data.total_event_expense != null) {
+    totalEvent.textContent = fmt(data.total_event_expense) + '円';
+  }
+  const probs = summaryCard.querySelectorAll('.sim-prob-value');
+  if (probs[0]) {
+    const dp = (data.depletion_probability * 100).toFixed(1);
+    probs[0].textContent = dp + '%';
+    probs[0].style.color = dp > 10 ? '#e74c3c' : dp > 0 ? '#f39c12' : '#27ae60';
+  }
+  if (probs[1]) {
+    const lp = (data.principal_loss_probability * 100).toFixed(1);
+    probs[1].textContent = lp + '%';
+    probs[1].style.color = lp > 30 ? '#e74c3c' : lp > 10 ? '#f39c12' : '#27ae60';
+  }
+}
+
+function updateProjection(balances, retirementAge, reemploymentEndAge) {
+  const table = document.querySelector('[data-card-id="sim-projection"] .pred-table');
+  if (!table) return;
+  const header = table.querySelector('tr');
+  table.innerHTML = '';
+  table.appendChild(header);
+  const ra = Math.round(retirementAge);
+  const rea = Math.round(reemploymentEndAge || retirementAge);
+  balances.forEach(yb => {
+    const tr = document.createElement('tr');
+    if (yb.age === ra) tr.style.background = '#eff8ff';
+    else if (yb.age > ra && yb.age <= rea) tr.style.background = '#fff7ea';
+    tr.innerHTML = '<td class="num">' + yb.age + '歳</td>'
+      + '<td class="num">' + fmt(yb.p10) + '</td>'
+      + '<td class="num">' + fmt(yb.p25) + '</td>'
+      + '<td class="num" style="font-weight:700">' + fmt(yb.p50) + '</td>'
+      + '<td class="num">' + fmt(yb.p75) + '</td>'
+      + '<td class="num">' + fmt(yb.p90) + '</td>';
+    table.appendChild(tr);
+  });
+}
+
+// --- ファンチャート描画 ---
+function drawFanChart(balances, retirementAge, baselineBalances = null, reemploymentEndAge = null) {
+  const canvas = document.getElementById('sim-fan-chart');
+  if (!canvas || !balances || balances.length === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const padL = 70, padR = 20, padT = 20, padB = 40;
+  const cW = W - padL - padR, cH = H - padT - padB;
+  const n = balances.length;
+
+  // Y軸の最大値
+  let yMax = 0;
+  balances.forEach(b => { if (b.p90 > yMax) yMax = b.p90; });
+  yMax = yMax > 0 ? yMax * 1.1 : 10_000_000;
+
+  function xPos(i) { return padL + (i / Math.max(n - 1, 1)) * cW; }
+  function yPos(v) { return padT + cH - (Math.max(v, 0) / yMax) * cH; }
+
+  // グリッド線と Y 軸ラベル
+  ctx.strokeStyle = '#eee';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#999';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  const gridSteps = 5;
+  for (let i = 0; i <= gridSteps; i++) {
+    const val = (yMax / gridSteps) * i;
+    const y = yPos(val);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + cW, y); ctx.stroke();
+    ctx.fillText(fmtAxis(val), padL - 8, y + 4);
+  }
+
+  // P10-P90 帯（薄い青）
+  ctx.fillStyle = 'rgba(40,129,215,0.10)';
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) { const x = xPos(i); ctx.lineTo(x, yPos(balances[i].p90)); }
+  for (let i = n - 1; i >= 0; i--) { const x = xPos(i); ctx.lineTo(x, yPos(balances[i].p10)); }
+  ctx.closePath(); ctx.fill();
+
+  // P25-P75 帯（濃い青）
+  ctx.fillStyle = 'rgba(40,129,215,0.22)';
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) { const x = xPos(i); ctx.lineTo(x, yPos(balances[i].p75)); }
+  for (let i = n - 1; i >= 0; i--) { const x = xPos(i); ctx.lineTo(x, yPos(balances[i].p25)); }
+  ctx.closePath(); ctx.fill();
+
+  // P50 線
+  ctx.strokeStyle = '#2881D7';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) { const x = xPos(i); i === 0 ? ctx.moveTo(x, yPos(balances[i].p50)) : ctx.lineTo(x, yPos(balances[i].p50)); }
+  ctx.stroke();
+
+  // baseline（イベントなし）P50線
+  if (baselineBalances && baselineBalances.length > 0) {
+    const n2 = Math.min(n, baselineBalances.length);
+    ctx.strokeStyle = 'rgba(99,110,114,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    for (let i = 0; i < n2; i++) {
+      const x = xPos(i);
+      i === 0 ? ctx.moveTo(x, yPos(baselineBalances[i].p50)) : ctx.lineTo(x, yPos(baselineBalances[i].p50));
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // 退職年齢の縦線
+  let retLabelX = null, retLabelHalfW = 0;
+  const retIdx = balances.findIndex(b => b.age === Math.round(retirementAge));
+  if (retIdx >= 0) {
+    const rx = xPos(retIdx);
+    ctx.strokeStyle = 'rgba(231,76,60,0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(rx, padT); ctx.lineTo(rx, padT + cH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#e74c3c';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('退職', rx, padT - 4);
+    retLabelX = rx;
+    retLabelHalfW = ctx.measureText('退職').width / 2;
+  }
+
+  // 再雇用終了年齢の縦線（退職年齢より後に設定されている場合のみ）
+  if (reemploymentEndAge && Math.round(reemploymentEndAge) > Math.round(retirementAge)) {
+    const reIdx = balances.findIndex(b => b.age === Math.round(reemploymentEndAge));
+    if (reIdx >= 0) {
+      const rex = xPos(reIdx);
+      ctx.strokeStyle = 'rgba(243,156,18,0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(rex, padT); ctx.lineTo(rex, padT + cH); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#f39c12';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center';
+      const reLabelHalfW = ctx.measureText('再雇用終了').width / 2;
+      // 退職ラベルと近接・重複する場合は1行下にずらして衝突を避ける
+      const overlapsRetLabel = retLabelX !== null && Math.abs(rex - retLabelX) < (retLabelHalfW + reLabelHalfW + 4);
+      ctx.fillText('再雇用終了', rex, overlapsRetLabel ? padT + 10 : padT - 4);
+    }
+  }
+
+  // 0 線（枯渇ライン）
+  const zeroY = yPos(0);
+  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(padL, zeroY); ctx.lineTo(padL + cW, zeroY); ctx.stroke();
+
+  // X 軸ラベル（年齢）
+  ctx.fillStyle = '#999';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  const labelEvery = n > 30 ? 5 : n > 15 ? 3 : 2;
+  balances.forEach((b, i) => {
+    if (i === 0 || i === n - 1 || b.age % labelEvery === 0) {
+      ctx.fillText(b.age + '歳', xPos(i), padT + cH + 20);
+    }
+  });
+
+  // ホバーツールチップ用データを canvas に保持
+  canvas._chartData = { balances, xPos, yPos, padL, padR, padT, padB, cW, cH, n };
+}
+
+// --- チャートホバーツールチップ ---
+(function() {
+  const canvas = document.getElementById('sim-fan-chart');
+  if (!canvas) return;
+  const tip = document.createElement('div');
+  tip.style.cssText = 'position:absolute;background:rgba(45,52,54,0.92);color:#fff;font-size:12px;'
+    + 'padding:8px 12px;border-radius:6px;pointer-events:none;display:none;z-index:50;white-space:nowrap;line-height:1.6';
+  canvas.parentElement.appendChild(tip);
+
+  canvas.addEventListener('mousemove', e => {
+    const d = canvas._chartData;
+    if (!d) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    // 最寄りのデータポイント
+    let closest = 0, minDist = Infinity;
+    for (let i = 0; i < d.n; i++) {
+      const dist = Math.abs(mx - d.xPos(i));
+      if (dist < minDist) { minDist = dist; closest = i; }
+    }
+    if (minDist > 30) { tip.style.display = 'none'; return; }
+    const b = d.balances[closest];
+    tip.innerHTML = '<strong>' + b.age + '歳</strong><br>'
+      + 'P90: ' + fmt(b.p90) + '円<br>'
+      + 'P75: ' + fmt(b.p75) + '円<br>'
+      + '<span style="color:#5dade2">P50: ' + fmt(b.p50) + '円</span><br>'
+      + 'P25: ' + fmt(b.p25) + '円<br>'
+      + 'P10: ' + fmt(b.p10) + '円';
+    tip.style.display = 'block';
+    const tx = d.xPos(closest);
+    tip.style.left = (tx + 15) + 'px';
+    tip.style.top = '20px';
+    if (tx + 15 + tip.offsetWidth > d.cW + d.padL) {
+      tip.style.left = (tx - tip.offsetWidth - 15) + 'px';
+    }
+  });
+  canvas.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+})();
+
+// --- 初期チャート描画 ---
+let _initBalances = [{"age": 36, "p10": 20057873.11405977, "p25": 21030909.587524846, "p50": 22254932.636226833, "p75": 23528158.173104152, "p90": 24834397.129372843}, {"age": 37, "p10": 20061833.325978264, "p25": 21320260.579971448, "p50": 22963893.230444893, "p75": 25077377.20334005, "p90": 27035610.218163744}, {"age": 38, "p10": 20133536.396334644, "p25": 21733020.14413979, "p50": 23976073.225892905, "p75": 26414362.510086566, "p90": 29138390.93314063}, {"age": 39, "p10": 20314197.61455345, "p25": 22223285.38513691, "p50": 24738348.185098372, "p75": 28068079.7424567, "p90": 31338022.05999256}, {"age": 40, "p10": 20458423.490171455, "p25": 22731825.14967373, "p50": 25652963.596382767, "p75": 29416482.223662216, "p90": 33355210.496385954}, {"age": 41, "p10": 20852080.862661384, "p25": 23098543.96949431, "p50": 26366315.868160393, "p75": 30766584.844792552, "p90": 35168640.34704754}, {"age": 42, "p10": 21107215.30238745, "p25": 23589714.036444314, "p50": 27065996.037806924, "p75": 31767971.044184912, "p90": 37180170.38481578}, {"age": 43, "p10": 21524193.51489384, "p25": 23961911.175760858, "p50": 28008357.916311774, "p75": 32886499.178255454, "p90": 38808877.53949961}, {"age": 44, "p10": 21827404.48242482, "p25": 24707462.472008694, "p50": 28820142.002942715, "p75": 34458730.04892869, "p90": 41139455.199257836}, {"age": 45, "p10": 22280029.29208125, "p25": 25247344.297417637, "p50": 29883382.85543391, "p75": 35986117.15044923, "p90": 43741852.8774471}, {"age": 46, "p10": 22526869.539168496, "p25": 25781471.323273286, "p50": 30641655.21831467, "p75": 37423203.18772285, "p90": 45696551.91178104}, {"age": 47, "p10": 22927417.777961247, "p25": 26005003.733496703, "p50": 31502810.70947457, "p75": 38919894.813297465, "p90": 48243453.25898369}, {"age": 48, "p10": 23134129.691395283, "p25": 26774307.340450242, "p50": 32410788.75790869, "p75": 40479997.564160466, "p90": 50291034.881904595}, {"age": 49, "p10": 23449708.74870677, "p25": 27242778.16596965, "p50": 33275229.03627611, "p75": 41957403.07040987, "p90": 52454974.76720131}, {"age": 50, "p10": 23697891.435915068, "p25": 27903238.33125879, "p50": 34280878.54205986, "p75": 44165943.381839745, "p90": 55242183.13623135}, {"age": 51, "p10": 24180234.456691023, "p25": 28296962.12956128, "p50": 35263356.34651443, "p75": 45832546.96043833, "p90": 58066456.94450464}, {"age": 52, "p10": 24547328.70236051, "p25": 29011154.870068453, "p50": 36195223.79114534, "p75": 47117609.20721082, "p90": 61417010.90136334}, {"age": 53, "p10": 24835724.83876656, "p25": 29393877.56384874, "p50": 37303156.406253144, "p75": 48796753.38085676, "p90": 64011237.6711466}, {"age": 54, "p10": 25119600.87383812, "p25": 29931511.62579067, "p50": 38256050.48071933, "p75": 50940857.71221175, "p90": 66090030.56505662}, {"age": 55, "p10": 25619951.636542223, "p25": 30884261.010805722, "p50": 39530487.292248935, "p75": 52564597.0102613, "p90": 68723232.42275947}, {"age": 56, "p10": 26004966.553351693, "p25": 31405593.35157888, "p50": 40714153.28338535, "p75": 54415201.54526181, "p90": 72899004.49383461}, {"age": 57, "p10": 26378170.106588334, "p25": 32448534.696747307, "p50": 41760033.66571404, "p75": 56311985.512785845, "p90": 76503948.03477132}, {"age": 58, "p10": 26974756.274056375, "p25": 33132037.509705156, "p50": 43614622.43532179, "p75": 58508857.4974773, "p90": 79472882.02566612}, {"age": 59, "p10": 27449672.4733584, "p25": 33655664.63142505, "p50": 44287738.54717719, "p75": 60004111.93894, "p90": 83959636.74626121}, {"age": 60, "p10": 27893557.938253973, "p25": 34085619.81188142, "p50": 45466987.95032714, "p75": 61849273.079808004, "p90": 87505236.1987746}, {"age": 61, "p10": 28180515.789766274, "p25": 35127017.96091503, "p50": 46279686.706624754, "p75": 64210941.91019021, "p90": 91049186.10243364}, {"age": 62, "p10": 28647496.183320202, "p25": 35724941.99013834, "p50": 47812786.8255165, "p75": 67177069.05486867, "p90": 93010941.27774714}, {"age": 63, "p10": 28517340.871497072, "p25": 36180367.46767749, "p50": 47907929.078823954, "p75": 68896879.18480185, "p90": 97872782.79405898}, {"age": 64, "p10": 29054635.227807663, "p25": 36829865.44957407, "p50": 49674735.14367458, "p75": 70754242.12629393, "p90": 102827972.23146671}, {"age": 65, "p10": 29579588.077985507, "p25": 37379807.81525065, "p50": 50450908.56488879, "p75": 72761956.10706845, "p90": 106651340.74977174}, {"age": 66, "p10": 28809259.47429818, "p25": 36857885.19268196, "p50": 51256733.46301566, "p75": 73389486.74489999, "p90": 110231270.3608774}, {"age": 67, "p10": 28296769.776990805, "p25": 36360219.4461221, "p50": 51603189.3517864, "p75": 75300416.62131368, "p90": 112561686.96813567}, {"age": 68, "p10": 27249986.491548434, "p25": 35778958.119858995, "p50": 51332893.51410385, "p75": 76833630.94658992, "p90": 114918314.92360541}, {"age": 69, "p10": 27068579.87370804, "p25": 35398299.09023517, "p50": 52256771.78157633, "p75": 78214709.7256986, "p90": 118658745.19463256}, {"age": 70, "p10": 25990298.307555478, "p25": 35459203.4937367, "p50": 51484088.099822655, "p75": 80223505.67876604, "p90": 121097404.61125214}, {"age": 71, "p10": 24650066.9735166, "p25": 34289819.432791874, "p50": 51690121.107363544, "p75": 81577566.3653205, "p90": 126964772.50378628}, {"age": 72, "p10": 24019628.07849464, "p25": 34092922.88342498, "p50": 52045866.21349444, "p75": 82928732.711043, "p90": 128685460.58748867}, {"age": 73, "p10": 23270908.502337255, "p25": 33564506.1666109, "p50": 52578891.85769473, "p75": 83325628.03536417, "p90": 132036894.4995708}, {"age": 74, "p10": 22290524.04988975, "p25": 33287858.839910794, "p50": 51726259.077043675, "p75": 85823325.13903713, "p90": 134439177.0059712}, {"age": 75, "p10": 21677681.29097759, "p25": 32473476.204830587, "p50": 52700826.16117836, "p75": 87528138.02847257, "p90": 143620187.1196856}, {"age": 76, "p10": 21124840.997297715, "p25": 31847184.150939602, "p50": 52397295.23910914, "p75": 89811025.45310813, "p90": 148152497.36996913}, {"age": 77, "p10": 20905348.50478767, "p25": 31315617.463394903, "p50": 52649627.7165331, "p75": 92345208.5426409, "p90": 149573631.62288067}, {"age": 78, "p10": 20444843.15349156, "p25": 31414089.266145907, "p50": 52010638.900575414, "p75": 89149405.75122574, "p90": 152400304.32595637}, {"age": 79, "p10": 19684650.73545604, "p25": 30466463.40942214, "p50": 53315439.330694355, "p75": 93350257.79828832, "p90": 160351984.22629294}, {"age": 80, "p10": 18816338.63474591, "p25": 29896584.11411684, "p50": 54192744.050883554, "p75": 94887465.9138905, "p90": 163549215.1252651}, {"age": 81, "p10": 18308787.68237132, "p25": 29350348.769103993, "p50": 54077068.44671869, "p75": 93038739.0885484, "p90": 167061392.57147732}, {"age": 82, "p10": 17421864.936254166, "p25": 28440357.657203823, "p50": 53984922.33420866, "p75": 94906364.36046906, "p90": 172683104.14129713}, {"age": 83, "p10": 16901235.674818758, "p25": 28360821.94307012, "p50": 53947593.24172063, "p75": 96127519.51726411, "p90": 175214307.1351929}, {"age": 84, "p10": 16070437.048841838, "p25": 27922332.998766266, "p50": 53483916.48500449, "p75": 98251133.50435156, "p90": 180271032.28580824}, {"age": 85, "p10": 15692955.252852125, "p25": 27905979.244194187, "p50": 54462923.68313221, "p75": 99641290.60056034, "p90": 182307090.77005386}, {"age": 86, "p10": 15134048.754898328, "p25": 27307182.7441116, "p50": 54985697.541184835, "p75": 101501612.42882635, "p90": 186130146.86608994}, {"age": 87, "p10": 14715272.12785607, "p25": 27404375.351682354, "p50": 55529670.074295305, "p75": 103850732.93024433, "p90": 189858296.39116707}, {"age": 88, "p10": 14227632.881604344, "p25": 26894326.544060554, "p50": 54804590.01057265, "p75": 106250427.78835021, "p90": 198361873.64128307}, {"age": 89, "p10": 13503420.101935763, "p25": 26315751.807929207, "p50": 55240818.87621249, "p75": 107709136.7659428, "p90": 200430949.04432434}, {"age": 90, "p10": 12908277.743394164, "p25": 26345059.02132219, "p50": 55343394.48645252, "p75": 107406774.7964843, "p90": 204472262.7116898}, {"age": 91, "p10": 12208105.830425134, "p25": 25716561.125128493, "p50": 55582164.49010071, "p75": 109527135.33174318, "p90": 210867207.468189}, {"age": 92, "p10": 11760822.389247006, "p25": 24801029.52746513, "p50": 55714460.752833076, "p75": 111856291.78046437, "p90": 216434968.54879898}, {"age": 93, "p10": 10962195.657224303, "p25": 24031429.247865964, "p50": 55300824.20251655, "p75": 113462812.96305384, "p90": 215963871.91983125}, {"age": 94, "p10": 10131259.676105645, "p25": 23612874.04101977, "p50": 55607882.41763639, "p75": 116435526.96721682, "p90": 228319452.47028106}, {"age": 95, "p10": 9553570.785797304, "p25": 23009371.533158526, "p50": 55202234.57637137, "p75": 118225816.39266554, "p90": 235482356.98812613}];
+let _initBalancesNoEvents = [{"age": 36, "p10": 20057873.11405977, "p25": 21030909.587524846, "p50": 22254932.636226833, "p75": 23528158.173104152, "p90": 24834397.129372843}, {"age": 37, "p10": 20061833.325978264, "p25": 21320260.579971448, "p50": 22963893.230444893, "p75": 25077377.20334005, "p90": 27035610.218163744}, {"age": 38, "p10": 20133536.396334644, "p25": 21733020.14413979, "p50": 23976073.225892905, "p75": 26414362.510086566, "p90": 29138390.93314063}, {"age": 39, "p10": 20314197.61455345, "p25": 22223285.38513691, "p50": 24738348.185098372, "p75": 28068079.7424567, "p90": 31338022.05999256}, {"age": 40, "p10": 20458423.490171455, "p25": 22731825.14967373, "p50": 25652963.596382767, "p75": 29416482.223662216, "p90": 33355210.496385954}, {"age": 41, "p10": 20852080.862661384, "p25": 23098543.96949431, "p50": 26366315.868160393, "p75": 30766584.844792552, "p90": 35168640.34704754}, {"age": 42, "p10": 21107215.30238745, "p25": 23589714.036444314, "p50": 27065996.037806924, "p75": 31767971.044184912, "p90": 37180170.38481578}, {"age": 43, "p10": 21524193.51489384, "p25": 23961911.175760858, "p50": 28008357.916311774, "p75": 32886499.178255454, "p90": 38808877.53949961}, {"age": 44, "p10": 21827404.48242482, "p25": 24707462.472008694, "p50": 28820142.002942715, "p75": 34458730.04892869, "p90": 41139455.199257836}, {"age": 45, "p10": 22280029.29208125, "p25": 25247344.297417637, "p50": 29883382.85543391, "p75": 35986117.15044923, "p90": 43741852.8774471}, {"age": 46, "p10": 22526869.539168496, "p25": 25781471.323273286, "p50": 30641655.21831467, "p75": 37423203.18772285, "p90": 45696551.91178104}, {"age": 47, "p10": 22927417.777961247, "p25": 26005003.733496703, "p50": 31502810.70947457, "p75": 38919894.813297465, "p90": 48243453.25898369}, {"age": 48, "p10": 23134129.691395283, "p25": 26774307.340450242, "p50": 32410788.75790869, "p75": 40479997.564160466, "p90": 50291034.881904595}, {"age": 49, "p10": 23449708.74870677, "p25": 27242778.16596965, "p50": 33275229.03627611, "p75": 41957403.07040987, "p90": 52454974.76720131}, {"age": 50, "p10": 23697891.435915068, "p25": 27903238.33125879, "p50": 34280878.54205986, "p75": 44165943.381839745, "p90": 55242183.13623135}, {"age": 51, "p10": 24180234.456691023, "p25": 28296962.12956128, "p50": 35263356.34651443, "p75": 45832546.96043833, "p90": 58066456.94450464}, {"age": 52, "p10": 24547328.70236051, "p25": 29011154.870068453, "p50": 36195223.79114534, "p75": 47117609.20721082, "p90": 61417010.90136334}, {"age": 53, "p10": 24835724.83876656, "p25": 29393877.56384874, "p50": 37303156.406253144, "p75": 48796753.38085676, "p90": 64011237.6711466}, {"age": 54, "p10": 25119600.87383812, "p25": 29931511.62579067, "p50": 38256050.48071933, "p75": 50940857.71221175, "p90": 66090030.56505662}, {"age": 55, "p10": 25619951.636542223, "p25": 30884261.010805722, "p50": 39530487.292248935, "p75": 52564597.0102613, "p90": 68723232.42275947}, {"age": 56, "p10": 26004966.553351693, "p25": 31405593.35157888, "p50": 40714153.28338535, "p75": 54415201.54526181, "p90": 72899004.49383461}, {"age": 57, "p10": 26378170.106588334, "p25": 32448534.696747307, "p50": 41760033.66571404, "p75": 56311985.512785845, "p90": 76503948.03477132}, {"age": 58, "p10": 26974756.274056375, "p25": 33132037.509705156, "p50": 43614622.43532179, "p75": 58508857.4974773, "p90": 79472882.02566612}, {"age": 59, "p10": 27449672.4733584, "p25": 33655664.63142505, "p50": 44287738.54717719, "p75": 60004111.93894, "p90": 83959636.74626121}, {"age": 60, "p10": 27893557.938253973, "p25": 34085619.81188142, "p50": 45466987.95032714, "p75": 61849273.079808004, "p90": 87505236.1987746}, {"age": 61, "p10": 28180515.789766274, "p25": 35127017.96091503, "p50": 46279686.706624754, "p75": 64210941.91019021, "p90": 91049186.10243364}, {"age": 62, "p10": 28647496.183320202, "p25": 35724941.99013834, "p50": 47812786.8255165, "p75": 67177069.05486867, "p90": 93010941.27774714}, {"age": 63, "p10": 28517340.871497072, "p25": 36180367.46767749, "p50": 47907929.078823954, "p75": 68896879.18480185, "p90": 97872782.79405898}, {"age": 64, "p10": 29054635.227807663, "p25": 36829865.44957407, "p50": 49674735.14367458, "p75": 70754242.12629393, "p90": 102827972.23146671}, {"age": 65, "p10": 29579588.077985507, "p25": 37379807.81525065, "p50": 50450908.56488879, "p75": 72761956.10706845, "p90": 106651340.74977174}, {"age": 66, "p10": 28809259.47429818, "p25": 36857885.19268196, "p50": 51256733.46301566, "p75": 73389486.74489999, "p90": 110231270.3608774}, {"age": 67, "p10": 28296769.776990805, "p25": 36360219.4461221, "p50": 51603189.3517864, "p75": 75300416.62131368, "p90": 112561686.96813567}, {"age": 68, "p10": 27249986.491548434, "p25": 35778958.119858995, "p50": 51332893.51410385, "p75": 76833630.94658992, "p90": 114918314.92360541}, {"age": 69, "p10": 27068579.87370804, "p25": 35398299.09023517, "p50": 52256771.78157633, "p75": 78214709.7256986, "p90": 118658745.19463256}, {"age": 70, "p10": 25990298.307555478, "p25": 35459203.4937367, "p50": 51484088.099822655, "p75": 80223505.67876604, "p90": 121097404.61125214}, {"age": 71, "p10": 24650066.9735166, "p25": 34289819.432791874, "p50": 51690121.107363544, "p75": 81577566.3653205, "p90": 126964772.50378628}, {"age": 72, "p10": 24019628.07849464, "p25": 34092922.88342498, "p50": 52045866.21349444, "p75": 82928732.711043, "p90": 128685460.58748867}, {"age": 73, "p10": 23270908.502337255, "p25": 33564506.1666109, "p50": 52578891.85769473, "p75": 83325628.03536417, "p90": 132036894.4995708}, {"age": 74, "p10": 22290524.04988975, "p25": 33287858.839910794, "p50": 51726259.077043675, "p75": 85823325.13903713, "p90": 134439177.0059712}, {"age": 75, "p10": 21677681.29097759, "p25": 32473476.204830587, "p50": 52700826.16117836, "p75": 87528138.02847257, "p90": 143620187.1196856}, {"age": 76, "p10": 21124840.997297715, "p25": 31847184.150939602, "p50": 52397295.23910914, "p75": 89811025.45310813, "p90": 148152497.36996913}, {"age": 77, "p10": 20905348.50478767, "p25": 31315617.463394903, "p50": 52649627.7165331, "p75": 92345208.5426409, "p90": 149573631.62288067}, {"age": 78, "p10": 20444843.15349156, "p25": 31414089.266145907, "p50": 52010638.900575414, "p75": 89149405.75122574, "p90": 152400304.32595637}, {"age": 79, "p10": 19684650.73545604, "p25": 30466463.40942214, "p50": 53315439.330694355, "p75": 93350257.79828832, "p90": 160351984.22629294}, {"age": 80, "p10": 18816338.63474591, "p25": 29896584.11411684, "p50": 54192744.050883554, "p75": 94887465.9138905, "p90": 163549215.1252651}, {"age": 81, "p10": 18308787.68237132, "p25": 29350348.769103993, "p50": 54077068.44671869, "p75": 93038739.0885484, "p90": 167061392.57147732}, {"age": 82, "p10": 17421864.936254166, "p25": 28440357.657203823, "p50": 53984922.33420866, "p75": 94906364.36046906, "p90": 172683104.14129713}, {"age": 83, "p10": 16901235.674818758, "p25": 28360821.94307012, "p50": 53947593.24172063, "p75": 96127519.51726411, "p90": 175214307.1351929}, {"age": 84, "p10": 16070437.048841838, "p25": 27922332.998766266, "p50": 53483916.48500449, "p75": 98251133.50435156, "p90": 180271032.28580824}, {"age": 85, "p10": 15692955.252852125, "p25": 27905979.244194187, "p50": 54462923.68313221, "p75": 99641290.60056034, "p90": 182307090.77005386}, {"age": 86, "p10": 15134048.754898328, "p25": 27307182.7441116, "p50": 54985697.541184835, "p75": 101501612.42882635, "p90": 186130146.86608994}, {"age": 87, "p10": 14715272.12785607, "p25": 27404375.351682354, "p50": 55529670.074295305, "p75": 103850732.93024433, "p90": 189858296.39116707}, {"age": 88, "p10": 14227632.881604344, "p25": 26894326.544060554, "p50": 54804590.01057265, "p75": 106250427.78835021, "p90": 198361873.64128307}, {"age": 89, "p10": 13503420.101935763, "p25": 26315751.807929207, "p50": 55240818.87621249, "p75": 107709136.7659428, "p90": 200430949.04432434}, {"age": 90, "p10": 12908277.743394164, "p25": 26345059.02132219, "p50": 55343394.48645252, "p75": 107406774.7964843, "p90": 204472262.7116898}, {"age": 91, "p10": 12208105.830425134, "p25": 25716561.125128493, "p50": 55582164.49010071, "p75": 109527135.33174318, "p90": 210867207.468189}, {"age": 92, "p10": 11760822.389247006, "p25": 24801029.52746513, "p50": 55714460.752833076, "p75": 111856291.78046437, "p90": 216434968.54879898}, {"age": 93, "p10": 10962195.657224303, "p25": 24031429.247865964, "p50": 55300824.20251655, "p75": 113462812.96305384, "p90": 215963871.91983125}, {"age": 94, "p10": 10131259.676105645, "p25": 23612874.04101977, "p50": 55607882.41763639, "p75": 116435526.96721682, "p90": 228319452.47028106}, {"age": 95, "p10": 9553570.785797304, "p25": 23009371.533158526, "p50": 55202234.57637137, "p75": 118225816.39266554, "p90": 235482356.98812613}];
+drawFanChart(_initBalances, 65, _initBalancesNoEvents, 65);
+window.addEventListener('resize', () => {
+  if (_initBalances) drawFanChart(_initBalances, parseInt(document.getElementById('retirement_age').value) || 65, _initBalancesNoEvents,
+    parseInt(document.getElementById('reemployment_end_age').value) || null);
+});
+
+// --- デフォルトに戻す ---
+async function resetFromData() {
+  if (!confirm('パラメータをデフォルト値に戻します。\n他のパラメータはそのまま維持されます。')) return;
+  const btn = document.getElementById('sim-reset-btn');
+  const loading = document.getElementById('sim-loading');
+  btn.disabled = true;
+  loading.style.display = 'inline';
+  try {
+    const ii = document.getElementById('initial_investment');
+    const sv = document.getElementById('safe_value');
+    const mc = document.getElementById('monthly_contribution');
+    if (ii) ii.value = '11,530,000';
+    if (sv) sv.value = '9,970,000';
+    if (mc) mc.value = '50,000';
+    await recalcSimulator();
+  } catch(e) {
+    console.error('Reset error:', e);
+  } finally {
+    btn.disabled = false;
+    loading.style.display = 'none';
+  }
+}
+
+async function createLifeEvent() {
+  const payload = {
+    title: (document.getElementById('le-title')?.value || '').trim(),
+    amount: parseMoney(document.getElementById('le-amount')?.value || '0'),
+    start_year: parseInt(document.getElementById('le-start-year')?.value || '0', 10),
+    repeat_every_years: parseInt(document.getElementById('le-repeat')?.value || '0', 10),
+    end_year: parseInt(document.getElementById('le-end-year')?.value || '0', 10) || null
+  };
+  if (!payload.title || payload.amount <= 0 || !payload.start_year) {
+    alert('タイトル・金額・開始年を入力してください');
+    return;
+  }
+  try {
+    const resp = await fetch('/api/life-events', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '保存に失敗しました');
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+
+async function createHousingTemplate() {
+  const payload = {
+    purchase_year: parseInt(document.getElementById('house-year')?.value || '0', 10),
+    price: parseMoney(document.getElementById('house-price')?.value || '0'),
+    down_payment: parseMoney(document.getElementById('house-down')?.value || '0'),
+    loan_years: parseInt(document.getElementById('house-loan-years')?.value || '0', 10),
+    annual_interest_rate: parseFloat(document.getElementById('house-rate')?.value || '0'),
+    annual_maintenance: parseMoney(document.getElementById('house-maint')?.value || '0'),
+  };
+  if (!payload.purchase_year || payload.price <= 0 || payload.loan_years <= 0) {
+    alert('購入年・住宅価格・ローン年数を入力してください');
+    return;
+  }
+  try {
+    const resp = await fetch('/api/life-events/housing-template', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '住宅テンプレート作成に失敗しました');
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+
+async function editLifeEvent(btn) {
+  const id = parseInt(btn.dataset.id || '0', 10);
+  const title = prompt('イベント名', btn.dataset.title || '');
+  if (title === null) return;
+  const amountRaw = prompt('金額（円）', fmt(parseFloat(btn.dataset.amount || '0')));
+  if (amountRaw === null) return;
+  const startYearRaw = prompt('開始年', btn.dataset.startYear || '');
+  if (startYearRaw === null) return;
+  const repeatRaw = prompt('繰返し年数（0=単発）', btn.dataset.repeat || '0');
+  if (repeatRaw === null) return;
+  const endYearRaw = prompt('終了年（空欄でなし）', btn.dataset.endYear || '');
+  if (endYearRaw === null) return;
+  const payload = {
+    id,
+    title: title.trim(),
+    amount: parseMoney(amountRaw),
+    start_year: parseInt(startYearRaw, 10),
+    repeat_every_years: parseInt(repeatRaw, 10) || 0,
+    end_year: endYearRaw.trim() ? parseInt(endYearRaw, 10) : null,
+  };
+  if (!payload.title || payload.amount <= 0 || !payload.start_year) {
+    alert('入力値が不正です');
+    return;
+  }
+  try {
+    const resp = await fetch('/api/life-events/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '更新に失敗しました');
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+
+async function deleteLifeEvent(id) {
+  if (!confirm('このイベントを削除しますか？')) return;
+  try {
+    const resp = await fetch('/api/life-events/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id })
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '削除に失敗しました');
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+
+async function createChildProfile() {
+  const payload = {
+    name: (document.getElementById('ch-name')?.value || '').trim(),
+    birth_year: parseInt(document.getElementById('ch-birth-year')?.value || '0', 10),
+    birth_month: parseInt(document.getElementById('ch-birth-month')?.value || '0', 10)
+  };
+  if (!payload.name || !payload.birth_year || payload.birth_month < 1 || payload.birth_month > 12) {
+    alert('名前・生年・生月を正しく入力してください');
+    return;
+  }
+  try {
+    const resp = await fetch('/api/children', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '保存に失敗しました');
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+
+async function editChildProfile(btn) {
+  const id = parseInt(btn.dataset.id || '0', 10);
+  const name = prompt('子どもの名前', btn.dataset.name || '');
+  if (name === null) return;
+  const birthYearRaw = prompt('生年', btn.dataset.birthYear || '');
+  if (birthYearRaw === null) return;
+  const birthMonthRaw = prompt('生月', btn.dataset.birthMonth || '');
+  if (birthMonthRaw === null) return;
+
+  const payload = {
+    id,
+    name: name.trim(),
+    birth_year: parseInt(birthYearRaw, 10),
+    birth_month: parseInt(birthMonthRaw, 10),
+  };
+  if (!payload.name || !payload.birth_year || payload.birth_month < 1 || payload.birth_month > 12) {
+    alert('入力値が不正です');
+    return;
+  }
+  try {
+    const resp = await fetch('/api/children/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '更新に失敗しました');
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+
+async function deleteChildProfile(id) {
+  if (!confirm('この子どもプロフィールを削除しますか？')) return;
+  try {
+    const resp = await fetch('/api/children/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id })
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '削除に失敗しました');
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+
+async function saveChildPlan(childId, stage, value) {
+  try {
+    const resp = await fetch('/api/children/update-plan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id: childId, stage, value })
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '教育費プランの保存に失敗しました');
+      return;
+    }
+    await recalcSimulator();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+
+async function saveLifeInflationRate() {
+  const rate = parseFloat(document.getElementById('life-inflation-rate')?.value || '0');
+  try {
+    const resp = await fetch('/api/life-settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ inflation_rate: rate })
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      alert(data.error || '保存に失敗しました');
+      return;
+    }
+    await recalcSimulator();
+    location.reload();
+  } catch (e) {
+    alert('通信エラーが発生しました');
+    console.error(e);
+  }
+}
+</script>
+</body>
+</html>

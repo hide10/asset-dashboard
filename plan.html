@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%232881D7'/><path d='M50 5A45 45 0 0 1 95 50L50 50Z' fill='%23FCAD4C'/><path d='M50 5A45 45 0 0 0 10.2 72.5L50 50Z' fill='%230F7F30'/></svg>">
+<title>ライフプランニング - 2026-02-14</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f6fa; color: #2d3436; line-height: 1.6; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  
+  .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .nav-toolbar { display: flex; gap: 0; }
+  .nav-toolbar a {
+    color: #636e72; text-decoration: none; font-size: 0.85rem; font-weight: 600;
+    padding: 7px 16px; border: 1px solid #dfe6e9; background: #fff;
+  }
+  .nav-toolbar a:first-child { border-radius: 6px 0 0 6px; }
+  .nav-toolbar a:last-child { border-radius: 0 6px 6px 0; }
+  .nav-toolbar a:not(:first-child) { border-left: none; }
+  .nav-toolbar a:hover { background: #f1f2f6; color: #2d3436; }
+  .nav-toolbar a.active { background: #2881D7; color: #fff; border-color: #2881D7; }
+  .nav-toolbar a.active + a { border-left-color: #2881D7; }
+
+  h1 { font-size: 1.5rem; }
+  .total { font-size: 1.4rem; font-weight: 700; color: #636e72; margin-bottom: 24px; }
+  .total strong { color: #2d3436; font-size: 1.8rem; }
+  .grid { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; align-items: flex-start; }
+  .card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); width: calc(50% - 10px); }
+  .card h2 { font-size: 1.1rem; margin-bottom: 12px; color: #2d3436; }
+  .full { width: 100%; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th { text-align: left; padding: 8px 6px; border-bottom: 2px solid #dfe6e9; color: #636e72; font-weight: 600; }
+  td { padding: 6px; border-bottom: 1px solid #f1f2f6; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .plus { color: #e74c3c; }
+  .minus { color: #2881D7; }
+  .no-data { color: #b2bec3; font-size: 0.9rem; padding: 20px 0; }
+  .no-data code { background: #f1f2f6; padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; }
+  .avg-net { font-size: 1.5rem; font-weight: 700; margin-bottom: 4px; }
+  .avg-label { font-size: 0.85rem; color: #636e72; margin-bottom: 12px; }
+  canvas { width: 100%; max-height: 250px; }
+  .pred-table { margin-top: 12px; }
+  .pred-table th { font-size: 0.8rem; }
+  .pred-note { font-size: 0.75rem; color: #b2bec3; margin-top: 8px; }
+  .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .card-header h2 { margin-bottom: 0; }
+  .info-btn {
+    width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid #b2bec3;
+    background: transparent; color: #636e72; font-size: 0.75rem; font-weight: 700;
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .info-btn:hover { background: #f1f2f6; border-color: #636e72; }
+  .info-panel {
+    display: none; background: #f8f9fa; border-radius: 8px; padding: 14px 16px;
+    font-size: 0.8rem; color: #636e72; line-height: 1.7; margin-bottom: 12px;
+    border: 1px solid #dfe6e9;
+  }
+  .info-panel.show { display: block; }
+  .info-panel strong { color: #2d3436; }
+  .info-panel ul { margin: 6px 0 6px 18px; }
+  .info-panel li { margin-bottom: 2px; }
+  .contrib-form {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    font-size: 0.85rem; color: #636e72;
+  }
+  .contrib-form input {
+    width: 120px; padding: 4px 8px; border: 1px solid #dfe6e9;
+    border-radius: 6px; font-size: 0.9rem; text-align: right;
+  }
+  .contrib-form button {
+    padding: 4px 12px; border: 1px solid #dfe6e9; border-radius: 6px;
+    background: #fff; cursor: pointer; font-size: 0.85rem; color: #2d3436;
+  }
+  .contrib-form button:hover { background: #f1f2f6; }
+  .period-buttons { display: flex; gap: 4px; margin-left: auto; }
+  .period-btn {
+    padding: 2px 10px; border: 1px solid #dfe6e9; border-radius: 4px;
+    background: #fff; cursor: pointer; font-size: 0.75rem; color: #636e72; font-weight: 600;
+  }
+  .period-btn:hover { background: #f1f2f6; }
+  .period-btn.active { background: #2881D7; color: #fff; border-color: #2881D7; }
+  .daily-tooltip {
+    position: fixed; pointer-events: none; background: rgba(45,52,54,0.92);
+    color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 0.8rem;
+    line-height: 1.6; opacity: 0; transition: opacity 0.15s; z-index: 999;
+    max-width: 280px;
+  }
+  .daily-tooltip.show { opacity: 1; }
+  .ai-comment-card {
+    background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
+    border: 1px solid #d4ddee; border-radius: 12px;
+    padding: 16px 20px; margin-bottom: 20px;
+    display: flex; align-items: flex-start; gap: 12px;
+    font-size: 0.9rem; line-height: 1.7;
+  }
+  .ai-icon {
+    background: #2881D7; color: #fff; font-size: 0.7rem; font-weight: 700;
+    padding: 3px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
+  }
+  #reload-banner {
+    display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    background: #0F7F30; color: #fff; padding: 10px 20px;
+    align-items: center; justify-content: center; gap: 12px;
+    font-size: 0.9rem; font-weight: 600;
+  }
+  #reload-banner button {
+    background: #fff; color: #0F7F30; border: none; border-radius: 6px;
+    padding: 4px 14px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  }
+  #reload-banner button:hover { background: #f1f2f6; }
+  
+  .collapse-btn {
+    background: none; border: none; cursor: pointer; font-size: 0.9rem;
+    color: #b2bec3; padding: 2px 6px; line-height: 1; flex-shrink: 0;
+  }
+  .collapse-btn:hover { color: #636e72; }
+  [data-card-id].collapsed > .card-body { display: none; }
+  [data-card-id].collapsed { padding-bottom: 8px; }
+
+  
+  @media (max-width: 768px) {
+    .container { padding: 10px; }
+    .grid { gap: 12px; }
+    .card, .card.full { width: 100% !important; }
+    .page-header { flex-direction: column; gap: 8px; align-items: flex-start; }
+    .nav-toolbar a { padding: 6px 10px; font-size: 0.78rem; }
+    .summary-cards { flex-direction: column; }
+    .summary-card { min-width: auto; }
+    .pie-wrap { flex-direction: column; align-items: center; }
+    table { font-size: 0.8rem; }
+    .card-body { overflow-x: auto; }
+    .compare-cards { flex-direction: column; }
+    .compare-card { min-width: auto; }
+    h1 { font-size: 1.2rem; }
+    canvas { max-width: 100%; height: auto !important; }
+  }
+
+</style>
+</head>
+<body>
+<div style="background:#DF3727;color:#fff;text-align:center;padding:8px 12px;font-size:0.8rem;font-weight:700;letter-spacing:0.05em">DEMO — 表示データはすべてダミーです <a href="https://github.com/hide10/asset-dashboard" style="color:#fff;text-decoration:underline;margin-left:8px">GitHub</a></div>
+<div id="reload-banner">
+  データが更新されました
+  <button onclick="location.reload()">再読み込み</button>
+</div>
+<div class="container">
+  <div class="page-header">
+    <h1>ライフプランニング</h1>
+    <div class="nav-toolbar"><a href="index.html">ダッシュボード</a><a href="/allocation">資産配分</a><a href="cf.html">家計簿分析</a><a href="plan.html" class="active">ライフプラン</a><a href="simulator.html">シミュレーター</a></div>
+  </div>
+  <div class="total">現在の総資産: <strong>21,500,000</strong> 円 <span style="font-size:0.85rem;color:#b2bec3">(2026-02-14時点)</span></div>
+  <div class="ai-comment-card"><div class="ai-icon">AI</div><div class="ai-text">直近6ヶ月で資産は約1,970万円から2,150万円へ着実に増加しており、月平均+30万円の成長ペースです。月次収支は概ね黒字を維持していますが、12月のように支出が膨らむ月もあるため、臨時出費への備えも意識しましょう。モンテカルロ・シミュレーションでは、月5万円の積立を継続した場合、5年後の中央値は約3,120万円と見込まれ、長期的な資産形成は順調と言えます。</div></div>
+
+  <div class="grid">
+    
+    <div class="card full" data-card-id="plan-daily-assets">
+      <div class="card-header">
+        <h2>資産推移（実績）</h2>
+        <div class="period-buttons">
+          <button class="period-btn active" data-period="1">1M</button>
+          <button class="period-btn" data-period="3">3M</button>
+          <button class="period-btn" data-period="6">6M</button>
+          <button class="period-btn" data-period="12">1Y</button>
+          <button class="period-btn" data-period="0">ALL</button>
+        </div>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <canvas id="daily-chart" height="280"></canvas>
+      </div>
+    </div>
+
+    
+    <div class="card full" style="background:linear-gradient(135deg,#f0faf4 0%,#f5f6fa 100%);border:1px solid #b8e6c8">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="background:#0F7F30;color:#fff;font-size:0.7rem;font-weight:700;padding:2px 8px;border-radius:4px">家計簿実績</span>
+        <span style="font-size:0.8rem;color:#636e72">直近6ヶ月平均</span>
+      </div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+        <div><span style="font-size:0.8rem;color:#636e72">収入</span><div style="font-size:1.1rem;font-weight:700">38.8万円</div></div>
+        <div><span style="font-size:0.8rem;color:#636e72">支出</span><div style="font-size:1.1rem;font-weight:700">33.2万円</div></div>
+        <div><span style="font-size:0.8rem;color:#636e72">貯蓄</span><div style="font-size:1.1rem;font-weight:700;color:#e74c3c">+5.7万円</div></div>
+        <div><span style="font-size:0.8rem;color:#636e72">貯蓄率</span><div style="font-size:1.1rem;font-weight:700">14.6%</div></div>
+      </div>
+      <div style="font-size:0.75rem;color:#b2bec3;margin-top:8px">※ 積立額設定の参考値としてご活用ください（自動変更はしません）</div>
+    </div>
+
+    <div class="card full" data-card-id="plan-cashflow">
+      <div class="card-header">
+        <h2>月次収支</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <canvas id="cf-chart" height="200"></canvas>
+      <table style="margin-top:16px">
+        <tr><th>月</th><th class="num">収入</th><th class="num">支出</th><th class="num">生活費</th><th class="num">収支</th></tr>
+        <tr>
+          <td>2025-09</td>
+          <td class="num">380,000円</td>
+          <td class="num">310,000円</td>
+          <td class="num">260,000円</td>
+          <td class="num plus">+70,000円</td>
+        </tr><tr>
+          <td>2025-10</td>
+          <td class="num">385,000円</td>
+          <td class="num">345,000円</td>
+          <td class="num">295,000円</td>
+          <td class="num plus">+40,000円</td>
+        </tr><tr>
+          <td>2025-11</td>
+          <td class="num">380,000円</td>
+          <td class="num">290,000円</td>
+          <td class="num">240,000円</td>
+          <td class="num plus">+90,000円</td>
+        </tr><tr>
+          <td>2025-12</td>
+          <td class="num">520,000円</td>
+          <td class="num">420,000円</td>
+          <td class="num">370,000円</td>
+          <td class="num plus">+100,000円</td>
+        </tr><tr>
+          <td>2026-01</td>
+          <td class="num">385,000円</td>
+          <td class="num">320,000円</td>
+          <td class="num">270,000円</td>
+          <td class="num plus">+65,000円</td>
+        </tr><tr>
+          <td>2026-02</td>
+          <td class="num">380,000円</td>
+          <td class="num">305,000円</td>
+          <td class="num">255,000円</td>
+          <td class="num plus">+75,000円</td>
+        </tr>
+      </table>
+      <div class="pred-note" style="margin-top:8px">※ 支出には積立投資・貯蓄性の振替を含みます。生活費 = 支出 - 月額積立(50,000円)</div>
+      </div>
+    </div>
+
+    
+    <div class="card" data-card-id="plan-dividends">
+      <div class="card-header">
+        <h2>配当・分配金実績</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <canvas id="div-chart" height="200"></canvas>
+      <table style="margin-top:12px">
+        <tr><th>年</th><th class="num">受取額</th></tr>
+        <tr><td>2025年</td><td class="num">68,800円</td></tr><tr><td>2026年</td><td class="num">5,200円</td></tr>
+        <tr style="border-top:2px solid #dfe6e9;font-weight:700"><td>合計</td><td class="num">74,000円</td></tr>
+      </table>
+      <div class="pred-note" style="margin-top:8px">※ 家計簿の「配当」「分配金」「利息」カテゴリから集計</div>
+      </div>
+    </div>
+
+    
+    <div class="card" data-card-id="plan-pred">
+      <div class="card-header">
+        <h2>成長予測（追加投資なし）</h2>
+        <button class="info-btn" onclick="document.getElementById('pred-info').classList.toggle('show')" title="予測手法について">?</button>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="info-panel" id="pred-info">
+        <strong>モンテカルロ・シミュレーションとは</strong>
+        <p>現在の資産を出発点に、将来の資産額を確率的にシミュレーションする手法です。</p>
+        <ul>
+          <li><strong>対象資産の分離:</strong> リスク資産（株式・投信: <strong>11,530,000円</strong>）のみ市場変動の対象とし、安全資産（預金・不動産・年金: <strong>9,970,000円</strong>）は変動なしで固定加算</li>
+          <li><strong>手法:</strong> 幾何ブラウン運動（対数正規モデル）でリスク資産の月次リターンを生成し、2,000回のシミュレーションを実行</li>
+          <li><strong>パラメータ:</strong> 過去の日次リターンから年率の期待リターンとボラティリティ（価格変動の大きさ）を推定。データが60日未満の場合は資産クラス別デフォルト値の加重平均を使用</li>
+          <li><strong>P10（悲観）:</strong> シミュレーション結果の下位10% — 10回中9回はこれ以上になる水準</li>
+          <li><strong>P50（中央）:</strong> シミュレーション結果の中央値 — 最も起こりやすい水準</li>
+          <li><strong>P90（楽観）:</strong> シミュレーション結果の上位10% — 好調時に期待できる水準</li>
+        </ul>
+        <p>この予測は過去のデータに基づく参考値であり、将来のリターンを保証するものではありません。</p>
+      </div>
+      <table class="pred-table">
+        <tr><th></th><th class="num">悲観(P10)</th><th class="num">中央(P50)</th><th class="num">楽観(P90)</th></tr>
+        <tr><td class="num">1年後</td><td class="num">19,800,000円</td><td class="num" style="font-weight:700">22,100,000円</td><td class="num">24,800,000円</td></tr><tr><td class="num">3年後</td><td class="num">18,200,000円</td><td class="num" style="font-weight:700">24,500,000円</td><td class="num">33,100,000円</td></tr><tr><td class="num">5年後</td><td class="num">17,500,000円</td><td class="num" style="font-weight:700">27,800,000円</td><td class="num">44,200,000円</td></tr><tr><td class="num">10年後</td><td class="num">16,000,000円</td><td class="num" style="font-weight:700">36,500,000円</td><td class="num">82,000,000円</td></tr><tr><td class="num">20年後</td><td class="num">18,500,000円</td><td class="num" style="font-weight:700">63,000,000円</td><td class="num">215,000,000円</td></tr><tr><td class="num">30年後</td><td class="num">24,000,000円</td><td class="num" style="font-weight:700">110,000,000円</td><td class="num">500,000,000円</td></tr>
+      </table>
+      <div class="pred-note">※ デフォルトパラメータ使用（データ蓄積中）<br>リスク資産 11,530,000円 + 安全資産 9,970,000円（固定）<br>期待リターン 5.0%/年　ボラティリティ 15.0%/年</div>
+      </div>
+    </div>
+
+    
+    <div class="card" data-card-id="plan-pred-c">
+      <div class="card-header">
+        <h2>成長予測（積立込み）</h2>
+        <button class="collapse-btn">&#x25BC;</button>
+      </div>
+      <div class="card-body">
+      <div class="contrib-form">
+        <label>月額積立:</label>
+        <input type="number" id="contrib-input" value="50000" step="10000" min="0">
+        <span>円/月</span>
+        <button onclick="updateContrib()">再計算</button>
+      </div>
+      <table class="pred-table">
+        <tr><th></th><th class="num">悲観(P10)</th><th class="num">中央(P50)</th><th class="num">楽観(P90)</th></tr>
+        <tr><td class="num">1年後</td><td class="num">20,400,000円</td><td class="num" style="font-weight:700">22,700,000円</td><td class="num">25,400,000円</td></tr><tr><td class="num">3年後</td><td class="num">20,000,000円</td><td class="num" style="font-weight:700">26,500,000円</td><td class="num">35,200,000円</td></tr><tr><td class="num">5年後</td><td class="num">20,800,000円</td><td class="num" style="font-weight:700">31,200,000円</td><td class="num">47,500,000円</td></tr><tr><td class="num">10年後</td><td class="num">22,000,000円</td><td class="num" style="font-weight:700">42,000,000円</td><td class="num">90,000,000円</td></tr><tr><td class="num">20年後</td><td class="num">30,000,000円</td><td class="num" style="font-weight:700">85,000,000円</td><td class="num">250,000,000円</td></tr><tr><td class="num">30年後</td><td class="num">45,000,000円</td><td class="num" style="font-weight:700">160,000,000円</td><td class="num">600,000,000円</td></tr>
+      </table>
+      <div class="pred-note">※ 上記の予測パラメータ + 毎月 50,000円 の積立を加算</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="daily-tooltip" id="daily-tooltip"></div>
+
+<script>
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+// --- 日次資産推移（実績）チャート ---
+const dailyAllData = [{"date": "2025-08-19", "total": 19440000, "by_class": {"株式（現物）": 7970000, "投資信託": 2820000, "年金": 2600000, "預金・現金": 4880000, "不動産": 1170000}}, {"date": "2025-08-20", "total": 19669500, "by_class": {"株式（現物）": 8008000, "投資信託": 2782800, "年金": 2632600, "預金・現金": 4914900, "不動産": 1331200}}, {"date": "2025-08-21", "total": 19569000, "by_class": {"株式（現物）": 8046000, "投資信託": 2815600, "年金": 2595200, "預金・現金": 4879800, "不動産": 1232400}}, {"date": "2025-08-22", "total": 19468500, "by_class": {"株式（現物）": 8014000, "投資信託": 2778400, "年金": 2627800, "預金・現金": 4914700, "不動産": 1133600}}, {"date": "2025-08-23", "total": 19698000, "by_class": {"株式（現物）": 8052000, "投資信託": 2811200, "年金": 2590400, "預金・現金": 4949600, "不動産": 1294800}}, {"date": "2025-08-24", "total": 19597500, "by_class": {"株式（現物）": 8020000, "投資信託": 2844000, "年金": 2623000, "預金・現金": 4914500, "不動産": 1196000}}, {"date": "2025-08-25", "total": 19497000, "by_class": {"株式（現物）": 8058000, "投資信託": 2806800, "年金": 2585600, "預金・現金": 4949400, "不動産": 1097200}}, {"date": "2025-08-26", "total": 19726500, "by_class": {"株式（現物）": 8026000, "投資信託": 2839600, "年金": 2618200, "預金・現金": 4914300, "不動産": 1328400}}, {"date": "2025-08-27", "total": 19626000, "by_class": {"株式（現物）": 8064000, "投資信託": 2802400, "年金": 2650800, "預金・現金": 4949200, "不動産": 1159600}}, {"date": "2025-08-28", "total": 19525500, "by_class": {"株式（現物）": 8102000, "投資信託": 2835200, "年金": 2613400, "預金・現金": 4914100, "不動産": 1060800}}, {"date": "2025-08-29", "total": 19755000, "by_class": {"株式（現物）": 8070000, "投資信託": 2798000, "年金": 2646000, "預金・現金": 4949000, "不動産": 1292000}}, {"date": "2025-08-30", "total": 19654500, "by_class": {"株式（現物）": 8108000, "投資信託": 2830800, "年金": 2608600, "預金・現金": 4983900, "不動産": 1123200}}, {"date": "2025-08-31", "total": 19884000, "by_class": {"株式（現物）": 8076000, "投資信託": 2863600, "年金": 2641200, "預金・現金": 4948800, "不動産": 1354400}}, {"date": "2025-09-01", "total": 19783500, "by_class": {"株式（現物）": 8114000, "投資信託": 2826400, "年金": 2603800, "預金・現金": 4983700, "不動産": 1255600}}, {"date": "2025-09-02", "total": 19683000, "by_class": {"株式（現物）": 8082000, "投資信託": 2859200, "年金": 2636400, "預金・現金": 4948600, "不動産": 1156800}}, {"date": "2025-09-03", "total": 19912500, "by_class": {"株式（現物）": 8120000, "投資信託": 2822000, "年金": 2669000, "預金・現金": 4983500, "不動産": 1318000}}, {"date": "2025-09-04", "total": 19812000, "by_class": {"株式（現物）": 8158000, "投資信託": 2854800, "年金": 2631600, "預金・現金": 4948400, "不動産": 1219200}}, {"date": "2025-09-05", "total": 19711500, "by_class": {"株式（現物）": 8126000, "投資信託": 2817600, "年金": 2664200, "預金・現金": 4983300, "不動産": 1120400}}, {"date": "2025-09-06", "total": 19941000, "by_class": {"株式（現物）": 8164000, "投資信託": 2850400, "年金": 2626800, "預金・現金": 5018200, "不動産": 1281600}}, {"date": "2025-09-07", "total": 19840500, "by_class": {"株式（現物）": 8132000, "投資信託": 2883200, "年金": 2659400, "預金・現金": 4983100, "不動産": 1182800}}, {"date": "2025-09-08", "total": 19740000, "by_class": {"株式（現物）": 8170000, "投資信託": 2846000, "年金": 2622000, "預金・現金": 5018000, "不動産": 1084000}}, {"date": "2025-09-09", "total": 19969500, "by_class": {"株式（現物）": 8138000, "投資信託": 2878800, "年金": 2654600, "預金・現金": 4982900, "不動産": 1315200}}, {"date": "2025-09-10", "total": 19869000, "by_class": {"株式（現物）": 8176000, "投資信託": 2841600, "年金": 2687200, "預金・現金": 5017800, "不動産": 1146400}}, {"date": "2025-09-11", "total": 20098500, "by_class": {"株式（現物）": 8214000, "投資信託": 2874400, "年金": 2649800, "預金・現金": 4982700, "不動産": 1377600}}, {"date": "2025-09-12", "total": 19998000, "by_class": {"株式（現物）": 8182000, "投資信託": 2837200, "年金": 2682400, "預金・現金": 5017600, "不動産": 1278800}}, {"date": "2025-09-13", "total": 19897500, "by_class": {"株式（現物）": 8220000, "投資信託": 2870000, "年金": 2645000, "預金・現金": 5052500, "不動産": 1110000}}, {"date": "2025-09-14", "total": 20127000, "by_class": {"株式（現物）": 8188000, "投資信託": 2902800, "年金": 2677600, "預金・現金": 5017400, "不動産": 1341200}}, {"date": "2025-09-15", "total": 20026500, "by_class": {"株式（現物）": 8226000, "投資信託": 2865600, "年金": 2640200, "預金・現金": 5052300, "不動産": 1242400}}, {"date": "2025-09-16", "total": 19926000, "by_class": {"株式（現物）": 8194000, "投資信託": 2898400, "年金": 2672800, "預金・現金": 5017200, "不動産": 1143600}}, {"date": "2025-09-17", "total": 20155500, "by_class": {"株式（現物）": 8232000, "投資信託": 2861200, "年金": 2705400, "預金・現金": 5052100, "不動産": 1304800}}, {"date": "2025-09-18", "total": 20055000, "by_class": {"株式（現物）": 8270000, "投資信託": 2894000, "年金": 2668000, "預金・現金": 5017000, "不動産": 1206000}}, {"date": "2025-09-19", "total": 19954500, "by_class": {"株式（現物）": 8238000, "投資信託": 2856800, "年金": 2700600, "預金・現金": 5051900, "不動産": 1107200}}, {"date": "2025-09-20", "total": 20184000, "by_class": {"株式（現物）": 8276000, "投資信託": 2889600, "年金": 2663200, "預金・現金": 5086800, "不動産": 1268400}}, {"date": "2025-09-21", "total": 20083500, "by_class": {"株式（現物）": 8244000, "投資信託": 2922400, "年金": 2695800, "預金・現金": 5051700, "不動産": 1169600}}, {"date": "2025-09-22", "total": 20313000, "by_class": {"株式（現物）": 8282000, "投資信託": 2885200, "年金": 2658400, "預金・現金": 5086600, "不動産": 1400800}}, {"date": "2025-09-23", "total": 20212500, "by_class": {"株式（現物）": 8250000, "投資信託": 2918000, "年金": 2691000, "預金・現金": 5051500, "不動産": 1302000}}, {"date": "2025-09-24", "total": 20112000, "by_class": {"株式（現物）": 8288000, "投資信託": 2880800, "年金": 2723600, "預金・現金": 5086400, "不動産": 1133200}}, {"date": "2025-09-25", "total": 20341500, "by_class": {"株式（現物）": 8326000, "投資信託": 2913600, "年金": 2686200, "預金・現金": 5051300, "不動産": 1364400}}, {"date": "2025-09-26", "total": 20241000, "by_class": {"株式（現物）": 8294000, "投資信託": 2876400, "年金": 2718800, "預金・現金": 5086200, "不動産": 1265600}}, {"date": "2025-09-27", "total": 20140500, "by_class": {"株式（現物）": 8332000, "投資信託": 2909200, "年金": 2681400, "預金・現金": 5121100, "不動産": 1096800}}, {"date": "2025-09-28", "total": 20370000, "by_class": {"株式（現物）": 8300000, "投資信託": 2942000, "年金": 2714000, "預金・現金": 5086000, "不動産": 1328000}}, {"date": "2025-09-29", "total": 20269500, "by_class": {"株式（現物）": 8338000, "投資信託": 2904800, "年金": 2676600, "預金・現金": 5120900, "不動産": 1229200}}, {"date": "2025-09-30", "total": 20169000, "by_class": {"株式（現物）": 8306000, "投資信託": 2937600, "年金": 2709200, "預金・現金": 5085800, "不動産": 1130400}}, {"date": "2025-10-01", "total": 20398500, "by_class": {"株式（現物）": 8344000, "投資信託": 2900400, "年金": 2741800, "預金・現金": 5120700, "不動産": 1291600}}, {"date": "2025-10-02", "total": 20298000, "by_class": {"株式（現物）": 8382000, "投資信託": 2933200, "年金": 2704400, "預金・現金": 5085600, "不動産": 1192800}}, {"date": "2025-10-03", "total": 20527500, "by_class": {"株式（現物）": 8350000, "投資信託": 2896000, "年金": 2737000, "預金・現金": 5120500, "不動産": 1424000}}, {"date": "2025-10-04", "total": 20427000, "by_class": {"株式（現物）": 8388000, "投資信託": 2928800, "年金": 2699600, "預金・現金": 5155400, "不動産": 1255200}}, {"date": "2025-10-05", "total": 20326500, "by_class": {"株式（現物）": 8356000, "投資信託": 2961600, "年金": 2732200, "預金・現金": 5120300, "不動産": 1156400}}, {"date": "2025-10-06", "total": 20556000, "by_class": {"株式（現物）": 8394000, "投資信託": 2924400, "年金": 2694800, "預金・現金": 5155200, "不動産": 1387600}}, {"date": "2025-10-07", "total": 20455500, "by_class": {"株式（現物）": 8362000, "投資信託": 2957200, "年金": 2727400, "預金・現金": 5120100, "不動産": 1288800}}, {"date": "2025-10-08", "total": 20355000, "by_class": {"株式（現物）": 8400000, "投資信託": 2920000, "年金": 2760000, "預金・現金": 5155000, "不動産": 1120000}}, {"date": "2025-10-09", "total": 20584500, "by_class": {"株式（現物）": 8438000, "投資信託": 2952800, "年金": 2722600, "預金・現金": 5119900, "不動産": 1351200}}, {"date": "2025-10-10", "total": 20484000, "by_class": {"株式（現物）": 8406000, "投資信託": 2915600, "年金": 2755200, "預金・現金": 5154800, "不動産": 1252400}}, {"date": "2025-10-11", "total": 20383500, "by_class": {"株式（現物）": 8444000, "投資信託": 2948400, "年金": 2717800, "預金・現金": 5189700, "不動産": 1083600}}, {"date": "2025-10-12", "total": 20613000, "by_class": {"株式（現物）": 8412000, "投資信託": 2981200, "年金": 2750400, "預金・現金": 5154600, "不動産": 1314800}}, {"date": "2025-10-13", "total": 20512500, "by_class": {"株式（現物）": 8450000, "投資信託": 2944000, "年金": 2713000, "預金・現金": 5189500, "不動産": 1216000}}, {"date": "2025-10-14", "total": 20742000, "by_class": {"株式（現物）": 8418000, "投資信託": 2976800, "年金": 2745600, "預金・現金": 5154400, "不動産": 1447200}}, {"date": "2025-10-15", "total": 20641500, "by_class": {"株式（現物）": 8456000, "投資信託": 2939600, "年金": 2778200, "預金・現金": 5189300, "不動産": 1278400}}, {"date": "2025-10-16", "total": 20541000, "by_class": {"株式（現物）": 8494000, "投資信託": 2972400, "年金": 2740800, "預金・現金": 5154200, "不動産": 1179600}}, {"date": "2025-10-17", "total": 20770500, "by_class": {"株式（現物）": 8462000, "投資信託": 2935200, "年金": 2773400, "預金・現金": 5189100, "不動産": 1410800}}, {"date": "2025-10-18", "total": 20670000, "by_class": {"株式（現物）": 8500000, "投資信託": 2968000, "年金": 2736000, "預金・現金": 5224000, "不動産": 1242000}}, {"date": "2025-10-19", "total": 20569500, "by_class": {"株式（現物）": 8468000, "投資信託": 3000800, "年金": 2768600, "預金・現金": 5188900, "不動産": 1143200}}, {"date": "2025-10-20", "total": 20799000, "by_class": {"株式（現物）": 8506000, "投資信託": 2963600, "年金": 2731200, "預金・現金": 5223800, "不動産": 1374400}}, {"date": "2025-10-21", "total": 20698500, "by_class": {"株式（現物）": 8474000, "投資信託": 2996400, "年金": 2763800, "預金・現金": 5188700, "不動産": 1275600}}, {"date": "2025-10-22", "total": 20598000, "by_class": {"株式（現物）": 8512000, "投資信託": 2959200, "年金": 2796400, "預金・現金": 5223600, "不動産": 1106800}}, {"date": "2025-10-23", "total": 20827500, "by_class": {"株式（現物）": 8550000, "投資信託": 2992000, "年金": 2759000, "預金・現金": 5188500, "不動産": 1338000}}, {"date": "2025-10-24", "total": 20727000, "by_class": {"株式（現物）": 8518000, "投資信託": 2954800, "年金": 2791600, "預金・現金": 5223400, "不動産": 1239200}}, {"date": "2025-10-25", "total": 20956500, "by_class": {"株式（現物）": 8556000, "投資信託": 2987600, "年金": 2754200, "預金・現金": 5258300, "不動産": 1400400}}, {"date": "2025-10-26", "total": 20856000, "by_class": {"株式（現物）": 8524000, "投資信託": 3020400, "年金": 2786800, "預金・現金": 5223200, "不動産": 1301600}}, {"date": "2025-10-27", "total": 20755500, "by_class": {"株式（現物）": 8562000, "投資信託": 2983200, "年金": 2749400, "預金・現金": 5258100, "不動産": 1202800}}, {"date": "2025-10-28", "total": 20985000, "by_class": {"株式（現物）": 8530000, "投資信託": 3016000, "年金": 2782000, "預金・現金": 5223000, "不動産": 1434000}}, {"date": "2025-10-29", "total": 20884500, "by_class": {"株式（現物）": 8568000, "投資信託": 2978800, "年金": 2814600, "預金・現金": 5257900, "不動産": 1265200}}, {"date": "2025-10-30", "total": 20784000, "by_class": {"株式（現物）": 8606000, "投資信託": 3011600, "年金": 2777200, "預金・現金": 5222800, "不動産": 1166400}}, {"date": "2025-10-31", "total": 21013500, "by_class": {"株式（現物）": 8574000, "投資信託": 2974400, "年金": 2809800, "預金・現金": 5257700, "不動産": 1397600}}, {"date": "2025-11-01", "total": 20913000, "by_class": {"株式（現物）": 8612000, "投資信託": 3007200, "年金": 2772400, "預金・現金": 5292600, "不動産": 1228800}}, {"date": "2025-11-02", "total": 20812500, "by_class": {"株式（現物）": 8580000, "投資信託": 3040000, "年金": 2805000, "預金・現金": 5257500, "不動産": 1130000}}, {"date": "2025-11-03", "total": 21042000, "by_class": {"株式（現物）": 8618000, "投資信託": 3002800, "年金": 2767600, "預金・現金": 5292400, "不動産": 1361200}}, {"date": "2025-11-04", "total": 20941500, "by_class": {"株式（現物）": 8586000, "投資信託": 3035600, "年金": 2800200, "預金・現金": 5257300, "不動産": 1262400}}, {"date": "2025-11-05", "total": 21171000, "by_class": {"株式（現物）": 8624000, "投資信託": 2998400, "年金": 2832800, "預金・現金": 5292200, "不動産": 1423600}}, {"date": "2025-11-06", "total": 21070500, "by_class": {"株式（現物）": 8662000, "投資信託": 3031200, "年金": 2795400, "預金・現金": 5257100, "不動産": 1324800}}, {"date": "2025-11-07", "total": 20970000, "by_class": {"株式（現物）": 8630000, "投資信託": 2994000, "年金": 2828000, "預金・現金": 5292000, "不動産": 1226000}}, {"date": "2025-11-08", "total": 21199500, "by_class": {"株式（現物）": 8668000, "投資信託": 3026800, "年金": 2790600, "預金・現金": 5326900, "不動産": 1387200}}, {"date": "2025-11-09", "total": 21099000, "by_class": {"株式（現物）": 8636000, "投資信託": 3059600, "年金": 2823200, "預金・現金": 5291800, "不動産": 1288400}}, {"date": "2025-11-10", "total": 20998500, "by_class": {"株式（現物）": 8674000, "投資信託": 3022400, "年金": 2785800, "預金・現金": 5326700, "不動産": 1189600}}, {"date": "2025-11-11", "total": 21228000, "by_class": {"株式（現物）": 8642000, "投資信託": 3055200, "年金": 2818400, "預金・現金": 5291600, "不動産": 1420800}}, {"date": "2025-11-12", "total": 21127500, "by_class": {"株式（現物）": 8680000, "投資信託": 3018000, "年金": 2851000, "預金・現金": 5326500, "不動産": 1252000}}, {"date": "2025-11-13", "total": 21027000, "by_class": {"株式（現物）": 8718000, "投資信託": 3050800, "年金": 2813600, "預金・現金": 5291400, "不動産": 1153200}}, {"date": "2025-11-14", "total": 21256500, "by_class": {"株式（現物）": 8686000, "投資信託": 3013600, "年金": 2846200, "預金・現金": 5326300, "不動産": 1384400}}, {"date": "2025-11-15", "total": 21156000, "by_class": {"株式（現物）": 8724000, "投資信託": 3046400, "年金": 2808800, "預金・現金": 5361200, "不動産": 1215600}}, {"date": "2025-11-16", "total": 21385500, "by_class": {"株式（現物）": 8692000, "投資信託": 3079200, "年金": 2841400, "預金・現金": 5326100, "不動産": 1446800}}, {"date": "2025-11-17", "total": 21285000, "by_class": {"株式（現物）": 8730000, "投資信託": 3042000, "年金": 2804000, "預金・現金": 5361000, "不動産": 1348000}}, {"date": "2025-11-18", "total": 21184500, "by_class": {"株式（現物）": 8698000, "投資信託": 3074800, "年金": 2836600, "預金・現金": 5325900, "不動産": 1249200}}, {"date": "2025-11-19", "total": 21414000, "by_class": {"株式（現物）": 8736000, "投資信託": 3037600, "年金": 2869200, "預金・現金": 5360800, "不動産": 1410400}}, {"date": "2025-11-20", "total": 21313500, "by_class": {"株式（現物）": 8774000, "投資信託": 3070400, "年金": 2831800, "預金・現金": 5325700, "不動産": 1311600}}, {"date": "2025-11-21", "total": 21213000, "by_class": {"株式（現物）": 8742000, "投資信託": 3033200, "年金": 2864400, "預金・現金": 5360600, "不動産": 1212800}}, {"date": "2025-11-22", "total": 21442500, "by_class": {"株式（現物）": 8780000, "投資信託": 3066000, "年金": 2827000, "預金・現金": 5395500, "不動産": 1374000}}, {"date": "2025-11-23", "total": 21342000, "by_class": {"株式（現物）": 8748000, "投資信託": 3098800, "年金": 2859600, "預金・現金": 5360400, "不動産": 1275200}}, {"date": "2025-11-24", "total": 21241500, "by_class": {"株式（現物）": 8786000, "投資信託": 3061600, "年金": 2822200, "預金・現金": 5395300, "不動産": 1176400}}, {"date": "2025-11-25", "total": 21471000, "by_class": {"株式（現物）": 8754000, "投資信託": 3094400, "年金": 2854800, "預金・現金": 5360200, "不動産": 1407600}}, {"date": "2025-11-26", "total": 21370500, "by_class": {"株式（現物）": 8792000, "投資信託": 3057200, "年金": 2887400, "預金・現金": 5395100, "不動産": 1238800}}, {"date": "2025-11-27", "total": 21600000, "by_class": {"株式（現物）": 8830000, "投資信託": 3090000, "年金": 2850000, "預金・現金": 5360000, "不動産": 1470000}}, {"date": "2025-11-28", "total": 21499500, "by_class": {"株式（現物）": 8798000, "投資信託": 3052800, "年金": 2882600, "預金・現金": 5394900, "不動産": 1371200}}, {"date": "2025-11-29", "total": 21399000, "by_class": {"株式（現物）": 8836000, "投資信託": 3085600, "年金": 2845200, "預金・現金": 5429800, "不動産": 1202400}}, {"date": "2025-11-30", "total": 21628500, "by_class": {"株式（現物）": 8804000, "投資信託": 3118400, "年金": 2877800, "預金・現金": 5394700, "不動産": 1433600}}, {"date": "2025-12-01", "total": 21528000, "by_class": {"株式（現物）": 8842000, "投資信託": 3081200, "年金": 2840400, "預金・現金": 5429600, "不動産": 1334800}}, {"date": "2025-12-02", "total": 21427500, "by_class": {"株式（現物）": 8810000, "投資信託": 3114000, "年金": 2873000, "預金・現金": 5394500, "不動産": 1236000}}, {"date": "2025-12-03", "total": 21657000, "by_class": {"株式（現物）": 8848000, "投資信託": 3076800, "年金": 2905600, "預金・現金": 5429400, "不動産": 1397200}}, {"date": "2025-12-04", "total": 21556500, "by_class": {"株式（現物）": 8886000, "投資信託": 3109600, "年金": 2868200, "預金・現金": 5394300, "不動産": 1298400}}, {"date": "2025-12-05", "total": 21456000, "by_class": {"株式（現物）": 8854000, "投資信託": 3072400, "年金": 2900800, "預金・現金": 5429200, "不動産": 1199600}}, {"date": "2025-12-06", "total": 21685500, "by_class": {"株式（現物）": 8892000, "投資信託": 3105200, "年金": 2863400, "預金・現金": 5464100, "不動産": 1360800}}, {"date": "2025-12-07", "total": 21585000, "by_class": {"株式（現物）": 8860000, "投資信託": 3138000, "年金": 2896000, "預金・現金": 5429000, "不動産": 1262000}}, {"date": "2025-12-08", "total": 21814500, "by_class": {"株式（現物）": 8898000, "投資信託": 3100800, "年金": 2858600, "預金・現金": 5463900, "不動産": 1493200}}, {"date": "2025-12-09", "total": 21714000, "by_class": {"株式（現物）": 8866000, "投資信託": 3133600, "年金": 2891200, "預金・現金": 5428800, "不動産": 1394400}}, {"date": "2025-12-10", "total": 21613500, "by_class": {"株式（現物）": 8904000, "投資信託": 3096400, "年金": 2923800, "預金・現金": 5463700, "不動産": 1225600}}, {"date": "2025-12-11", "total": 21843000, "by_class": {"株式（現物）": 8942000, "投資信託": 3129200, "年金": 2886400, "預金・現金": 5428600, "不動産": 1456800}}, {"date": "2025-12-12", "total": 21742500, "by_class": {"株式（現物）": 8910000, "投資信託": 3092000, "年金": 2919000, "預金・現金": 5463500, "不動産": 1358000}}, {"date": "2025-12-13", "total": 21642000, "by_class": {"株式（現物）": 8948000, "投資信託": 3124800, "年金": 2881600, "預金・現金": 5498400, "不動産": 1189200}}, {"date": "2025-12-14", "total": 21871500, "by_class": {"株式（現物）": 8916000, "投資信託": 3157600, "年金": 2914200, "預金・現金": 5463300, "不動産": 1420400}}, {"date": "2025-12-15", "total": 21771000, "by_class": {"株式（現物）": 8954000, "投資信託": 3120400, "年金": 2876800, "預金・現金": 5498200, "不動産": 1321600}}, {"date": "2025-12-16", "total": 21670500, "by_class": {"株式（現物）": 8922000, "投資信託": 3153200, "年金": 2909400, "預金・現金": 5463100, "不動産": 1222800}}, {"date": "2025-12-17", "total": 21900000, "by_class": {"株式（現物）": 8960000, "投資信託": 3116000, "年金": 2942000, "預金・現金": 5498000, "不動産": 1384000}}, {"date": "2025-12-18", "total": 21799500, "by_class": {"株式（現物）": 8998000, "投資信託": 3148800, "年金": 2904600, "預金・現金": 5462900, "不動産": 1285200}}, {"date": "2025-12-19", "total": 22029000, "by_class": {"株式（現物）": 8966000, "投資信託": 3111600, "年金": 2937200, "預金・現金": 5497800, "不動産": 1516400}}, {"date": "2025-12-20", "total": 21928500, "by_class": {"株式（現物）": 9004000, "投資信託": 3144400, "年金": 2899800, "預金・現金": 5532700, "不動産": 1347600}}, {"date": "2025-12-21", "total": 21828000, "by_class": {"株式（現物）": 8972000, "投資信託": 3177200, "年金": 2932400, "預金・現金": 5497600, "不動産": 1248800}}, {"date": "2025-12-22", "total": 22057500, "by_class": {"株式（現物）": 9010000, "投資信託": 3140000, "年金": 2895000, "預金・現金": 5532500, "不動産": 1480000}}, {"date": "2025-12-23", "total": 21957000, "by_class": {"株式（現物）": 8978000, "投資信託": 3172800, "年金": 2927600, "預金・現金": 5497400, "不動産": 1381200}}, {"date": "2025-12-24", "total": 21856500, "by_class": {"株式（現物）": 9016000, "投資信託": 3135600, "年金": 2960200, "預金・現金": 5532300, "不動産": 1212400}}, {"date": "2025-12-25", "total": 22086000, "by_class": {"株式（現物）": 9054000, "投資信託": 3168400, "年金": 2922800, "預金・現金": 5497200, "不動産": 1443600}}, {"date": "2025-12-26", "total": 21985500, "by_class": {"株式（現物）": 9022000, "投資信託": 3131200, "年金": 2955400, "預金・現金": 5532100, "不動産": 1344800}}, {"date": "2025-12-27", "total": 21885000, "by_class": {"株式（現物）": 9060000, "投資信託": 3164000, "年金": 2918000, "預金・現金": 5567000, "不動産": 1176000}}, {"date": "2025-12-28", "total": 22114500, "by_class": {"株式（現物）": 9028000, "投資信託": 3196800, "年金": 2950600, "預金・現金": 5531900, "不動産": 1407200}}, {"date": "2025-12-29", "total": 22014000, "by_class": {"株式（現物）": 9066000, "投資信託": 3159600, "年金": 2913200, "預金・現金": 5566800, "不動産": 1308400}}, {"date": "2025-12-30", "total": 22243500, "by_class": {"株式（現物）": 9034000, "投資信託": 3192400, "年金": 2945800, "預金・現金": 5531700, "不動産": 1539600}}, {"date": "2025-12-31", "total": 22143000, "by_class": {"株式（現物）": 9072000, "投資信託": 3155200, "年金": 2978400, "預金・現金": 5566600, "不動産": 1370800}}, {"date": "2026-01-01", "total": 22042500, "by_class": {"株式（現物）": 9110000, "投資信託": 3188000, "年金": 2941000, "預金・現金": 5531500, "不動産": 1272000}}, {"date": "2026-01-02", "total": 22272000, "by_class": {"株式（現物）": 9078000, "投資信託": 3150800, "年金": 2973600, "預金・現金": 5566400, "不動産": 1503200}}, {"date": "2026-01-03", "total": 22171500, "by_class": {"株式（現物）": 9116000, "投資信託": 3183600, "年金": 2936200, "預金・現金": 5601300, "不動産": 1334400}}, {"date": "2026-01-04", "total": 22071000, "by_class": {"株式（現物）": 9084000, "投資信託": 3216400, "年金": 2968800, "預金・現金": 5566200, "不動産": 1235600}}, {"date": "2026-01-05", "total": 22300500, "by_class": {"株式（現物）": 9122000, "投資信託": 3179200, "年金": 2931400, "預金・現金": 5601100, "不動産": 1466800}}, {"date": "2026-01-06", "total": 22200000, "by_class": {"株式（現物）": 9090000, "投資信託": 3212000, "年金": 2964000, "預金・現金": 5566000, "不動産": 1368000}}, {"date": "2026-01-07", "total": 22099500, "by_class": {"株式（現物）": 9128000, "投資信託": 3174800, "年金": 2996600, "預金・現金": 5600900, "不動産": 1199200}}, {"date": "2026-01-08", "total": 22329000, "by_class": {"株式（現物）": 9166000, "投資信託": 3207600, "年金": 2959200, "預金・現金": 5565800, "不動産": 1430400}}, {"date": "2026-01-09", "total": 22228500, "by_class": {"株式（現物）": 9134000, "投資信託": 3170400, "年金": 2991800, "預金・現金": 5600700, "不動産": 1331600}}, {"date": "2026-01-10", "total": 22458000, "by_class": {"株式（現物）": 9172000, "投資信託": 3203200, "年金": 2954400, "預金・現金": 5635600, "不動産": 1492800}}, {"date": "2026-01-11", "total": 22357500, "by_class": {"株式（現物）": 9140000, "投資信託": 3236000, "年金": 2987000, "預金・現金": 5600500, "不動産": 1394000}}, {"date": "2026-01-12", "total": 22257000, "by_class": {"株式（現物）": 9178000, "投資信託": 3198800, "年金": 2949600, "預金・現金": 5635400, "不動産": 1295200}}, {"date": "2026-01-13", "total": 22486500, "by_class": {"株式（現物）": 9146000, "投資信託": 3231600, "年金": 2982200, "預金・現金": 5600300, "不動産": 1526400}}, {"date": "2026-01-14", "total": 22386000, "by_class": {"株式（現物）": 9184000, "投資信託": 3194400, "年金": 3014800, "預金・現金": 5635200, "不動産": 1357600}}, {"date": "2026-01-15", "total": 22285500, "by_class": {"株式（現物）": 9222000, "投資信託": 3227200, "年金": 2977400, "預金・現金": 5600100, "不動産": 1258800}}, {"date": "2026-01-16", "total": 22515000, "by_class": {"株式（現物）": 9190000, "投資信託": 3190000, "年金": 3010000, "預金・現金": 5635000, "不動産": 1490000}}, {"date": "2026-01-17", "total": 22414500, "by_class": {"株式（現物）": 9228000, "投資信託": 3222800, "年金": 2972600, "預金・現金": 5669900, "不動産": 1321200}}, {"date": "2026-01-18", "total": 22314000, "by_class": {"株式（現物）": 9196000, "投資信託": 3255600, "年金": 3005200, "預金・現金": 5634800, "不動産": 1222400}}, {"date": "2026-01-19", "total": 22543500, "by_class": {"株式（現物）": 9234000, "投資信託": 3218400, "年金": 2967800, "預金・現金": 5669700, "不動産": 1453600}}, {"date": "2026-01-20", "total": 22443000, "by_class": {"株式（現物）": 9202000, "投資信託": 3251200, "年金": 3000400, "預金・現金": 5634600, "不動産": 1354800}}, {"date": "2026-01-21", "total": 22672500, "by_class": {"株式（現物）": 9240000, "投資信託": 3214000, "年金": 3033000, "預金・現金": 5669500, "不動産": 1516000}}, {"date": "2026-01-22", "total": 22572000, "by_class": {"株式（現物）": 9278000, "投資信託": 3246800, "年金": 2995600, "預金・現金": 5634400, "不動産": 1417200}}, {"date": "2026-01-23", "total": 22471500, "by_class": {"株式（現物）": 9246000, "投資信託": 3209600, "年金": 3028200, "預金・現金": 5669300, "不動産": 1318400}}, {"date": "2026-01-24", "total": 22701000, "by_class": {"株式（現物）": 9284000, "投資信託": 3242400, "年金": 2990800, "預金・現金": 5704200, "不動産": 1479600}}, {"date": "2026-01-25", "total": 22600500, "by_class": {"株式（現物）": 9252000, "投資信託": 3275200, "年金": 3023400, "預金・現金": 5669100, "不動産": 1380800}}, {"date": "2026-01-26", "total": 22500000, "by_class": {"株式（現物）": 9290000, "投資信託": 3238000, "年金": 2986000, "預金・現金": 5704000, "不動産": 1282000}}, {"date": "2026-01-27", "total": 22729500, "by_class": {"株式（現物）": 9258000, "投資信託": 3270800, "年金": 3018600, "預金・現金": 5668900, "不動産": 1513200}}, {"date": "2026-01-28", "total": 22629000, "by_class": {"株式（現物）": 9296000, "投資信託": 3233600, "年金": 3051200, "預金・現金": 5703800, "不動産": 1344400}}, {"date": "2026-01-29", "total": 22528500, "by_class": {"株式（現物）": 9334000, "投資信託": 3266400, "年金": 3013800, "預金・現金": 5668700, "不動産": 1245600}}, {"date": "2026-01-30", "total": 22758000, "by_class": {"株式（現物）": 9302000, "投資信託": 3229200, "年金": 3046400, "預金・現金": 5703600, "不動産": 1476800}}, {"date": "2026-01-31", "total": 22657500, "by_class": {"株式（現物）": 9340000, "投資信託": 3262000, "年金": 3009000, "預金・現金": 5738500, "不動産": 1308000}}, {"date": "2026-02-01", "total": 22887000, "by_class": {"株式（現物）": 9308000, "投資信託": 3294800, "年金": 3041600, "預金・現金": 5703400, "不動産": 1539200}}, {"date": "2026-02-02", "total": 22786500, "by_class": {"株式（現物）": 9346000, "投資信託": 3257600, "年金": 3004200, "預金・現金": 5738300, "不動産": 1440400}}, {"date": "2026-02-03", "total": 22686000, "by_class": {"株式（現物）": 9314000, "投資信託": 3290400, "年金": 3036800, "預金・現金": 5703200, "不動産": 1341600}}, {"date": "2026-02-04", "total": 22915500, "by_class": {"株式（現物）": 9352000, "投資信託": 3253200, "年金": 3069400, "預金・現金": 5738100, "不動産": 1502800}}, {"date": "2026-02-05", "total": 22815000, "by_class": {"株式（現物）": 9390000, "投資信託": 3286000, "年金": 3032000, "預金・現金": 5703000, "不動産": 1404000}}, {"date": "2026-02-06", "total": 22714500, "by_class": {"株式（現物）": 9358000, "投資信託": 3248800, "年金": 3064600, "預金・現金": 5737900, "不動産": 1305200}}, {"date": "2026-02-07", "total": 22944000, "by_class": {"株式（現物）": 9396000, "投資信託": 3281600, "年金": 3027200, "預金・現金": 5772800, "不動産": 1466400}}, {"date": "2026-02-08", "total": 22843500, "by_class": {"株式（現物）": 9364000, "投資信託": 3314400, "年金": 3059800, "預金・現金": 5737700, "不動産": 1367600}}, {"date": "2026-02-09", "total": 22743000, "by_class": {"株式（現物）": 9402000, "投資信託": 3277200, "年金": 3022400, "預金・現金": 5772600, "不動産": 1268800}}, {"date": "2026-02-10", "total": 22972500, "by_class": {"株式（現物）": 9370000, "投資信託": 3310000, "年金": 3055000, "預金・現金": 5737500, "不動産": 1500000}}, {"date": "2026-02-11", "total": 22872000, "by_class": {"株式（現物）": 9408000, "投資信託": 3272800, "年金": 3087600, "預金・現金": 5772400, "不動産": 1331200}}, {"date": "2026-02-12", "total": 23101500, "by_class": {"株式（現物）": 9446000, "投資信託": 3305600, "年金": 3050200, "預金・現金": 5737300, "不動産": 1562400}}, {"date": "2026-02-13", "total": 23001000, "by_class": {"株式（現物）": 9414000, "投資信託": 3268400, "年金": 3082800, "預金・現金": 5772200, "不動産": 1463600}}, {"date": "2026-02-14", "total": 22900500, "by_class": {"株式（現物）": 9452000, "投資信託": 3301200, "年金": 3045400, "預金・現金": 5807100, "不動産": 1294800}}];
+const dailyCanvas = document.getElementById('daily-chart');
+const AREA_COLORS = ['#2881D7','#FCAD4C','#0F7F30','#008986','#9C39B6','#DF3727','#80BD45','#E67E22'];
+
+function drawDailyChart(data) {
+  if (!data.length || !dailyCanvas) return;
+  const ctx = dailyCanvas.getContext('2d');
+  const W = dailyCanvas.parentElement.clientWidth - 40;
+  dailyCanvas.width = W;
+  dailyCanvas.height = 280;
+  ctx.clearRect(0, 0, W, 280);
+
+  const padding = { left: 80, right: 20, top: 20, bottom: 30 };
+  const chartW = W - padding.left - padding.right;
+  const chartH = 280 - padding.top - padding.bottom;
+
+  // 資産クラスキー収集
+  const classKeys = [];
+  const classSet = new Set();
+  data.forEach(d => { Object.keys(d.by_class || {}).forEach(k => { if (!classSet.has(k)) { classSet.add(k); classKeys.push(k); } }); });
+
+  const totals = data.map(d => d.total);
+  const hasClasses = classKeys.length > 0;
+  const minVal = hasClasses ? 0 : Math.min(...totals) * 0.95;
+  const maxVal = Math.max(...totals) * 1.05;
+  const range = maxVal - minVal || 1;
+
+  // Y軸グリッド
+  ctx.strokeStyle = '#f1f2f6';
+  ctx.fillStyle = '#b2bec3';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const y = padding.top + chartH * (1 - i/4);
+    const val = minVal + range * i / 4;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(W - padding.right, y);
+    ctx.stroke();
+    ctx.fillText((val/10000).toFixed(0) + '万', padding.left - 6, y + 4);
+  }
+
+  // 積み上げ面グラフ（資産クラス別）
+  if (classKeys.length > 0) {
+    // 各クラスの累積値を計算
+    const stacked = data.map(d => {
+      let cum = 0;
+      const vals = {};
+      classKeys.forEach(k => {
+        cum += (d.by_class || {})[k] || 0;
+        vals[k] = cum;
+      });
+      return vals;
+    });
+
+    for (let ci = classKeys.length - 1; ci >= 0; ci--) {
+      const color = AREA_COLORS[ci % AREA_COLORS.length];
+      ctx.fillStyle = color + '99';
+      ctx.beginPath();
+      data.forEach((d, i) => {
+        const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
+        const val = stacked[i][classKeys[ci]];
+        const y = padding.top + chartH * (1 - (val - minVal) / range);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      // 下辺: 一つ下のクラスの上辺、または 0
+      for (let i = data.length - 1; i >= 0; i--) {
+        const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
+        const val = ci > 0 ? stacked[i][classKeys[ci - 1]] : 0;
+        const y = padding.top + chartH * (1 - (val - minVal) / range);
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // 総資産ライン
+  ctx.strokeStyle = '#2881D7';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  data.forEach((d, i) => {
+    const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
+    const y = padding.top + chartH * (1 - (d.total - minVal) / range);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // X軸ラベル（7日おきに間引き）
+  const step = Math.max(1, Math.floor(data.length / 8));
+  ctx.fillStyle = '#636e72';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  data.forEach((d, i) => {
+    if (i % step === 0 || i === data.length - 1) {
+      const x = padding.left + (chartW / (data.length - 1 || 1)) * i;
+      ctx.fillText(d.date.substring(5), x, padding.top + chartH + 18);
+    }
+  });
+
+  // 凡例
+  if (classKeys.length > 0) {
+    let lx = padding.left;
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    classKeys.forEach((k, ci) => {
+      const color = AREA_COLORS[ci % AREA_COLORS.length];
+      ctx.fillStyle = color + '80';
+      ctx.fillRect(lx, 4, 10, 10);
+      ctx.fillStyle = '#2d3436';
+      ctx.fillText(k, lx + 13, 13);
+      lx += ctx.measureText(k).width + 22;
+    });
+  }
+
+  // ツールチップ
+  dailyCanvas.onmousemove = function(e) {
+    const rect = dailyCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const idx = Math.round((mx - padding.left) / (chartW / (data.length - 1 || 1)));
+    if (idx < 0 || idx >= data.length) { dailyTooltip.classList.remove('show'); return; }
+    const d = data[idx];
+    let html = '<strong>' + esc(d.date) + '</strong><br>総資産: ' + (d.total / 10000).toLocaleString('ja-JP', {maximumFractionDigits:0}) + '万円';
+    if (d.by_class) {
+      html += '<div style="margin-top:4px;border-top:1px solid rgba(255,255,255,0.2);padding-top:4px">';
+      Object.entries(d.by_class).forEach(([k, v]) => {
+        html += '<div style="display:flex;justify-content:space-between;gap:12px"><span>' + esc(k) + '</span><span>' + (v/10000).toLocaleString('ja-JP', {maximumFractionDigits:0}) + '万</span></div>';
+      });
+      html += '</div>';
+    }
+    const tip = document.getElementById('daily-tooltip');
+    if (tip) {
+      tip.innerHTML = html;
+      tip.classList.add('show');
+      tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 260) + 'px';
+      tip.style.top = (e.clientY - 10) + 'px';
+    }
+  };
+  dailyCanvas.onmouseleave = function() {
+    const tip = document.getElementById('daily-tooltip');
+    if (tip) tip.classList.remove('show');
+  };
+}
+
+// 期間切替
+const periodBtns = document.querySelectorAll('.period-btn');
+function filterByPeriod(months) {
+  if (months === 0 || !months) { drawDailyChart(dailyAllData); return; }
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - months);
+  const cutoffStr = cutoff.toISOString().substring(0, 10);
+  drawDailyChart(dailyAllData.filter(d => d.date >= cutoffStr));
+}
+periodBtns.forEach(btn => {
+  btn.addEventListener('click', function() {
+    periodBtns.forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    filterByPeriod(parseInt(this.dataset.period));
+  });
+});
+// 初期描画（デフォルト1M）
+filterByPeriod(1);
+
+// 月次収支棒グラフ描画
+const cfData = [{"year_month": "2025-09", "income": 380000, "expense": 310000}, {"year_month": "2025-10", "income": 385000, "expense": 345000}, {"year_month": "2025-11", "income": 380000, "expense": 290000}, {"year_month": "2025-12", "income": 520000, "expense": 420000}, {"year_month": "2026-01", "income": 385000, "expense": 320000}, {"year_month": "2026-02", "income": 380000, "expense": 305000}];
+const cfCanvas = document.getElementById('cf-chart');
+if (cfData.length > 0 && cfCanvas) {
+  const ctx = cfCanvas.getContext('2d');
+  const W = cfCanvas.parentElement.clientWidth - 40;
+  cfCanvas.width = W;
+  cfCanvas.height = 220;
+
+  const labels = cfData.map(d => d.year_month.substring(5));
+  const incomes = cfData.map(d => d.income);
+  const expenses = cfData.map(d => d.expense);
+  const maxVal = Math.max(...incomes, ...expenses) * 1.15;
+
+  const padding = { left: 70, right: 20, top: 20, bottom: 30 };
+  const chartW = W - padding.left - padding.right;
+  const chartH = 220 - padding.top - padding.bottom;
+  const barGroupW = chartW / cfData.length;
+  const barW = barGroupW * 0.3;
+
+  // Y軸グリッド
+  ctx.strokeStyle = '#f1f2f6';
+  ctx.fillStyle = '#b2bec3';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const y = padding.top + chartH * (1 - i/4);
+    const val = maxVal * i / 4;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(W - padding.right, y);
+    ctx.stroke();
+    ctx.fillText((val/10000).toFixed(0) + '万', padding.left - 6, y + 4);
+  }
+
+  // 棒グラフ
+  cfData.forEach((d, i) => {
+    const x = padding.left + i * barGroupW + barGroupW * 0.1;
+    const iH = (d.income / maxVal) * chartH;
+    const eH = (d.expense / maxVal) * chartH;
+
+    // 収入（赤系）
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillRect(x, padding.top + chartH - iH, barW, iH);
+
+    // 支出（青系）
+    ctx.fillStyle = '#2881D7';
+    ctx.fillRect(x + barW + 2, padding.top + chartH - eH, barW, eH);
+
+    // ラベル
+    ctx.fillStyle = '#636e72';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(labels[i], x + barW + 1, padding.top + chartH + 18);
+  });
+
+  // 凡例
+  ctx.fillStyle = '#e74c3c';
+  ctx.fillRect(padding.left, 4, 12, 12);
+  ctx.fillStyle = '#2d3436';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('収入', padding.left + 16, 14);
+  ctx.fillStyle = '#2881D7';
+  ctx.fillRect(padding.left + 55, 4, 12, 12);
+  ctx.fillStyle = '#2d3436';
+  ctx.fillText('支出', padding.left + 71, 14);
+}
+
+// 積立額変更
+function updateContrib() {
+  const v = document.getElementById('contrib-input').value;
+  const url = new URL(window.location);
+  url.searchParams.set('contrib', v);
+  // location.href = url.toString(); // disabled in static demo
+}
+
+// --- 配当実績チャート ---
+(function() {
+  const divData = [{"year_month": "2025-03", "amount": 12500}, {"year_month": "2025-06", "amount": 18200}, {"year_month": "2025-09", "amount": 15800}, {"year_month": "2025-12", "amount": 22300}, {"year_month": "2026-01", "amount": 5200}];
+  const divCanvas = document.getElementById('div-chart');
+  if (!divData.length || !divCanvas) return;
+  const ctx = divCanvas.getContext('2d');
+  const W = divCanvas.parentElement.clientWidth - 40;
+  divCanvas.width = W;
+  divCanvas.height = 200;
+  ctx.clearRect(0, 0, W, 200);
+
+  const padding = { left: 70, right: 20, top: 20, bottom: 40 };
+  const chartW = W - padding.left - padding.right;
+  const chartH = 200 - padding.top - padding.bottom;
+
+  const maxAmt = Math.max(...divData.map(d => d.amount));
+  const barW = Math.min(30, chartW / divData.length * 0.7);
+  const gap = (chartW - barW * divData.length) / (divData.length + 1);
+
+  // Y軸グリッド
+  ctx.strokeStyle = '#f1f2f6';
+  ctx.fillStyle = '#b2bec3';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const y = padding.top + chartH * (1 - i/4);
+    const val = maxAmt * i / 4;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(W - padding.right, y);
+    ctx.stroke();
+    ctx.fillText(val >= 10000 ? (val/10000).toFixed(1) + '万' : val.toLocaleString(), padding.left - 6, y + 4);
+  }
+
+  // バー描画
+  ctx.fillStyle = '#0F7F30';
+  ctx.textAlign = 'center';
+  divData.forEach((d, i) => {
+    const x = padding.left + gap + i * (barW + gap);
+    const h = (d.amount / maxAmt) * chartH;
+    const y = padding.top + chartH - h;
+    ctx.fillStyle = '#0F7F30';
+    ctx.fillRect(x, y, barW, h);
+    // ラベル
+    ctx.fillStyle = '#636e72';
+    ctx.font = '10px sans-serif';
+    const label = d.year_month.slice(2).replace('-', '/');
+    ctx.save();
+    ctx.translate(x + barW/2, padding.top + chartH + 12);
+    ctx.rotate(-0.5);
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+    // 金額
+    ctx.fillStyle = '#2d3436';
+    ctx.font = '10px sans-serif';
+    if (h > 20) {
+      ctx.fillText(d.amount >= 10000 ? (d.amount/10000).toFixed(1) + '万' : d.amount.toLocaleString(), x + barW/2, y - 4);
+    }
+  });
+})()
+
+
+
+// 折りたたみ
+(function() {
+  const saved = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
+  document.querySelectorAll('[data-card-id]').forEach(card => {
+    const id = card.dataset.cardId;
+    const defaultCollapsed = card.dataset.defaultCollapsed === 'true';
+    const body = card.querySelector('.card-body');
+    const btn = card.querySelector('.collapse-btn');
+    if (!body || !btn) return;
+    const isCollapsed = Object.prototype.hasOwnProperty.call(saved, id) ? !!saved[id] : defaultCollapsed;
+    if (isCollapsed) {
+      card.classList.add('collapsed');
+      btn.textContent = '\u25B6';
+    } else {
+      card.classList.remove('collapsed');
+      btn.textContent = '\u25BC';
+    }
+    btn.addEventListener('click', () => {
+      const nextCollapsed = card.classList.toggle('collapsed');
+      btn.textContent = nextCollapsed ? '\u25B6' : '\u25BC';
+      const s = JSON.parse(localStorage.getItem('collapsed_cards') || '{}');
+      s[id] = nextCollapsed;
+      localStorage.setItem('collapsed_cards', JSON.stringify(s));
+    });
+  });
+})();
+
+</script>
+</body>
+</html>
