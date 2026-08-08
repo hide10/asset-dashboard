@@ -1,0 +1,16 @@
+[Unit]
+Description=MoneyForward ME Asset Tracker dashboard
+# ネットワークが上がってから起動（ユーザーサービスでは無害な順序指定）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 以下のパスは install.sh --autostart が絶対パスへ置換する
+WorkingDirectory=__WORKDIR__
+ExecStart=__PYTHON__ -m src.web.server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
